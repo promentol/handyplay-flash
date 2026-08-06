@@ -28,15 +28,16 @@ threshold. Refcounting rejected (prototype/closure cycles). Follows the
 exen-core precedent; handles give stable ids ⇒ save-state serialization is a
 table walk and nothing is pointer-invalidated.
 
-## D3 — JPEG: pure-Zig baseline decoder
+## D3 — JPEG: via simdra's stb_image (amended 2026-08-06, was: pure-Zig)
 
-`codecs/jpeg.zig`, ~1.5k lines expected. We must own SWF stream surgery
-regardless of decoder (leading EOI/SOI strip, JPEGTables splice before SOS for
-DefineBits, JPEG3 alpha = separate zlib plane composited after decode).
-exen-core has a pure-Zig PNG precedent; zero C deps keeps the future wasm
-build clean. Progressive JPEG: clean error, out of scope. **Contingency**: if
-it stalls M4 by more than a week, vendor nanojpeg (single-file C) behind the
-same interface.
+Superseded by D7: simdra vendors stb_image (single-file C, forced RGBA
+output), which decodes baseline **and progressive** JPEG plus PNG/GIF —
+DefineBitsJPEG2 in SWF v8+ may legally contain PNG/GIF, so this covers more
+than the original plan did. We still own all SWF stream surgery in
+`codecs/jpeg.zig` (leading EOI/SOI strip, JPEGTables splice before SOS for
+DefineBits, JPEG3 alpha = separate zlib plane composited after decode);
+only the final bytes→pixels step goes through stb. A future pure-Zig decoder
+can replace stb behind the same seam if the wasm build wants zero C.
 
 ## D4 — LZMA (ZWS) deferred
 
@@ -63,6 +64,47 @@ user before first public release.** Compatibility notes: ruffle corpus is
 MIT/Apache (fine to test against, never vendored); minimp3 is CC0; open-flash
 docs have no license and quote Adobe prose — read as reference, never copy
 text into this repo.
+
+## D7 — Rasterizer backend: vendor simdra's Zig core (added 2026-08-06)
+
+`handyplay-oss/vendor/simdra` (MIT, Narek's own project) is a SIMD-accelerated
+2D canvas in Zig with Skia-style primitives. Its core covers nearly the entire
+`core/render/` plan: `SmPath` (moveTo/lineTo/quadratic+cubic curves),
+`SmScan` scanline fill with **even-odd + nonzero** fill rules and 8×-subsample
+**AA coverage**, `SmPaint` strokes with **butt/round/square caps +
+miter/round/bevel joins + miter limit** (exactly DefineShape4's set),
+`SmGradient` linear/radial (two-circle radial ⇒ SWF focal gradients map
+directly), `SmPattern` bitmap fills, `SmMatrix`, `clip`/`clipPath` (clipDepth
+masks), `isPointInPath` (button hit-testing), NEON/SSE/WASM-SIMD kernels with
+generic fallback, plus PNG/JPEG/BMP *encoders* (useful for
+`--headless-frames` dumps) and stb_truetype (`SmFont`) as a future device-font
+fallback. **Verified: the whole Zig core semantic-checks under zig 0.16
+unmodified** (`zig build-obj simdra.zig -fno-emit-bin -I . -lc`).
+
+Consequences:
+- `render/raster.zig`/`fills.zig`/`stroke.zig`/`mask.zig` become a thin
+  adapter: `shape_utils.zig` (SWF dual-edge records → SmPath, still ours and
+  still the hard part) + FillStyle→SmPaint/SmGradient/SmPattern mapping +
+  cxform application. M2 gets AA from day one; M7 drops the AA + stroke-quality
+  items.
+- Vendor a copy of `zig/simdra/` (+ `stb_image.{h,c}`) into
+  `handyflash/vendor/simdra/` — standalone repo stays standalone. This amends
+  the "no C deps" rule: stb_image is the one sanctioned C file (pre-existing,
+  battle-tested, already in the handyplay ecosystem).
+- Pixel format: simdra outputs rgba_unorm8 (byte order R,G,B,A). libretro
+  wants XRGB8888 — one swizzle pass at the frame boundary (same as exen-core
+  does today), or add a BGRA output path to simdra later.
+- Per-channel cxform (mult+add incl. alpha): solids fold into the paint
+  color; gradient/bitmap fills need transformed stops / a small post-pass —
+  ours to write.
+- Determinism: SIMD kernels may differ across ISAs, but save-state
+  roundtrip verification is same-machine — fine.
+
+**Rejected: neonGL** (`vendor/neonGL`, software OpenGL ES 1.1). Wrong
+abstraction for 2D vector art: fixed-function triangles only — winding-rule
+path fills would need tessellation + stencil tricks, gradients need texture
+uploads, strokes are manual. It exists for the 3D micro3d/mascot content in
+mophun/java-core; simdra supersedes it entirely for Flash.
 
 ## Open risks
 
