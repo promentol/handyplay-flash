@@ -1,0 +1,2 @@
+# dirs under reference/ruffle/tests/tests/swfs/avm1/ that pass exactly.
+# RATCHET: append-only — never remove a passing entry.

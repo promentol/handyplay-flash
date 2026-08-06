@@ -1,0 +1,16 @@
+# local reference clones (ruffle, openflash) — spec material, never built
+reference/
+
+# zig
+zig-out/
+.zig-cache/
+
+# agent scratch
+.claude/
+CLAUDE.local.md
+
+# large local samples (curated ones are listed in samples/README.md)
+samples/*.swf
+
+# os
+.DS_Store
