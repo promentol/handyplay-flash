@@ -99,6 +99,9 @@ pub const NativeInfo = union(enum) {
     /// text fields. Ruffle gives object1 to those two and to MovieClip,
     /// but NOT to graphics or static text.
     display: *anyopaque,
+    /// `super`: the same `this`, viewed with `depth` layers of prototype
+    /// peeled off (ruffle object/super_object.rs).
+    super_obj: struct { this: ObjectHandle, depth: u8 },
 };
 
 pub const ScriptObject = struct {
@@ -169,6 +172,23 @@ pub const Objects = struct {
         while (depth < 256) : (depth += 1) {
             if (self.findOwn(current, name, cs)) |p| {
                 if (!versionHidden(p.attrs, self.swf_version)) return p;
+            }
+            const proto = self.get(current).proto;
+            if (proto != .object) return null;
+            current = proto.object;
+        }
+        return null;
+    }
+
+    /// How many prototype hops from `h` to the object that owns `name`
+    /// (0 = own property). `super` inside a method must start from THAT
+    /// object, not from `this`, or it re-finds the same method.
+    pub fn protoDepth(self: *Objects, h: ObjectHandle, name: strings.AvmString, cs: bool) ?u8 {
+        var current = h;
+        var depth: u8 = 0;
+        while (depth < 255) : (depth += 1) {
+            if (self.findOwn(current, name, cs)) |p| {
+                if (!versionHidden(p.attrs, self.swf_version)) return depth;
             }
             const proto = self.get(current).proto;
             if (proto != .object) return null;

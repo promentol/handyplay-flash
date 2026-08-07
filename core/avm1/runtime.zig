@@ -96,6 +96,10 @@ pub const Vm = struct {
     /// The value of the `throw` currently unwinding, paired with
     /// `error.Avm1Thrown`.
     pending_throw: Value = .undefined_value,
+    /// Prototype depth the NEXT call's `super` should start from. A plain
+    /// method call is 0; `super.m()` sets 1 so the chain walks upward
+    /// instead of recursing forever.
+    super_depth: u8 = 0,
     /// Non-zero while inside `construct` — native constructors box their
     /// argument only for `new X()`, and coerce for a plain `X()` call
     /// (ruffle globals/{number,string,boolean}.rs split those paths).
@@ -481,12 +485,73 @@ pub const Vm = struct {
         self.objects.get(obj).proto = if (proto == .object) proto else .{ .object = self.object_proto };
         try self.objects.putWithAttrs(obj, S("__constructor__"), ctor, .{ .dont_enum = true }, self.case_sensitive);
         const this: Value = .{ .object = obj };
-        const r = try self.callFunction(ctor, this, args);
+        // A constructor frame's `super` starts at depth 1, i.e. at
+        // `this.__proto__` — which is exactly where ActionExtends put the
+        // SUPERCLASS's __constructor__. Starting at 0 would find the
+        // instance's own and call the same constructor again
+        // (ruffle construct_on_existing passes 1).
+        const r = try self.callWithSuperDepth(ctor, this, args, 1);
         return if (r == .object) r else this;
+    }
+
+    /// A `super` view of `this` with `depth` prototype layers removed.
+    pub fn newSuper(self: *Vm, this: ObjectHandle, depth: u8) Error!ObjectHandle {
+        const h = try self.objects.create();
+        self.objects.get(h).native = .{ .super_obj = .{ .this = this, .depth = depth } };
+        return h;
+    }
+
+    /// `this` walked up `depth` prototypes — where `super` starts looking.
+    pub fn superBaseProto(self: *Vm, s: @TypeOf(@as(object_mod.NativeInfo, undefined).super_obj)) ?ObjectHandle {
+        var cur: Value = .{ .object = s.this };
+        var i: u8 = 0;
+        while (i < s.depth) : (i += 1) {
+            const p = self.objects.get(cur.object).proto;
+            if (p != .object) return null;
+            cur = p;
+        }
+        return cur.object;
+    }
+
+    /// Calling `super(...)` runs the base prototype's `__constructor__`
+    /// against the ORIGINAL `this`, one prototype layer deeper
+    /// (ruffle super_object.rs:77-105).
+    pub fn callSuper(self: *Vm, h: ObjectHandle, args: []const Value) anyerror!Value {
+        const s = self.objects.get(h).native.super_obj;
+        const base = self.superBaseProto(s) orelse return .undefined_value;
+        const ctor = self.objects.getChained(base, S("__constructor__"), self.case_sensitive) orelse
+            return .undefined_value;
+        if (!self.isCallable(ctor)) return .undefined_value;
+        return self.callWithSuperDepth(ctor, .{ .object = s.this }, args, s.depth + 1);
+    }
+
+    /// `super.method(...)`: resolve from ABOVE the base prototype and run
+    /// it with the original `this` (super_object.rs:107-136).
+    pub fn callSuperMethod(self: *Vm, h: ObjectHandle, name: strings.AvmString, args: []const Value) anyerror!Value {
+        const s = self.objects.get(h).native.super_obj;
+        const base = self.superBaseProto(s) orelse return .undefined_value;
+        const above = self.objects.get(base).proto;
+        if (above != .object) return .undefined_value;
+        const m = self.objects.getChained(above.object, name, self.case_sensitive) orelse
+            return .undefined_value;
+        if (!self.isCallable(m)) return .undefined_value;
+        return self.callWithSuperDepth(m, .{ .object = s.this }, args, s.depth + 1);
+    }
+
+    /// Like callFunction, but the callee's own `super` starts one layer
+    /// further down — that is what makes a three-deep chain terminate.
+    fn callWithSuperDepth(self: *Vm, callee: Value, this: Value, args: []const Value, depth: u8) anyerror!Value {
+        const prev = self.super_depth;
+        self.super_depth = depth;
+        defer self.super_depth = prev;
+        return self.callFunction(callee, this, args);
     }
 
     fn callAvm1(self: *Vm, callee: ObjectHandle, f: object_mod.Avm1Function, this: Value, args: []const Value) anyerror!Value {
         const activation = @import("activation.zig");
+        // Consume the pending super depth: it belongs to THIS frame only.
+        const depth = self.super_depth;
+        self.super_depth = 0;
         // Fresh local scope chained to the captured definition scope.
         const local = try self.newScope(f.scope);
 
@@ -527,11 +592,19 @@ pub const Vm = struct {
                 try self.objects.putWithAttrs(local, S("arguments"), args_val, .{ .dont_enum = true, .dont_delete = true }, self.case_sensitive);
             }
         }
-        // super (M4: real super object; undefined placeholder preserves
-        // the register numbering).
-        if (preload and fl.preload_super) {
-            next_reg += 1;
+        // `super` exists only when there is a `this` to view through, and
+        // is a REGISTER when preloaded, otherwise a local VARIABLE
+        // (ruffle function.rs:235-249). We need both forms — corpus
+        // as2_super_via_manual_prototype uses the variable.
+        if (!fl.suppress_super and this == .object) {
+            const zuper = try self.newSuper(this.object, depth);
+            if (preload and fl.preload_super) {
+                if (next_reg < registers.len) registers[next_reg] = .{ .object = zuper };
+            } else if (!preload or !fl.preload_super) {
+                try self.objects.putWithAttrs(local, S("super"), .{ .object = zuper }, .{ .dont_enum = true, .dont_delete = true }, self.case_sensitive);
+            }
         }
+        if (preload and fl.preload_super) next_reg += 1;
         // _root/_parent/_global preloads.
         if (preload and fl.preload_root) {
             if (next_reg < registers.len) registers[next_reg] = self.root_object;

@@ -1010,8 +1010,13 @@ pub const Activation = struct {
             .call_function => {
                 const name = try self.popString();
                 const args = try self.popArgs();
-                const f = self.vm.scopeGet(self.scope, name) orelse Value.undefined_value;
-                const r = try self.vm.callFunction(f, self.this, args);
+                const f = try self.scopeLookup(name) orelse Value.undefined_value;
+                // A bare `super(...)` reaches here when the compiler kept
+                // it as a named variable rather than a register.
+                const r = if (isSuper(self.vm, f))
+                    try self.vm.callSuper(f.object, args)
+                else
+                    try self.vm.callFunction(f, self.this, args);
                 try self.push(r);
             },
             .call_method => {
@@ -1025,10 +1030,21 @@ pub const Activation = struct {
                     S("")
                 else
                     try self.vm.toStringValue(name_v);
-                const result = if (name.len == 0)
+                const result = if (isSuper(self.vm, target)) blk: {
+                    // `super()` constructs; `super.m()` dispatches upward.
+                    break :blk if (name.len == 0)
+                        try self.vm.callSuper(target.object, args)
+                    else
+                        try self.vm.callSuperMethod(target.object, name, args);
+                } else if (name.len == 0)
                     try self.vm.callFunction(target, .undefined_value, args)
                 else blk: {
                     const m = try self.memberGet(target, name);
+                    // The callee's `super` starts at the prototype level
+                    // that actually owns this method.
+                    if (target == .object) {
+                        self.vm.super_depth = self.vm.objects.protoDepth(target.object, name, self.vm.case_sensitive) orelse 0;
+                    }
                     break :blk try self.vm.callFunction(m, target, args);
                 };
                 try self.push(result);
@@ -1537,6 +1553,11 @@ pub const Activation = struct {
 /// A frame operand that is a STRING is a frame number only when the whole
 /// string parses; otherwise it is a label. Ruffle uses Rust's strict
 /// `parse()` here, so "3x" is a label, not frame 3.
+/// Is this value a `super` view rather than an ordinary object?
+fn isSuper(vm: *Vm, v: Value) bool {
+    return v == .object and vm.objects.get(v.object).native == .super_obj;
+}
+
 fn strictFrameNumber(s: strings.AvmString) ?i32 {
     if (s.len == 0 or s.len > 32) return null;
     var buf: [32]u8 = undefined;
