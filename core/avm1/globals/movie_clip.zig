@@ -272,17 +272,24 @@ fn hitTest(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return .{ .boolean = false };
 }
 
-/// Masking is rendered in M7; the link itself is script-visible now, and
-/// `setMask(null)` clears it.
+/// Masking is rendered in M7; the link itself is script-visible now.
+/// The return value distinguishes three cases: no argument at all is
+/// `undefined`, `null`/`undefined` CLEARS the mask and reports true, and an
+/// argument that names nothing reports false without changing anything
+/// (ruffle set_mask).
 fn setMask(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
-    if (stage.targetOfValue(vm, arg(args, 0))) |m| {
-        t.obj.mask = m.obj;
-    } else {
+    if (args.len == 0) return .undefined_value;
+    const v = args[0];
+    if (v == .undefined_value or v == .null_value) {
         t.obj.mask = null;
+        return .{ .boolean = true };
     }
-    return .undefined_value;
+    const m = try activation.targetFromNative(vm, 0, v) orelse
+        return .{ .boolean = false };
+    t.obj.mask = m.obj;
+    return .{ .boolean = true };
 }
 
 fn startDrag(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {

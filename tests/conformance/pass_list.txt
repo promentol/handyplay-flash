@@ -127,6 +127,7 @@ movieclip_init_object
 movieclip_line_gradient_style
 movieclip_name_from_timeline
 movieclip_prototype_extension
+movieclip_setmask
 named_shapes
 nan_scale
 nested_textfields_in_buttons

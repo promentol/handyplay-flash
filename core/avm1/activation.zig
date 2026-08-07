@@ -504,7 +504,11 @@ pub const Activation = struct {
         if (target != .object) return;
         const h = target.object;
         if (strings.eqlIgnoreCase(name, S("__proto__"))) {
-            self.vm.objects.get(h).proto = if (v == .object) v else .undefined_value;
+            // Whatever is assigned is STORED, even a number: `obj.__proto__
+            // = 123` reads back as 123 with typeof "number". Only an object
+            // participates in the chain walk, which already checks
+            // (corpus object_prototypes).
+            self.vm.objects.get(h).proto = v;
             return;
         }
         // A display property name writes through to the clip; anything
@@ -1662,12 +1666,16 @@ pub fn framePathFromNative(
 /// Note the flags: `first_element = true`, `handle_this = false` — a target
 /// argument may start with `_root`/`_levelN` but `this` is not a keyword
 /// here, unlike in a variable path.
-pub fn targetFromNative(vm: *Vm, start: ObjectHandle, v: Value) !?stage.Target {
+pub fn targetFromNative(vm: *Vm, start_in: ObjectHandle, v: Value) !?stage.Target {
     if (stage.targetOfValue(vm, v)) |t| return t;
     const s = try vm.toStringValue(v);
     if (s.len == 0) return null;
     const p = vm.current_activation orelse return null;
     const act: *Activation = @ptrCast(@alignCast(p));
+    // `start_in == 0` means "anchor at the caller's target clip" rather
+    // than at the object the method was called on — which is what
+    // `setMask` does (ruffle passes `target_clip_or_root`).
+    const start = if (start_in != 0) start_in else act.targetClipOrRoot();
     const h = try act.resolveTargetPath(act.rootHandle(), start, s, true, false) orelse return null;
     return stage.targetOf(vm, h);
 }
