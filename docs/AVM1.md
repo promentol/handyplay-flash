@@ -13,7 +13,7 @@ Status: `todo` → `decode` (opcodes.zig) → `exec` (interpreter) → `done`
 **M3 CLOSED**: every opcode 0x00–0x9F decodes and executes. All ops are
 `exec` except the stubs listed below (they pop their operands correctly
 but have no effect yet) — promotion is workstream A of docs/M4-SPEC.md.
-Corpus: 150/680 (tests/conformance/pass_list.txt).
+Corpus: 156/680 (tests/conformance/pass_list.txt).
 
 **Workstream A complete (A1-A6)**: display properties, target paths, clip
 member resolution, runtime clip creation, `Call`, throw propagation and
@@ -31,6 +31,25 @@ tri-state target (base / retargeted / FAILED), a failed `tellTarget` sends
 variable reads to `_root` while movie control silently no-ops, and
 GetVariable/SetVariable split at the rightmost `:`/`.` and walk the display
 tree. TargetPath (0x45) returns the DOT path.
+
+**M4-A4/A5/A6 landed**: CloneSprite/RemoveSprite (0x24/0x25) and the clip
+methods that share their primitive (`duplicateMovieClip`, `attachMovie`,
+`createEmptyMovieClip`, `removeMovieClip`, `swapDepths`, `getDepth`,
+`getNextHighestDepth`). Scripts address depth *N*; the display list stores
+*N* + 16384, and REMOVAL is gated on that offset — which is why no
+`placed_by_script` flag exists. `swapDepths` is the only way content moves
+a timeline-placed object into the script range, and therefore the only way
+it becomes removable at all. `Call` (0x9E) runs a frame's DoActions inline.
+`Throw` propagates across function boundaries as `error.Avm1Thrown`, and
+`Try` truncates the value stack before the catch.
+
+`super` follows ruffle's prototype-depth model: constructors start at
+depth 1, a method starts at the depth that owns it but never at 0
+(`depth.max(1)`), and `super.x` resolves from `SuperObject::proto()` —
+which is why `super.__proto__` reads TWO layers up. Two quirks are
+corpus-derived rather than ruffle-derived: an object literal naming
+`__proto__` reparents the literal, and a display object reached AS a
+prototype ends the chain (`super_edge_cases`).
 
 | Stub | Why | Milestone |
 |---|---|---|

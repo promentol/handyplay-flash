@@ -271,17 +271,21 @@ New file suggestion: `core/avm1/globals/movie_clip.zig`, installed on a
 to object_proto). Methods dispatch on `this.native == .clip`. From ruffle
 `core/src/avm1/globals/movie_clip.rs`:
 
+**A4 absorbed the instantiation half of this list** — do not re-specify
+it. `duplicateMovieClip`, `attachMovie`, `createEmptyMovieClip`,
+`removeMovieClip`, `swapDepths`, `getDepth` and `getNextHighestDepth` all
+ship in `core/avm1/globals/movie_clip.zig`, sharing `stage.createAt` with
+the CloneSprite/RemoveSprite opcodes. The script drawing API
+(`beginFill`/`endFill`/`lineStyle`/`moveTo`/`lineTo`/`curveTo`/`clear`,
+backed by `core/display/drawing.zig`) shipped with them, because the
+corpus measures it through `_width`.
+
 Required (corpus-driven, in priority order):
 - `gotoAndPlay(frame|label)`, `gotoAndStop`, `play`, `stop`,
   `nextFrame`, `prevFrame` — via the existing Host hooks.
 - `getBytesLoaded`/`getBytesTotal` → movie byte length (equal).
-- `duplicateMovieClip(name, depth)`, `removeMovieClip()` — share A4 code.
-- `attachMovie(exportName, instanceName, depth)` — look up
-  `movie.lib.exports` (ExportAssets name→id), instantiate like A4.
-- `createEmptyMovieClip(name, depth)` — a clip with zero frames.
 - `hitTest(x, y, shapeFlag)` / `hitTest(target)` — bounds test in M4
   (shape-exact via shape_utils winding later).
-- `getDepth()`, `swapDepths(target|depth)`.
 - `localToGlobal(pt)`, `globalToLocal(pt)` — via the concat matrix.
 - `startDrag`/`stopDrag` — with D (mouse) wired.
 Properties like `_x` route through A3 automatically.
@@ -296,11 +300,8 @@ Other globals the corpus leans on (check failures first, add as needed):
 - `Object.registerClass`, `ASSetPropFlags` (sets Attributes bits — the
   undocumented flags: bit0 dont_enum? Actually: 1=hidden(dont_enum),
   2=dont_delete, 4=read_only; second arg props list or null=all).
-- `watch`/`unwatch`, `addProperty` (getter/setter) — ScriptObject needs
-  an optional accessor form: extend `Property` with
-  `getter/setter: ?ObjectHandle` and route get/put through them.
-  Ruffle property.rs. Only do this if failures demand (they do in many
-  tests — `addProperty` is common).
+- `watch`/`unwatch`. (`addProperty` is DONE: `Property.getter/setter` and
+  the get/put routing, including through `super`.)
 - `setInterval`/`setTimeout` — timer table on Vm ticked by Player
   (fire before the frame's queued actions; ruffle timer.rs).
 
@@ -424,6 +425,16 @@ character id (movie arena):
 ---
 
 ## 8b. M3 baseline & near-miss hit list (start here)
+
+> **Workstream A closed at 156/680.** The lists below are the M3-close
+> snapshot, kept for the cluster sizes. What A1-A6 could NOT reach, and
+> why, so nobody re-derives it:
+> - `interface_implements_op` — needs `MovieClipLoader.loadClip` of an
+>   external SWF plus cross-movie calls; every trace in it runs inside
+>   `onLoadInit`. Loader subsystem, not workstream A.
+> - `clone_sprite_edittext` — needs the whole TextField property surface
+>   (~30 properties), `TextField.StyleSheet`, `flash.filters.*`,
+>   `getNewTextFormat`, and `htmlText` `<TEXTFORMAT>` serialisation (§D).
 
 **M3 closed at 76/697** ( — the ratchet).
 79 more tests fail by ≤3 diff lines; the fastest path to 300 starts with
