@@ -110,6 +110,10 @@ pub const ScriptObject = struct {
     native: NativeInfo = .none,
     /// Marks scope objects created by With (barrier rules differ slightly).
     is_with_scope: bool = false,
+    /// AS2 interfaces this PROTOTYPE implements, as their prototypes
+    /// (ActionImplements). `instanceof` must walk these as well as the
+    /// prototype chain.
+    interfaces: []const ObjectHandle = &.{},
     /// Scope-chain parent link (scope objects only; 0 = none).
     scope_parent: ObjectHandle = 0,
 

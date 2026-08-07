@@ -13,7 +13,7 @@ Status: `todo` → `decode` (opcodes.zig) → `exec` (interpreter) → `done`
 **M3 CLOSED**: every opcode 0x00–0x9F decodes and executes. All ops are
 `exec` except the stubs listed below (they pop their operands correctly
 but have no effect yet) — promotion is workstream A of docs/M4-SPEC.md.
-Corpus: 143/680 (tests/conformance/pass_list.txt).
+Corpus: 146/680 (tests/conformance/pass_list.txt).
 
 **Workstream A complete (A1-A6)**: display properties, target paths, clip
 member resolution, runtime clip creation, `Call`, throw propagation and
@@ -36,7 +36,6 @@ tree. TargetPath (0x45) returns the DOT path.
 |---|---|---|
 | StartDrag / EndDrag (0x27/28) | needs mouse state | M4 |
 | GetURL / GetURL2 (0x83/0x9A) | network/loadMovie | out of scope (M4 partial for loadMovie tests) |
-| ImplementsOp (0x2C) | interface registry unused | as needed |
 | ToggleQuality (0x08) | quality is a no-op for us | never |
 | StopSounds (0x09) | audio | M6 |
 | StrictMode (0x89), FsCommand2 (0x2D) | no-ops in Ruffle too | done-as-is |

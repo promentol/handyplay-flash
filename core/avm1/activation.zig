@@ -986,19 +986,38 @@ pub const Activation = struct {
                 const obj = self.pop();
                 try self.push(.{ .boolean = self.instanceOf(obj, ctor) });
             },
+            .implements_op => {
+                // Pops the constructor, a count, then that many interface
+                // constructors; their PROTOTYPES are recorded on the
+                // implementing constructor's prototype. SWF7+ only
+                // (ruffle activation.rs:1502-1548).
+                const ctor = self.pop();
+                const count_v = self.pop();
+                var count: usize = 0;
+                if (count_v.isPrimitive()) {
+                    const n = try self.vm.toNumber(count_v);
+                    if (!std.math.isNan(n) and n > 0) count = @intFromFloat(@min(n, 255));
+                }
+                count = @min(count, self.vm.stack.items.len);
+                var list: std.ArrayList(ObjectHandle) = .empty;
+                var i: usize = 0;
+                while (i < count) : (i += 1) {
+                    const iface = self.pop();
+                    if (iface != .object) continue;
+                    const ip = self.vm.objects.getChained(iface.object, S("prototype"), self.vm.case_sensitive) orelse continue;
+                    if (ip == .object) try list.append(self.vm.arena(), ip.object);
+                }
+                if (count > 0 and self.swf_version >= 7 and ctor == .object) {
+                    const cp = self.vm.objects.getChained(ctor.object, S("prototype"), self.vm.case_sensitive) orelse Value.undefined_value;
+                    if (cp == .object) {
+                        self.vm.objects.get(cp.object).interfaces = try list.toOwnedSlice(self.vm.arena());
+                    }
+                }
+            },
             .cast_op => {
                 const obj = self.pop();
                 const ctor = self.pop();
                 try self.push(if (self.instanceOf(obj, ctor)) obj else .null_value);
-            },
-            .implements_op => {
-                // ctor implements N interfaces: recorded but unused in M3.
-                const ctor = self.pop();
-                _ = ctor;
-                const n = try self.popNumber();
-                const count: usize = if (std.math.isNan(n) or n < 0) 0 else @intFromFloat(n);
-                var i: usize = 0;
-                while (i < count) : (i += 1) _ = self.pop();
             },
             .extends_op => {
                 const superclass = self.pop();
@@ -1324,14 +1343,25 @@ pub const Activation = struct {
         }
     }
 
+    /// AS2 added interfaces, so this cannot just walk the prototype chain:
+    /// every step of the chain carries its own interface tree, which must
+    /// be searched too (ruffle object.rs is_instance_of:325-352).
     fn instanceOf(self: *Activation, obj: Value, ctor: Value) bool {
         if (obj != .object or ctor != .object) return false;
         const proto = self.vm.objects.getChained(ctor.object, S("prototype"), self.vm.case_sensitive) orelse return false;
         if (proto != .object) return false;
+        var stack: std.ArrayList(ObjectHandle) = .empty;
+        defer stack.deinit(self.vm.arena());
         var cur = self.vm.objects.get(obj.object).proto;
         var depth: u32 = 0;
         while (cur == .object and depth < 256) : (depth += 1) {
-            if (cur.object == proto.object) return true;
+            stack.append(self.vm.arena(), cur.object) catch return false;
+            while (stack.pop()) |iface| {
+                if (iface == proto.object) return true;
+                for (self.vm.objects.get(iface).interfaces) |i| {
+                    stack.append(self.vm.arena(), i) catch return false;
+                }
+            }
             cur = self.vm.objects.get(cur.object).proto;
         }
         return false;
