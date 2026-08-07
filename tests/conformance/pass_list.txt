@@ -13,6 +13,7 @@ as1_constructor_v6
 as1_constructor_v7
 as2_oop
 as2_super_via_manual_prototype
+as_broadcaster
 as_broadcaster_initialize
 as_set_prop_flags_version_swf5
 as_set_prop_flags_version_swf6
@@ -38,6 +39,7 @@ call_method_empty_name
 catch_references_registers
 clip_constructors
 closure_scope
+color
 conflicting_instance_names
 constructor_function
 create_empty_movie_clip
@@ -95,6 +97,7 @@ is_prototype_of
 issue_1086
 issue_1104
 issue_1671
+issue_1906
 issue_2166
 issue_3169
 issue_3446
@@ -111,6 +114,8 @@ looping_real_2_declared_1
 looping_real_2_declared_2
 mask_reapply
 mask_with_drawing
+mcl_as_broadcaster
+mouse_listeners
 movieclip_begin_gradient_fill
 movieclip_default_state
 movieclip_get_instance_at_depth
@@ -137,6 +142,8 @@ remove_movie_clip
 removed_base_clip_tell_target
 removed_target_clip_scope
 root_global_parent
+sandbox_type_local_file
+sandbox_type_local_network
 set_interval
 set_target_2_swf5
 set_target_2_swf6
@@ -145,6 +152,7 @@ shared_object_serialize_typed_objects
 single_frame
 slash_syntax
 sound_start_load
+stage_display_state
 stage_object_children
 stage_object_enumerate
 stage_object_properties

@@ -127,6 +127,9 @@ pub const Player = struct {
         self.vm.root_swf_version = self.movie.swf_version;
         self.vm.movie_url = avm1.strings.fromSwf(self.vm.arena(), opts.url, 8) catch &.{};
         self.vm.epoch_ms = opts.epoch_ms;
+        self.vm.stage_width = w;
+        self.vm.stage_height = h;
+        self.vm.use_network_sandbox = self.movie.use_network_sandbox;
         self.vm.tz_offset_min = opts.tz_offset_min;
         // Bind `_root` BEFORE frame 1. Lazily creating it in the action
         // drain was a trap: a root frame that places a child before its own
@@ -534,6 +537,7 @@ test {
     _ = @import("avm1/globals/decl.zig");
     _ = @import("avm1/globals/geom.zig");
     _ = @import("avm1/globals/date.zig");
+    _ = @import("avm1/globals/singletons.zig");
     _ = @import("avm1/globals/movie_clip.zig");
     _ = @import("avm1/globals/globals.zig");
 }

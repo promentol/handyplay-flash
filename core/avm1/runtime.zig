@@ -131,6 +131,45 @@ pub const Vm = struct {
     /// `Player.mouseMove`.
     mouse_x: f64 = 0,
     mouse_y: f64 = 0,
+    mouse_buttons: u8 = 0,
+    mouse_hidden: bool = false,
+    /// Key state, indexed by Flash key code. `toggled` flips on each press
+    /// of the lock keys; Flash reads the real OS state but nothing else can
+    /// be observed from inside the player.
+    keys_down: [256]bool = @splat(false),
+    keys_toggled: [256]bool = @splat(false),
+    last_key_code: i32 = 0,
+    last_key_char: i32 = 0,
+    /// The singletons, so the engine can broadcast to them directly.
+    key_object: ObjectHandle = 0,
+    /// The three broadcaster functions, created ONCE and shared by every
+    /// broadcaster — `Key.addListener == Mouse.addListener` is true in
+    /// Flash and the corpus checks it.
+    bc_add_listener: ObjectHandle = 0,
+    bc_remove_listener: ObjectHandle = 0,
+    bc_broadcast_message: ObjectHandle = 0,
+    mouse_object: ObjectHandle = 0,
+    stage_object_handle: ObjectHandle = 0,
+    /// Stage state `Stage.*` reads and writes. The dimensions are the
+    /// viewport's, which for us is the movie's own stage box.
+    stage_width: u32 = 0,
+    stage_height: u32 = 0,
+    /// 0 showAll, 1 noBorder, 2 exactFit, 3 noScale.
+    stage_scale_mode: u2 = 0,
+    stage_align_left: bool = false,
+    stage_align_right: bool = false,
+    stage_align_top: bool = false,
+    stage_align_bottom: bool = false,
+    stage_show_menu: bool = true,
+    stage_full_screen: bool = false,
+    /// The screen `System.capabilities.screenResolution*` reports.
+    screen_width: u32 = 1920,
+    screen_height: u32 = 1080,
+    use_codepage: bool = false,
+    exact_settings: bool = true,
+    /// `FileAttributes.UseNetwork` — the only thing that separates the two
+    /// local sandboxes.
+    use_network_sandbox: bool = false,
     /// The active `startDrag`, if any.
     drag: ?Drag = null,
     /// Latched by `getBounds`/`getRect` the first time either runs in a
@@ -214,6 +253,16 @@ pub const Vm = struct {
         self.arena_state.deinit();
         gpa.destroy(self.arena_state);
         gpa.destroy(self);
+    }
+
+    pub fn keyDown(self: *const Vm, code: i32) bool {
+        if (code < 0 or code > 255) return false;
+        return self.keys_down[@intCast(code)];
+    }
+
+    pub fn keyToggled(self: *const Vm, code: i32) bool {
+        if (code < 0 or code > 255) return false;
+        return self.keys_toggled[@intCast(code)];
     }
 
     pub fn arena(self: *Vm) std.mem.Allocator {

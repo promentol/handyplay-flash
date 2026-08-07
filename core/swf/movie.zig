@@ -50,6 +50,9 @@ pub const Movie = struct {
     background_color: ?rdr.Color = null,
     /// SoundStreamHead for the main timeline (M6).
     stream_head: ?sound_tags.StreamHead = null,
+    /// FileAttributes' UseNetwork bit. The only thing separating
+    /// `System.security.sandboxType`'s two local values.
+    use_network_sandbox: bool = false,
 
     pub fn allocator(self: *const Movie) std.mem.Allocator {
         return self.arena_state.allocator();
@@ -262,6 +265,7 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
                 var r = rdr.Reader.init(tag.body);
                 const flags = try r.readU32();
                 if ((flags & (1 << 3)) != 0) return Error.Avm2Unsupported;
+                movie.use_network_sandbox = (flags & 1) != 0;
             },
             // SymbolClass alone appears in AVM1 movies from newer IDEs —
             // only actual AVM2 bytecode (DoABC) or the FileAttributes AS3

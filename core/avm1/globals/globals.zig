@@ -198,6 +198,7 @@ pub fn install(vm: *Vm) !void {
 
     try @import("geom.zig").install(vm);
     try @import("date.zig").install(vm);
+    try @import("singletons.zig").install(vm);
 
     // --- Error ------------------------------------------------------------
     {
@@ -526,16 +527,11 @@ fn joinImpl(vm: *Vm, h: ObjectHandle, sep: strings.AvmString) anyerror!Value {
     var i: u32 = 0;
     while (i < len) : (i += 1) {
         if (i > 0) try out.appendSlice(a, sep);
-        const v = try indexGet(vm, h, i);
-        // SWF < 7 renders undefined/null as empty; SWF 7+ spells them out
-        // (ruffle globals/array.rs join semantics + coerce_to_string).
-        if (v == .undefined_value or v == .null_value) {
-            if (vm.swf_version >= 7) {
-                try out.appendSlice(a, if (v == .null_value) S("null") else S("undefined"));
-            }
-        } else {
-            try out.appendSlice(a, try vm.toStringValue(v));
-        }
+        // Every element goes through the ordinary string coercion, with no
+        // special case: `null` always spells itself out, and only
+        // `undefined` is version-dependent (empty below SWF7). Suppressing
+        // null too made `[a, b, null].join()` lose a field.
+        try out.appendSlice(a, try vm.toStringValue(try indexGet(vm, h, i)));
     }
     return .{ .string = try out.toOwnedSlice(a) };
 }
