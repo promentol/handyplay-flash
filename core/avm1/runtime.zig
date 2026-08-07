@@ -395,12 +395,32 @@ pub const Vm = struct {
 
     /// Property read honoring addProperty getters (proto-chain aware).
     pub fn getProperty(self: *Vm, h: ObjectHandle, name: strings.AvmString, this: Value) anyerror!Value {
-        const slot = self.objects.findChained(h, name, self.case_sensitive) orelse
+        var start = h;
+        var recv = this;
+        // `super` owns nothing: a read on it resolves from the base
+        // prototype's own prototype, against the ORIGINAL `this` — which
+        // it substitutes for whatever the caller passed (ruffle
+        // object.rs:161-168, `get_opt`).
+        if (self.objects.get(h).native == .super_obj) {
+            const p = self.superProto(h);
+            if (p != .object) return .undefined_value;
+            start = p.object;
+            recv = .{ .object = self.objects.get(h).native.super_obj.this };
+        }
+        const slot = self.objects.findChained(start, name, self.case_sensitive) orelse
             return .undefined_value;
         if (slot.getter != 0) {
-            return self.callFunction(.{ .object = slot.getter }, this, &.{});
+            return self.callFunction(.{ .object = slot.getter }, recv, &.{});
         }
         return slot.value;
+    }
+
+    /// The prototype of `h` as the chain walk sees it. A `super` in the
+    /// middle of a chain contributes its OWN base prototype, not the
+    /// nothing it stores (ruffle script_object.rs:724-727).
+    pub fn protoValue(self: *Vm, h: ObjectHandle) Value {
+        if (self.objects.get(h).native == .super_obj) return self.superProto(h);
+        return self.objects.get(h).proto;
     }
 
     /// Property write honoring addProperty setters (proto-chain aware:
@@ -506,7 +526,7 @@ pub const Vm = struct {
         var cur: Value = .{ .object = s.this };
         var i: u8 = 0;
         while (i < s.depth) : (i += 1) {
-            const p = self.objects.get(cur.object).proto;
+            const p = self.protoValue(cur.object);
             if (p != .object) return null;
             cur = p;
         }
@@ -527,10 +547,12 @@ pub const Vm = struct {
     pub fn callSuper(self: *Vm, h: ObjectHandle, args: []const Value) anyerror!Value {
         const s = self.objects.get(h).native.super_obj;
         const base = self.superBaseProto(s) orelse return .undefined_value;
-        const ctor = self.objects.getChained(base, S("__constructor__"), self.case_sensitive) orelse
-            return .undefined_value;
+        // `get_opt(.., call_resolve_fn = false)`: an addProperty getter for
+        // `__constructor__` IS honoured, but a `__resolve` fallback is not
+        // (ruffle super_object.rs:82-86).
+        const ctor = try self.getProperty(base, S("__constructor__"), .{ .object = base });
         if (!self.isCallable(ctor)) return .undefined_value;
-        return self.callWithSuperDepth(ctor, .{ .object = s.this }, args, s.depth + 1);
+        return self.callWithSuperDepth(ctor, .{ .object = s.this }, args, s.depth +| 1);
     }
 
     /// `super.method(...)`: resolve from ABOVE the base prototype and run
@@ -540,10 +562,14 @@ pub const Vm = struct {
         const base = self.superBaseProto(s) orelse return .undefined_value;
         const above = self.objects.get(base).proto;
         if (above != .object) return .undefined_value;
-        const m = self.objects.getChained(above.object, name, self.case_sensitive) orelse
-            return .undefined_value;
+        const this: Value = .{ .object = s.this };
+        const m = try self.getProperty(above.object, name, this);
         if (!self.isCallable(m)) return .undefined_value;
-        return self.callWithSuperDepth(m, .{ .object = s.this }, args, s.depth + 1);
+        // The callee's own `super` starts below wherever the method was
+        // actually found, not just below us — `self.depth + depth + 1`
+        // (super_object.rs:120-126).
+        const found = self.objects.protoDepth(above.object, name, self.case_sensitive) orelse 0;
+        return self.callWithSuperDepth(m, this, args, s.depth +| found +| 1);
     }
 
     /// Like callFunction, but the callee's own `super` starts one layer

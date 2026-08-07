@@ -428,13 +428,12 @@ pub const Activation = struct {
                 // `super.__proto__` lands two layers up: `__proto__` is a
                 // stored property found on that start object, not on super.
                 if (self.vm.objects.get(h).native == .super_obj) {
-                    const start = self.vm.superProto(h);
-                    if (start != .object) return .undefined_value;
                     if (strings.eqlIgnoreCase(name, S("__proto__"))) {
-                        return self.vm.objects.get(start.object).proto;
+                        const start = self.vm.superProto(h);
+                        if (start != .object) return .undefined_value;
+                        return self.vm.protoValue(start.object);
                     }
-                    const this: Value = .{ .object = self.vm.objects.get(h).native.super_obj.this };
-                    return self.vm.getProperty(start.object, name, this);
+                    return self.vm.getProperty(h, name, target);
                 }
                 // `__proto__` is a live accessor, not a stored property.
                 if (strings.eqlIgnoreCase(name, S("__proto__"))) {
@@ -978,7 +977,10 @@ pub const Activation = struct {
                 while (i < count) : (i += 1) {
                     const v = self.pop();
                     const key = try self.popString();
-                    try self.vm.objects.put(obj, key, v, self.vm.case_sensitive);
+                    // A full `set`, not a raw put: an object literal may
+                    // name `__proto__`, and that reparents the literal
+                    // (ruffle action_init_object -> Object::set).
+                    try self.memberSet(.{ .object = obj }, key, v);
                 }
                 try self.push(.{ .object = obj });
             },
