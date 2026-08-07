@@ -356,6 +356,66 @@ character id (movie arena):
 
 ---
 
+## 8b. M3 baseline & near-miss hit list (start here)
+
+**M3 closed at 76/697** ( — the ratchet).
+79 more tests fail by ≤3 diff lines; the fastest path to 300 starts with
+these. Highest-value clusters observed at M3 close:
+
+| Cluster | Tests | What's needed |
+|---|---|---|
+| ,  | ~12 | / + MovieClipLoader events (can be stubbed to fire onLoadError/onLoadInit deterministically) |
+| ,  | ~15 | attachMovie/duplicateMovieClip (§A4, §B) |
+| , ,  | ~25 |  + registerClass + constructor chains (§A5, §B) |
+|  | ~20 | BitmapData class (out of M4 scope unless cheap) |
+| ,  | ~15 | TextField objects + variable binding (§D) |
+| , / paths | ~10 | finish §A2/§A3 (partial: SetTarget landed in M3) |
+|  | 5 | version-gate visibility: enumeration gate landed; these still fail — the gate must ALSO hide from reads, but doing so naively broke everything (investigate: apply only to properties whose owner is a built-in) |
+
+Closest single-line misses at M3 close:
+
+  focus_root_movie (1 diff lines)
+  goto_rewind3 (1 diff lines)
+  issue_3169 (1 diff lines)
+  issue_9885 (1 diff lines)
+  loadmovie (1 diff lines)
+  loadmovie_fail (1 diff lines)
+  loadmovie_method (1 diff lines)
+  tell_target_invalid_swf6 (1 diff lines)
+  unloadmovie_method (1 diff lines)
+  amf_sharedobject_strict_array_serialization (2 diff lines)
+  as_set_prop_flags_version_swf5 (2 diff lines)
+  as_set_prop_flags_version_swf6 (2 diff lines)
+  as_set_prop_flags_version_swf7 (2 diff lines)
+  as_set_prop_flags_version_swf8 (2 diff lines)
+  as_set_prop_flags_version_swf9 (2 diff lines)
+  attach_movie_export_not_yet_run (2 diff lines)
+  attach_movie_stop (2 diff lines)
+  drag_over_from_outside (2 diff lines)
+  drag_over_without_startdrag (2 diff lines)
+  edittext_input (2 diff lines)
+  escape (2 diff lines)
+  execution_order1 (2 diff lines)
+  execution_order2 (2 diff lines)
+  export_assets (2 diff lines)
+  form_loader_encoding_1 (2 diff lines)
+  global_is_bare (2 diff lines)
+  hittest_morph_input (2 diff lines)
+  issue_710 (2 diff lines)
+  issue_768 (2 diff lines)
+  lessthan_swf5 (2 diff lines)
+  loadmovienum (2 diff lines)
+  lock_root (2 diff lines)
+  mcl_loadclip_replace_root (2 diff lines)
+  mouse_hover_events_while_dragging (2 diff lines)
+  new_method_wrap (2 diff lines)
+  new_object_wrap (2 diff lines)
+  o (2 diff lines)
+  recursive_prototypes (2 diff lines)
+  removed_base_clip_tell_target (2 diff lines)
+  root_onload (2 diff lines)
+
+
 ## 9. Conformance workflow (the gate)
 
 ```

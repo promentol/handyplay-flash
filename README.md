@@ -15,7 +15,7 @@ possible future direction, not a goal.
 
 ## Status
 
-M2 — first pixels: squares.swf and homestuck-beta.swf render via the display list + simdra (SDL3 `zig build run-sdl -- file.swf`, `--headless-frames N` for PNG dumps). See the living coverage
+M3 — the AVM1 interpreter runs (76/697 ruffle conformance dirs pass; `sh tests/conformance/run_avm1.sh`). M2 — squares.swf and homestuck-beta.swf render via the display list + simdra (SDL3 `zig build run-sdl -- file.swf`, `--headless-frames N` for PNG dumps). See the living coverage
 matrices: [docs/TAGS.md](docs/TAGS.md), [docs/AVM1.md](docs/AVM1.md), and the
 conformance ratchet `tests/conformance/pass_list.txt`.
 
@@ -24,7 +24,7 @@ conformance ratchet `tests/conformance/pass_list.txt`.
 | M0 | repo + specs + `swfinfo` (header/decompression) | ✅ |
 | M1 | full tag parser + `swfdump` (56-SWF corpus clean) | ✅ |
 | M2 | display list + timeline + rasterizer v1 + SDL3 pixels | ✅ |
-| M3 | AVM1 interpreter (SWF4/5) + trace conformance ≥80/697 | — |
+| M3 | AVM1 interpreter (full opcode set) + trace conformance | ✅ 76/697 |
 | M4 | objects/globals/buttons/text/bitmaps, ≥300/697 | — |
 | M5 | libretro core + save-states (byte-identical roundtrip) | — |
 | M6 | audio (PCM/ADPCM → MP3 → streaming sync) | — |

@@ -27,6 +27,9 @@ pub const Control = union(enum) {
     remove: swf.place.RemoveObject,
     /// AVM1 bytecode (queued, never run inline).
     do_action: []const u8,
+    /// DoInitAction — runs ONCE, before the sprite's first frame, at
+    /// Initialize priority (ruffle ActionType::Initialize).
+    init_action: struct { sprite_id: u16, code: []const u8 },
     set_background_color: swf.reader.Color,
     start_sound: swf.sound_tags.StartSound,
     /// Raw frame-synced audio block (M6).

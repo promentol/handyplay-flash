@@ -126,6 +126,14 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
             .remove_object => try controls.append(a, .{ .remove = try place.parseRemove(tag.body, 1) }),
             .remove_object2 => try controls.append(a, .{ .remove = try place.parseRemove(tag.body, 2) }),
             .do_action => try controls.append(a, .{ .do_action = tag.body }),
+            .do_init_action => {
+                var r = rdr.Reader.init(tag.body);
+                const sprite_id = try r.readU16();
+                try controls.append(a, .{ .init_action = .{
+                    .sprite_id = sprite_id,
+                    .code = tag.body[2..],
+                } });
+            },
             .set_background_color => {
                 var r = rdr.Reader.init(tag.body);
                 const c = try r.readRgb();
@@ -247,7 +255,10 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
                 const flags = try r.readU32();
                 if ((flags & (1 << 3)) != 0) return Error.Avm2Unsupported;
             },
-            .do_abc, .do_abc_define, .symbol_class => return Error.Avm2Unsupported,
+            // SymbolClass alone appears in AVM1 movies from newer IDEs —
+            // only actual AVM2 bytecode (DoABC) or the FileAttributes AS3
+            // bit rejects the file.
+            .do_abc, .do_abc_define => return Error.Avm2Unsupported,
 
             // Everything else: skip by length (tolerance policy).
             else => {},

@@ -76,6 +76,10 @@ pub const Vm = struct {
     /// Scratch for cross-frame throw propagation (unused in M3 — uncaught
     /// function throws are swallowed at the call boundary; see callAvm1).
     pending_throw: Value = .undefined_value,
+    /// Non-zero while inside `construct` — native constructors box their
+    /// argument only for `new X()`, and coerce for a plain `X()` call
+    /// (ruffle globals/{number,string,boolean}.rs split those paths).
+    in_construct: u32 = 0,
 
     pub fn create(gpa: std.mem.Allocator, swf_version: u8) Error!*Vm {
         const arena_state = try gpa.create(std.heap.ArenaAllocator);
@@ -218,9 +222,14 @@ pub const Vm = struct {
 
     pub fn toStringValue(self: *Vm, v: Value) Error!strings.AvmString {
         switch (v) {
-            .undefined_value => return S("undefined"),
+            // ruffle value.rs coerce_to_string: SWF < 7 stringifies
+            // undefined as "", and SWF < 5 uses "1"/"0" for booleans.
+            .undefined_value => return if (self.swf_version < 7) S("") else S("undefined"),
             .null_value => return S("null"),
-            .boolean => |b| return if (b) S("true") else S("false"),
+            .boolean => |b| {
+                if (self.swf_version < 5) return if (b) S("1") else S("0");
+                return if (b) S("true") else S("false");
+            },
             .number => |n| {
                 var buf: [40]u8 = undefined;
                 const s = value_mod.numberToStringBuf(&buf, n);
@@ -264,7 +273,8 @@ pub const Vm = struct {
         if (@as(std.meta.Tag(Value), a) == @as(std.meta.Tag(Value), b)) {
             return switch (a) {
                 .undefined_value, .null_value => true,
-                .number => |x| x == b.number,
+                // PLAYER-SPECIFIC (ruffle): NaN == NaN is true in FP7+.
+                .number => |x| x == b.number or (std.math.isNan(x) and std.math.isNan(b.number)),
                 .string => |x| strings.eql(x, b.string),
                 .boolean => |x| x == b.boolean,
                 .object => |x| x == b.object,
@@ -315,11 +325,36 @@ pub const Vm = struct {
         if (@as(std.meta.Tag(Value), a) != @as(std.meta.Tag(Value), b)) return false;
         return switch (a) {
             .undefined_value, .null_value => true,
-            .number => |x| x == b.number,
+            // PLAYER-SPECIFIC (same quirk as abstract equality): AVM1
+            // reports NaN === NaN as true.
+            .number => |x| x == b.number or (std.math.isNan(x) and std.math.isNan(b.number)),
             .string => |x| strings.eql(x, b.string),
             .boolean => |x| x == b.boolean,
             .object => |x| x == b.object,
         };
+    }
+
+    /// Property read honoring addProperty getters (proto-chain aware).
+    pub fn getProperty(self: *Vm, h: ObjectHandle, name: strings.AvmString, this: Value) anyerror!Value {
+        const slot = self.objects.findChained(h, name, self.case_sensitive) orelse
+            return .undefined_value;
+        if (slot.getter != 0) {
+            return self.callFunction(.{ .object = slot.getter }, this, &.{});
+        }
+        return slot.value;
+    }
+
+    /// Property write honoring addProperty setters (proto-chain aware:
+    /// an inherited accessor intercepts writes to the child).
+    pub fn setProperty(self: *Vm, h: ObjectHandle, name: strings.AvmString, v: Value, this: Value) anyerror!void {
+        if (self.objects.findChained(h, name, self.case_sensitive)) |slot| {
+            if (slot.setter != 0) {
+                _ = try self.callFunction(.{ .object = slot.setter }, this, &.{v});
+                return;
+            }
+            if (slot.getter != 0) return; // getter-only: writes ignored
+        }
+        try self.objects.put(h, name, v, self.case_sensitive);
     }
 
     // --- scope objects ----------------------------------------------------
@@ -383,6 +418,8 @@ pub const Vm = struct {
     /// with it as this; object result overrides.
     pub fn construct(self: *Vm, ctor: Value, args: []const Value) anyerror!Value {
         if (!self.isCallable(ctor)) return .undefined_value;
+        self.in_construct += 1;
+        defer self.in_construct -= 1;
         const obj = try self.objects.create();
         const proto = self.objects.getChained(ctor.object, S("prototype"), self.case_sensitive) orelse
             Value{ .object = self.object_proto };

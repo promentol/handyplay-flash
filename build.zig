@@ -43,7 +43,7 @@ pub fn build(b: *std.Build) void {
     const tools = [_]Tool{
         .{ .name = "swfinfo", .src = "tools/swfinfo.zig" },
         .{ .name = "swfdump", .src = "tools/swfdump.zig" },
-        // M3: avm1dasm, trace_runner
+        .{ .name = "trace_runner", .src = "tools/trace_runner.zig" },
     };
     for (tools) |t| {
         const mod = b.createModule(.{

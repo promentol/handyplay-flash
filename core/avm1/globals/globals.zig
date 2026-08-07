@@ -49,6 +49,7 @@ pub fn install(vm: *Vm) !void {
     try method(vm, vm.object_proto, "toString", objToString);
     try method(vm, vm.object_proto, "valueOf", objValueOf);
     try method(vm, vm.object_proto, "isPropertyEnumerable", objIsPropEnum);
+    try method(vm, vm.object_proto, "addProperty", objAddProperty);
 
     // --- Function.prototype ----------------------------------------------
     try method(vm, vm.function_proto, "call", fnCall);
@@ -62,6 +63,10 @@ pub fn install(vm: *Vm) !void {
     try method(vm, vm.array_proto, "toString", arrToString);
     try method(vm, vm.array_proto, "concat", arrConcat);
     try method(vm, vm.array_proto, "slice", arrSlice);
+    try method(vm, vm.array_proto, "unshift", arrUnshift);
+    try method(vm, vm.array_proto, "reverse", arrReverse);
+    try method(vm, vm.array_proto, "splice", arrSplice);
+    try method(vm, vm.array_proto, "sort", arrSort);
 
     // --- String.prototype -------------------------------------------------
     try method(vm, vm.string_proto, "toString", strToString);
@@ -142,6 +147,20 @@ pub fn install(vm: *Vm) !void {
     try method(vm, vm.globals, "parseInt", globalParseInt);
     try method(vm, vm.globals, "parseFloat", globalParseFloat);
     try method(vm, vm.globals, "getTimer", globalGetTimer);
+    try method(vm, vm.globals, "ASSetPropFlags", globalAsSetPropFlags);
+    try method(vm, vm.globals, "ASnative", globalAsNative);
+    try method(vm, vm.globals, "escape", globalEscape);
+    try method(vm, vm.globals, "unescape", globalUnescape);
+
+    // --- Error ------------------------------------------------------------
+    {
+        const error_proto = try vm.objects.create();
+        vm.objects.get(error_proto).proto = .{ .object = vm.object_proto };
+        try method(vm, error_proto, "toString", errorToString);
+        try vm.objects.putWithAttrs(error_proto, S("name"), .{ .string = S("Error") }, .{ .dont_enum = true }, cs);
+        try vm.objects.putWithAttrs(error_proto, S("message"), .{ .string = S("Error") }, .{ .dont_enum = true }, cs);
+        try ctor(vm, "Error", ctorError, error_proto);
+    }
     try vm.objects.putWithAttrs(vm.globals, S("Infinity"), .{ .number = std.math.inf(f64) }, attrs, cs);
     try vm.objects.putWithAttrs(vm.globals, S("NaN"), .{ .number = std.math.nan(f64) }, attrs, cs);
     try vm.objects.putWithAttrs(vm.globals, S("_global"), .{ .object = vm.globals }, attrs, cs);
@@ -169,7 +188,7 @@ fn ctorObject(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const a0 = arg(args, 0);
     if (a0 == .object) return a0;
-    if (this == .object) return this;
+    if (vm.in_construct > 0 and this == .object) return this;
     return .{ .object = try vm.newObject() };
 }
 
@@ -192,7 +211,9 @@ fn objIsPropEnum(p: *anyopaque, this: Value, args: []const Value) anyerror!Value
     const name = try vm.toStringValue(arg(args, 0));
     const o = vm.objects.get(this.object);
     const i = o.find(name, vm.case_sensitive) orelse return .{ .boolean = false };
-    return .{ .boolean = !o.props.items[i].attrs.dont_enum };
+    const attrs = o.props.items[i].attrs;
+    if (object_mod.versionHidden(attrs, vm.swf_version)) return .{ .boolean = false };
+    return .{ .boolean = !attrs.dont_enum };
 }
 
 fn objToString(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -235,12 +256,16 @@ fn fnApply(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return vm.callFunction(this, call_this, call_args);
 }
 
+/// Array element read — OWN properties only. Flash's array methods do not
+/// inherit indices through the prototype chain (corpus:
+/// array_prototyping traces `undefined,undefined,undefined` for an object
+/// whose __proto__ is a populated array).
 fn indexGet(vm: *Vm, h: ObjectHandle, index: u32) !Value {
     var buf: [12]u8 = undefined;
     const key = std.fmt.bufPrint(&buf, "{d}", .{index}) catch unreachable;
     var wide: [12]u16 = undefined;
     for (key, 0..) |c, i| wide[i] = c;
-    return vm.objects.getChained(h, wide[0..key.len], vm.case_sensitive) orelse .undefined_value;
+    return vm.objects.getOwn(h, wide[0..key.len], vm.case_sensitive) orelse .undefined_value;
 }
 
 // --- Array -------------------------------------------------------------------
@@ -315,7 +340,13 @@ fn joinImpl(vm: *Vm, h: ObjectHandle, sep: strings.AvmString) anyerror!Value {
     while (i < len) : (i += 1) {
         if (i > 0) try out.appendSlice(a, sep);
         const v = try indexGet(vm, h, i);
-        if (v != .undefined_value and v != .null_value) {
+        // SWF < 7 renders undefined/null as empty; SWF 7+ spells them out
+        // (ruffle globals/array.rs join semantics + coerce_to_string).
+        if (v == .undefined_value or v == .null_value) {
+            if (vm.swf_version >= 7) {
+                try out.appendSlice(a, if (v == .null_value) S("null") else S("undefined"));
+            }
+        } else {
             try out.appendSlice(a, try vm.toStringValue(v));
         }
     }
@@ -337,6 +368,117 @@ fn arrToString(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
     return joinImpl(vm, this.object, S(","));
+}
+
+fn arrUnshift(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const len = vm.arrayLength(this.object);
+    const n: u32 = @intCast(args.len);
+    if (n > 0) {
+        // Shift right, back to front.
+        var i: u32 = len;
+        while (i > 0) : (i -= 1) {
+            try vm.arraySet(this.object, i - 1 + n, try indexGet(vm, this.object, i - 1));
+        }
+        for (args, 0..) |v, k| try vm.arraySet(this.object, @intCast(k), v);
+    }
+    try vm.setArrayLength(this.object, len + n);
+    return .{ .number = @floatFromInt(len + n) };
+}
+
+fn arrReverse(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const len = vm.arrayLength(this.object);
+    if (len < 2) return this;
+    var i: u32 = 0;
+    while (i < len / 2) : (i += 1) {
+        const a = try indexGet(vm, this.object, i);
+        const b = try indexGet(vm, this.object, len - 1 - i);
+        try vm.arraySet(this.object, i, b);
+        try vm.arraySet(this.object, len - 1 - i, a);
+    }
+    return this;
+}
+
+fn arrSplice(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object or args.len == 0) return .undefined_value;
+    const len: i64 = @intCast(vm.arrayLength(this.object));
+    var start: i64 = @intFromFloat(@trunc(try vm.toNumber(args[0])));
+    if (start < 0) start = @max(0, len + start);
+    start = @min(start, len);
+    var delete_count: i64 = if (args.len > 1)
+        @intFromFloat(@trunc(try vm.toNumber(args[1])))
+    else
+        len - start;
+    delete_count = @max(0, @min(delete_count, len - start));
+    // Removed elements come back as a new array.
+    const removed = try vm.newArray();
+    var i: i64 = 0;
+    while (i < delete_count) : (i += 1) {
+        try vm.arraySet(removed, @intCast(i), try indexGet(vm, this.object, @intCast(start + i)));
+    }
+    const inserted: i64 = @intCast(if (args.len > 2) args.len - 2 else 0);
+    const new_len = len - delete_count + inserted;
+    // Copy the tail into place (grow: back-to-front; shrink: front-to-back).
+    if (inserted > delete_count) {
+        var k: i64 = len - 1;
+        while (k >= start + delete_count) : (k -= 1) {
+            try vm.arraySet(this.object, @intCast(k + inserted - delete_count), try indexGet(vm, this.object, @intCast(k)));
+        }
+    } else if (inserted < delete_count) {
+        var k: i64 = start + delete_count;
+        while (k < len) : (k += 1) {
+            try vm.arraySet(this.object, @intCast(k + inserted - delete_count), try indexGet(vm, this.object, @intCast(k)));
+        }
+    }
+    var j: i64 = 0;
+    while (j < inserted) : (j += 1) {
+        try vm.arraySet(this.object, @intCast(start + j), args[@intCast(2 + j)]);
+    }
+    try vm.setArrayLength(this.object, @intCast(@max(0, new_len)));
+    return .{ .object = removed };
+}
+
+fn arrSort(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const len = vm.arrayLength(this.object);
+    if (len < 2) return this;
+    // Gather, insertion-sort (stable, small arrays), write back. Custom
+    // comparator supported; default is string comparison (ES3).
+    const items = try vm.arena().alloc(Value, len);
+    var i: u32 = 0;
+    while (i < len) : (i += 1) items[i] = try indexGet(vm, this.object, i);
+    const cmp_fn = arg(args, 0);
+    const has_cmp = vm.isCallable(cmp_fn);
+    var a: usize = 1;
+    while (a < items.len) : (a += 1) {
+        const key = items[a];
+        var b: usize = a;
+        while (b > 0) : (b -= 1) {
+            const ord = if (has_cmp) blk: {
+                const r = try vm.callFunction(cmp_fn, .undefined_value, &.{ items[b - 1], key });
+                break :blk try vm.toNumber(r);
+            } else blk: {
+                const sa = try vm.toStringValue(items[b - 1]);
+                const sk = try vm.toStringValue(key);
+                break :blk switch (strings.order(sa, sk)) {
+                    .lt => @as(f64, -1),
+                    .eq => 0,
+                    .gt => 1,
+                };
+            };
+            if (ord <= 0) break;
+            items[b] = items[b - 1];
+        }
+        items[b] = key;
+    }
+    for (items, 0..) |v, k| try vm.arraySet(this.object, @intCast(k), v);
+    return this;
 }
 
 fn arrConcat(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -396,7 +538,7 @@ fn thisString(vm: *Vm, this: Value) anyerror!strings.AvmString {
 fn ctorString(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const s: strings.AvmString = if (args.len > 0) try vm.toStringValue(args[0]) else S("");
-    if (this == .object) {
+    if (vm.in_construct > 0 and this == .object) {
         vm.objects.get(this.object).native = .{ .boxed_string = s };
         return this;
     }
@@ -572,7 +714,7 @@ fn strSplit(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 fn ctorNumber(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const n: f64 = if (args.len > 0) try vm.toNumber(args[0]) else 0;
-    if (this == .object) {
+    if (vm.in_construct > 0 and this == .object) {
         vm.objects.get(this.object).native = .{ .boxed_number = n };
         return this;
     }
@@ -636,7 +778,7 @@ fn numValueOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 fn ctorBoolean(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const b = value_mod.toBoolean(arg(args, 0), vm.swf_version);
-    if (this == .object) {
+    if (vm.in_construct > 0 and this == .object) {
         vm.objects.get(this.object).native = .{ .boxed_bool = b };
         return this;
     }
@@ -717,27 +859,51 @@ fn mathSqrt(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 }
 fn mathSin(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
-    return math1(p, args, std.math.sin);
+    return math1(p, args, struct {
+        fn f(x: f64) f64 {
+            return std.math.sin(x);
+        }
+    }.f);
 }
 fn mathCos(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
-    return math1(p, args, std.math.cos);
+    return math1(p, args, struct {
+        fn f(x: f64) f64 {
+            return std.math.cos(x);
+        }
+    }.f);
 }
 fn mathTan(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
-    return math1(p, args, std.math.tan);
+    return math1(p, args, struct {
+        fn f(x: f64) f64 {
+            return @tan(x);
+        }
+    }.f);
 }
 fn mathAtan(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
-    return math1(p, args, std.math.atan);
+    return math1(p, args, struct {
+        fn f(x: f64) f64 {
+            return std.math.atan(x);
+        }
+    }.f);
 }
 fn mathAsin(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
-    return math1(p, args, std.math.asin);
+    return math1(p, args, struct {
+        fn f(x: f64) f64 {
+            return std.math.asin(x);
+        }
+    }.f);
 }
 fn mathAcos(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
-    return math1(p, args, std.math.acos);
+    return math1(p, args, struct {
+        fn f(x: f64) f64 {
+            return std.math.acos(x);
+        }
+    }.f);
 }
 fn mathExp(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
@@ -893,4 +1059,193 @@ fn globalGetTimer(p: *anyopaque, this: Value, args: []const Value) anyerror!Valu
     _ = args;
     const vm = vmOf(p);
     return .{ .number = @trunc(vm.now_ms) };
+}
+
+/// ASSetPropFlags(obj, props, setFlags, clearFlags) — undocumented but
+/// ubiquitous. props: null = ALL properties, else a comma-separated name
+/// list (or a single name). Flag bits (ruffle property.rs Attribute):
+/// 1 = DontEnum, 2 = DontDelete, 4 = ReadOnly.
+fn globalAsSetPropFlags(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    const target = arg(args, 0);
+    if (target != .object) return .undefined_value;
+    const h = target.object;
+    const set_bits: u16 = @intFromFloat(@max(0, @min(65535, try vm.toNumber(arg(args, 2)))));
+    const clear_bits: u16 = @intFromFloat(@max(0, @min(65535, try vm.toNumber(arg(args, 3)))));
+
+    const apply = struct {
+        fn f(o: *object_mod.ScriptObject, idx: usize, set: u16, clear: u16) void {
+            var a = o.props.items[idx].attrs;
+            if (set & 1 != 0) a.dont_enum = true;
+            if (set & 2 != 0) a.dont_delete = true;
+            if (set & 4 != 0) a.read_only = true;
+            if (clear & 1 != 0) a.dont_enum = false;
+            if (clear & 2 != 0) a.dont_delete = false;
+            if (clear & 4 != 0) a.read_only = false;
+            // Bits 3..15 are version gates — keep them verbatim.
+            a.version_bits = (a.version_bits & ~clear) | (set & 0xFFF8);
+            o.props.items[idx].attrs = a;
+        }
+    }.f;
+
+    const props = arg(args, 1);
+    const o = vm.objects.get(h);
+    if (props == .null_value or props == .undefined_value) {
+        var i: usize = 0;
+        while (i < o.props.items.len) : (i += 1) apply(o, i, set_bits, clear_bits);
+        return .undefined_value;
+    }
+    const list = try vm.toStringValue(props);
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i <= list.len) : (i += 1) {
+        if (i == list.len or list[i] == ',') {
+            var name = list[start..i];
+            // Trim ASCII spaces.
+            while (name.len > 0 and name[0] == ' ') name = name[1..];
+            while (name.len > 0 and name[name.len - 1] == ' ') name = name[0 .. name.len - 1];
+            if (name.len > 0) {
+                if (o.find(name, vm.case_sensitive)) |idx| apply(o, idx, set_bits, clear_bits);
+            }
+            start = i + 1;
+        }
+    }
+    return .undefined_value;
+}
+
+/// ASnative(set, index) — returns a stub native function. Real dispatch
+/// tables are out of scope; returning a callable keeps `typeof` and call
+/// sites sane.
+fn globalAsNative(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    _ = args;
+    const vm = vmOf(p);
+    return .{ .object = try vm.newNativeFn(asNativeStub) };
+}
+
+fn asNativeStub(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = p;
+    _ = this;
+    _ = args;
+    return .undefined_value;
+}
+
+fn ctorError(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this == .object and args.len > 0 and args[0] != .undefined_value) {
+        const msg = try vm.toStringValue(args[0]);
+        try vm.objects.put(this.object, S("message"), .{ .string = msg }, vm.case_sensitive);
+    }
+    return this;
+}
+
+fn errorToString(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    if (this != .object) return .{ .string = S("Error") };
+    const msg = vm.objects.getChained(this.object, S("message"), vm.case_sensitive) orelse
+        Value{ .string = S("Error") };
+    return .{ .string = try vm.toStringValue(msg) };
+}
+
+/// escape() — RFC-1738-ish percent encoding (ruffle globals.rs escape:
+/// alphanumerics and *_+-./ pass through, everything else %XX by UTF-8).
+fn globalEscape(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    const s = try vm.toStringValue(arg(args, 0));
+    var out: std.ArrayList(u16) = .empty;
+    const a = vm.arena();
+    const hex = "0123456789ABCDEF";
+    for (s) |c| {
+        const keep = (c >= '0' and c <= '9') or (c >= 'A' and c <= 'Z') or
+            (c >= 'a' and c <= 'z') or c == '*' or c == '_' or c == '+' or
+            c == '-' or c == '.' or c == '/';
+        if (keep) {
+            try out.append(a, c);
+        } else if (c < 0x80) {
+            try out.append(a, '%');
+            try out.append(a, hex[(c >> 4) & 0xF]);
+            try out.append(a, hex[c & 0xF]);
+        } else {
+            // UTF-8 encode the code unit, percent-escaping each byte.
+            var buf: [3]u8 = undefined;
+            const n = std.unicode.utf8Encode(c, &buf) catch 0;
+            for (buf[0..n]) |b| {
+                try out.append(a, '%');
+                try out.append(a, hex[(b >> 4) & 0xF]);
+                try out.append(a, hex[b & 0xF]);
+            }
+        }
+    }
+    return .{ .string = try out.toOwnedSlice(a) };
+}
+
+fn globalUnescape(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    const s = try vm.toStringValue(arg(args, 0));
+    var bytes: std.ArrayList(u8) = .empty;
+    const a = vm.arena();
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        if (s[i] == '%' and i + 2 < s.len) {
+            const hi = std.fmt.charToDigit(@intCast(@min(s[i + 1], 127)), 16) catch {
+                try bytes.append(a, @intCast(@min(s[i], 255)));
+                continue;
+            };
+            const lo = std.fmt.charToDigit(@intCast(@min(s[i + 2], 127)), 16) catch {
+                try bytes.append(a, @intCast(@min(s[i], 255)));
+                continue;
+            };
+            try bytes.append(a, hi * 16 + lo);
+            i += 2;
+        } else if (s[i] < 0x80) {
+            try bytes.append(a, @intCast(s[i]));
+        } else {
+            var buf: [3]u8 = undefined;
+            const n = std.unicode.utf8Encode(s[i], &buf) catch 0;
+            try bytes.appendSlice(a, buf[0..n]);
+        }
+    }
+    const decoded = std.unicode.utf8ToUtf16LeAlloc(a, bytes.items) catch blk: {
+        const w = try a.alloc(u16, bytes.items.len);
+        for (bytes.items, 0..) |b, k| w[k] = b;
+        break :blk w;
+    };
+    return .{ .string = decoded };
+}
+
+/// Object.addProperty(name, getter, setter) — installs an accessor
+/// property (ruffle globals/object.rs add_property). Returns a bool.
+fn objAddProperty(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .{ .boolean = false };
+    const name = try vm.toStringValue(arg(args, 0));
+    if (name.len == 0) return .{ .boolean = false };
+    const getter = arg(args, 1);
+    const setter = arg(args, 2);
+    if (!vm.isCallable(getter)) return .{ .boolean = false };
+    // setter may be null (getter-only) but must otherwise be callable.
+    const setter_h: runtime.ObjectHandle = if (vm.isCallable(setter)) setter.object else 0;
+    if (setter != .null_value and setter != .undefined_value and setter_h == 0) {
+        return .{ .boolean = false };
+    }
+    const o = vm.objects.get(this.object);
+    if (o.find(name, vm.case_sensitive)) |idx| {
+        o.props.items[idx].getter = getter.object;
+        o.props.items[idx].setter = setter_h;
+        o.props.items[idx].value = .undefined_value;
+    } else {
+        const key = try vm.arena().dupe(u16, name);
+        try o.props.append(vm.arena(), .{
+            .key = key,
+            .value = .undefined_value,
+            .attrs = .{ .dont_enum = true },
+            .getter = getter.object,
+            .setter = setter_h,
+        });
+    }
+    return .{ .boolean = true };
 }

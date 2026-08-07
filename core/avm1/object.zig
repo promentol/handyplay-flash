@@ -19,12 +19,39 @@ pub const Attributes = packed struct {
     dont_enum: bool = false,
     dont_delete: bool = false,
     read_only: bool = false,
+    /// ASSetPropFlags bits 3..15 are SWF-VERSION GATES, not unknown
+    /// flags: a property is hidden when `raw & VERSION_MASKS[version]`
+    /// is non-zero (ruffle property.rs). Stored raw so the gate survives.
+    version_bits: u16 = 0,
 };
+
+/// ruffle property.rs VERSION_MASKS — index by SWF version (clamped 0-9).
+pub const VERSION_MASKS = [10]u16{
+    0b0111_1111_1111_1000, 0b0111_1111_1111_1000, 0b0111_1111_1111_1000,
+    0b0111_1111_1111_1000, 0b0111_1111_1111_1000,
+    0b0111_0100_1000_0000, // v5
+    0b0111_0101_0000_0000, // v6
+    0b0111_0000_0000_0000, // v7
+    0b0110_0000_0000_0000, // v8
+    0b0100_0000_0000_0000, // v9
+};
+
+/// A property is invisible when its version gate matches the player's
+/// SWF version, or when DontEnum is set (enumeration only).
+pub fn versionHidden(attrs: Attributes, swf_version: u8) bool {
+    const idx: usize = @min(swf_version, 9);
+    return (attrs.version_bits & VERSION_MASKS[idx]) != 0;
+}
 
 pub const Property = struct {
     key: strings.AvmString,
     value: Value,
     attrs: Attributes = .{},
+    /// Object.addProperty accessors (0 = plain data property). Reads call
+    /// the getter with `this`; writes call the setter (a getter-only
+    /// property silently ignores writes, like ES3/Flash).
+    getter: ObjectHandle = 0,
+    setter: ObjectHandle = 0,
 };
 
 /// Native function signature. `vm` is *runtime.Vm behind anyopaque to keep
@@ -112,6 +139,26 @@ pub const Objects = struct {
 
     pub fn getConst(self: *const Objects, h: ObjectHandle) *const ScriptObject {
         return &self.slots.items[h - 1];
+    }
+
+    /// Find the own property SLOT (accessor-aware callers use this).
+    pub fn findOwn(self: *Objects, h: ObjectHandle, name: strings.AvmString, cs: bool) ?*Property {
+        const o = self.get(h);
+        const i = o.find(name, cs) orelse return null;
+        return &o.props.items[i];
+    }
+
+    /// Find a property slot anywhere on the proto chain.
+    pub fn findChained(self: *Objects, h: ObjectHandle, name: strings.AvmString, cs: bool) ?*Property {
+        var current = h;
+        var depth: u32 = 0;
+        while (depth < 256) : (depth += 1) {
+            if (self.findOwn(current, name, cs)) |p| return p;
+            const proto = self.get(current).proto;
+            if (proto != .object) return null;
+            current = proto.object;
+        }
+        return null;
     }
 
     /// Own-property read (no proto chain).

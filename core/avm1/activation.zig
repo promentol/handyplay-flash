@@ -35,6 +35,10 @@ pub const Activation = struct {
     scope: ObjectHandle,
     /// DefineFunction2 local registers ([] = use the VM's 4 globals).
     local_registers: []Value = &.{},
+    /// SetTarget/tellTarget retarget: movie-control ops and unqualified
+    /// variables act on this clip (ruffle base_clip vs target_clip). 0
+    /// means "same as `this`".
+    target_override: ObjectHandle = 0,
     constant_pool: u32,
     swf_version: u8,
 
@@ -207,8 +211,11 @@ pub const Activation = struct {
     fn memberGet(self: *Activation, target: Value, name: strings.AvmString) !Value {
         switch (target) {
             .object => |h| {
-                // Array length virtual read is a real property here ✓.
-                return self.vm.objects.getChained(h, name, self.vm.case_sensitive) orelse .undefined_value;
+                // `__proto__` is a live accessor, not a stored property.
+                if (strings.eqlIgnoreCase(name, S("__proto__"))) {
+                    return self.vm.objects.get(h).proto;
+                }
+                return self.vm.getProperty(h, name, target);
             },
             .string => |s| {
                 if (strings.eqlIgnoreCase(name, S("length"))) {
@@ -245,6 +252,10 @@ pub const Activation = struct {
     fn memberSet(self: *Activation, target: Value, name: strings.AvmString, v: Value) !void {
         if (target != .object) return;
         const h = target.object;
+        if (strings.eqlIgnoreCase(name, S("__proto__"))) {
+            self.vm.objects.get(h).proto = if (v == .object) v else .undefined_value;
+            return;
+        }
         const o = self.vm.objects.get(h);
         if (o.native == .array) {
             // Numeric keys maintain length.
@@ -260,7 +271,7 @@ pub const Activation = struct {
                 return;
             }
         }
-        try self.vm.objects.put(h, name, v, self.vm.case_sensitive);
+        try self.vm.setProperty(h, name, v, target);
     }
 
     fn parseArrayIndex(name: strings.AvmString) ?u32 {
@@ -734,16 +745,19 @@ pub const Activation = struct {
                 const name_v = self.pop();
                 const target = self.pop();
                 const args = try self.popArgs();
-                var result: Value = .undefined_value;
-                const is_empty_name = name_v == .undefined_value or
-                    (name_v == .string and name_v.string.len == 0);
-                if (is_empty_name) {
-                    result = try self.vm.callFunction(target, .undefined_value, args);
-                } else {
-                    const name = try self.vm.toStringValue(name_v);
+                // ruffle action_call_method: undefined ⇒ "", otherwise
+                // COERCE (an object whose toString yields "" also selects
+                // the call-as-function path).
+                const name: strings.AvmString = if (name_v == .undefined_value)
+                    S("")
+                else
+                    try self.vm.toStringValue(name_v);
+                const result = if (name.len == 0)
+                    try self.vm.callFunction(target, .undefined_value, args)
+                else blk: {
                     const m = try self.memberGet(target, name);
-                    result = try self.vm.callFunction(m, target, args);
-                }
+                    break :blk try self.vm.callFunction(m, target, args);
+                };
                 try self.push(result);
             },
             .new_object => {
@@ -756,14 +770,14 @@ pub const Activation = struct {
                 const name_v = self.pop();
                 const target = self.pop();
                 const args = try self.popArgs();
-                const is_empty_name = name_v == .undefined_value or
-                    (name_v == .string and name_v.string.len == 0);
-                const ctor: Value = if (is_empty_name)
+                const name: strings.AvmString = if (name_v == .undefined_value)
+                    S("")
+                else
+                    try self.vm.toStringValue(name_v);
+                const ctor: Value = if (name.len == 0)
                     target
-                else blk: {
-                    const name = try self.vm.toStringValue(name_v);
-                    break :blk try self.memberGet(target, name);
-                };
+                else
+                    try self.memberGet(target, name);
                 try self.push(try self.vm.construct(ctor, args));
             },
             .return_op => return .{ .return_value = self.pop() },
@@ -771,7 +785,14 @@ pub const Activation = struct {
 
             // --- misc -----------------------------------------------------
             .trace => {
-                const s = try self.popString();
+                // trace ALWAYS prints "undefined" even in SWF <= 6, where
+                // undefined otherwise coerces to "" (ruffle
+                // activation.rs action_trace).
+                const v = self.pop();
+                const s = if (v == .undefined_value)
+                    S("undefined")
+                else
+                    try self.vm.toStringValue(v);
                 try self.vm.traceLine(s);
             },
             .target_path => {
@@ -780,8 +801,12 @@ pub const Activation = struct {
                 try self.push(.undefined_value);
             },
             .set_target2 => {
-                const t = try self.popString();
-                try self.setTarget(t);
+                const v = self.pop();
+                if (v == .object and self.vm.objects.get(v.object).native == .clip) {
+                    self.target_override = v.object;
+                } else {
+                    try self.setTarget(try self.vm.toStringValue(v));
+                }
             },
             .get_property => {
                 const index = try self.popNumber();
@@ -877,15 +902,37 @@ pub const Activation = struct {
         }
     }
 
+    /// for..in enumerates own AND inherited properties (Flash walks the
+    /// whole __proto__ chain), skipping DontEnum, version-gated, and
+    /// names already emitted by a nearer object (shadowing).
     fn pushEnumKeys(self: *Activation, h: ObjectHandle) !void {
-        // Newest-first (reverse insertion), skipping DontEnum — matches
-        // Flash's observed for..in order.
-        const o = self.vm.objects.get(h);
-        var i: usize = 0;
-        while (i < o.props.items.len) : (i += 1) {
-            const p = o.props.items[i];
-            if (p.attrs.dont_enum) continue;
-            try self.push(.{ .string = p.key });
+        var seen: std.ArrayList(strings.AvmString) = .empty;
+        defer seen.deinit(self.vm.arena());
+        var current: Value = .{ .object = h };
+        var depth: u32 = 0;
+        while (current == .object and depth < 64) : (depth += 1) {
+            const o = self.vm.objects.get(current.object);
+            var i: usize = 0;
+            while (i < o.props.items.len) : (i += 1) {
+                const p = o.props.items[i];
+                if (p.attrs.dont_enum) continue;
+                if (object_mod.versionHidden(p.attrs, self.swf_version)) continue;
+                var dup = false;
+                for (seen.items) |k| {
+                    const same = if (self.vm.case_sensitive)
+                        strings.eql(k, p.key)
+                    else
+                        strings.eqlIgnoreCase(k, p.key);
+                    if (same) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (dup) continue;
+                try seen.append(self.vm.arena(), p.key);
+                try self.push(.{ .string = p.key });
+            }
+            current = o.proto;
         }
     }
 
@@ -937,16 +984,36 @@ pub const Activation = struct {
         self.r.byteAlign();
     }
 
+    /// SetTarget("") resets to the base clip. A path that resolves to a
+    /// clip retargets; an INVALID path in SWF <= 6 leaves the target
+    /// unchanged (execution continues — corpus tell_target_invalid_swf6),
+    /// while SWF 7+ players null the target.
     fn setTarget(self: *Activation, path: strings.AvmString) !void {
-        _ = path; // M3.5: retarget the bottom scope to another clip
-        _ = self;
+        if (path.len == 0) {
+            self.target_override = 0;
+            return;
+        }
+        const resolved = try self.getVariable(path);
+        if (resolved == .object and self.vm.objects.get(resolved.object).native == .clip) {
+            self.target_override = resolved.object;
+        } else if (self.swf_version >= 7) {
+            self.target_override = 0;
+        }
+    }
+
+    /// The clip movie-control ops act on: the SetTarget override when
+    /// present, else `this`.
+    fn targetValue(self: *Activation) Value {
+        if (self.target_override != 0) return .{ .object = self.target_override };
+        return self.this;
     }
 
     // --- host bridges (movie control) -------------------------------------
 
     fn currentClip(self: *Activation) ?*anyopaque {
-        if (self.this == .object) {
-            const native = self.vm.objects.get(self.this.object).native;
+        const t = self.targetValue();
+        if (t == .object) {
+            const native = self.vm.objects.get(t.object).native;
             if (native == .clip) return native.clip;
         }
         return null;

@@ -28,8 +28,10 @@ pub const Context = struct {
     /// Set by SetBackgroundColor during execution.
     background_color: ?swf.reader.Color = null,
     /// DoAction bytecodes queued this tick (drained by the player AFTER
-    /// all clips ran — Ruffle's ActionQueue model, single priority in M3).
+    /// all clips ran — Ruffle's ActionQueue model). Initialize-priority
+    /// entries (DoInitAction) occupy the first `init_count` slots.
     actions: std.ArrayList(QueuedAction) = .empty,
+    init_count: usize = 0,
 };
 
 pub const QueuedAction = struct {
@@ -51,6 +53,10 @@ pub const MovieClip = struct {
     pending_goto: ?u16 = null,
     /// Lazily-created AVM1 object handle for this clip (0 = none yet).
     avm_object: u32 = 0,
+    /// True between "placed this tick" and the end of that tick: a clip
+    /// runs its first frame on placement, so the parent's child-tick loop
+    /// must skip it (otherwise it advances twice in one tick).
+    ran_this_tick: bool = false,
 
     pub fn init(frames: []const library.Frame) MovieClip {
         return .{ .frames = frames };
@@ -90,10 +96,17 @@ pub const MovieClip = struct {
             }
         }
         // Tick child clips (M3 replaces this tree walk with the global
-        // instantiation-order exec list).
+        // instantiation-order exec list). Clips placed during THIS tick
+        // already ran their first frame in `instantiate`.
         for (self.children.items) |child| {
             switch (child.kind) {
-                .clip => |mc| try mc.runFrame(ctx),
+                .clip => |mc| {
+                    if (mc.ran_this_tick) {
+                        mc.ran_this_tick = false;
+                        continue;
+                    }
+                    try mc.runFrame(ctx);
+                },
                 else => {},
             }
         }
@@ -119,6 +132,11 @@ pub const MovieClip = struct {
             .do_action => |bytecode| if (run_actions) {
                 try ctx.actions.append(ctx.gpa, .{ .clip = self, .code = bytecode });
             },
+            .init_action => |ia| if (run_actions) {
+                // Initialize priority: runs before this frame's DoActions.
+                try ctx.actions.insert(ctx.gpa, ctx.init_count, .{ .clip = self, .code = ia.code });
+                ctx.init_count += 1;
+            },
             .start_sound, .sound_stream_block => {}, // M6
         };
     }
@@ -141,18 +159,32 @@ pub const MovieClip = struct {
         };
         self.pending_goto = null;
         if (target == self.current_frame) return;
-        // Rewind: drop everything, replay placements up to the target.
+        // Rewind: children placed on frames at or before the target
+        // SURVIVE (ruffle run_goto survives_rewind) — only later
+        // placements are dropped. Replaying from frame 1 is then safe:
+        // `placeObject` refuses to place over an occupied depth, so
+        // survivors keep their identity (and their timeline position)
+        // instead of being destroyed and re-created.
         if (target < self.current_frame) {
-            for (self.children.items) |child| {
-                child.deinit(ctx.gpa);
-                ctx.gpa.destroy(child);
+            var i: usize = 0;
+            while (i < self.children.items.len) {
+                const child = self.children.items[i];
+                if (child.place_frame > target) {
+                    _ = self.children.orderedRemove(i);
+                    child.deinit(ctx.gpa);
+                    ctx.gpa.destroy(child);
+                    continue;
+                }
+                i += 1;
             }
-            self.children.clearRetainingCapacity();
             self.current_frame = 0;
         }
         var f: u16 = self.current_frame + 1;
         while (f <= target) : (f += 1) {
-            try self.executeFrame(ctx, f, false);
+            // Intermediate frames replay display state only; the
+            // DESTINATION frame also runs its script (Flash: goto
+            // executes the target frame's actions).
+            try self.executeFrame(ctx, f, f == target);
         }
         self.current_frame = target;
         for (self.children.items) |child| {
@@ -229,8 +261,12 @@ pub const MovieClip = struct {
             }
         }
         try self.children.insert(ctx.gpa, insert_at, obj);
-        // New clips run their first frame on the tick they appear.
-        if (obj.kind == .clip) try obj.kind.clip.runFrame(ctx);
+        // New clips run their first frame on the tick they appear (and
+        // are skipped by this tick's child loop — see `ran_this_tick`).
+        if (obj.kind == .clip) {
+            try obj.kind.clip.runFrame(ctx);
+            obj.kind.clip.ran_this_tick = true;
+        }
     }
 };
 
