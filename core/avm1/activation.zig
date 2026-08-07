@@ -1244,18 +1244,34 @@ pub const Activation = struct {
                 }
             },
             .start_drag => {
-                _ = self.pop(); // target
-                const lock = try self.popNumber();
-                _ = lock;
-                const constrain = try self.popNumber();
-                if (constrain != 0) {
-                    _ = self.pop();
-                    _ = self.pop();
-                    _ = self.pop();
-                    _ = self.pop();
+                // The operands come off in this order regardless of whether
+                // the target resolves, and the constraint rectangle is
+                // popped y_max, x_max, y_min, x_min.
+                const target = self.pop();
+                const lock_center = (try self.popNumber()) == 1;
+                const constrain = (try self.popNumber()) == 1;
+                var rect: ?[4]f64 = null;
+                if (constrain) {
+                    const y_max = try self.popNumber();
+                    const x_max = try self.popNumber();
+                    const y_min = try self.popNumber();
+                    const x_min = try self.popNumber();
+                    rect = .{ x_min, y_min, x_max, y_max };
                 }
+                // `allow_empty = true` here, unlike hitTest/getBounds: a
+                // bare `startDrag()` drags the current target clip.
+                const t = if (stage.targetOfValue(self.vm, target)) |dt|
+                    dt
+                else blk: {
+                    const s = try self.vm.toStringValue(target);
+                    const start = self.targetClipOrRoot();
+                    if (s.len == 0) break :blk stage.targetOf(self.vm, start);
+                    const h = try self.resolveTargetPath(self.rootHandle(), start, s, true, false);
+                    break :blk if (h) |hh| stage.targetOf(self.vm, hh) else null;
+                };
+                if (t) |dt| stage.startDrag(self.vm, dt, lock_center, rect);
             },
-            .end_drag => {},
+            .end_drag => stage.stopDrag(self.vm),
             .play => self.hostSetPlaying(true),
             .stop => self.hostSetPlaying(false),
             .next_frame => self.hostNextPrev(1),

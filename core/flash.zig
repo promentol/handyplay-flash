@@ -208,7 +208,7 @@ pub const Player = struct {
     /// and scripts see undefined.
     fn drainActions(self: *Player, ctx: *display.movie_clip.Context) !void {
         while (ctx.popAction()) |qa| {
-            if (qa.clip.removed) continue;
+            if (qa.clip.removed and !qa.on_removed) continue;
             const clip_obj = try self.clipObject(qa.clip);
             switch (qa.what) {
                 .code => |code| self.runBytecode(clip_obj, code),

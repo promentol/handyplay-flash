@@ -102,6 +102,10 @@ pub const Priority = enum(u2) { initialize = 0, construct = 1, normal = 2 };
 pub const QueuedAction = struct {
     clip: *MovieClip,
     priority: Priority = .normal,
+    /// `unload` handlers run even though their clip is already gone —
+    /// that is the whole point of them. Every other entry is dropped when
+    /// its clip is removed before the drain reaches it.
+    on_removed: bool = false,
     what: union(enum) {
         /// A DoAction / ClipAction bytecode slice.
         code: []const u8,
@@ -266,15 +270,33 @@ pub const MovieClip = struct {
     /// `onClipEvent(...)` bodies first, then the script-assigned method.
     /// Both are QUEUED, never run inline. SWF5+ only.
     fn dispatchClipEvent(self: *MovieClip, ctx: *Context, flag: u32, comptime method: []const u8) Error!void {
+        try self.dispatchClipEventEx(ctx, flag, method, false);
+    }
+
+    fn dispatchClipEventEx(
+        self: *MovieClip,
+        ctx: *Context,
+        flag: u32,
+        comptime method: []const u8,
+        on_removed: bool,
+    ) Error!void {
         if (ctx.movie.swf_version < 5) return;
         if (self.placement) |p| {
             for (p.clip_actions) |handler| {
                 if (handler.events & flag != 0) {
-                    try ctx.queue(ctx.gpa, .{ .clip = self, .what = .{ .code = handler.actions } });
+                    try ctx.queue(ctx.gpa, .{
+                        .clip = self,
+                        .on_removed = on_removed,
+                        .what = .{ .code = handler.actions },
+                    });
                 }
             }
         }
-        try ctx.queue(ctx.gpa, .{ .clip = self, .what = .{ .method = method } });
+        try ctx.queue(ctx.gpa, .{
+            .clip = self,
+            .on_removed = on_removed,
+            .what = .{ .method = method },
+        });
     }
 
     /// Ruffle determine_next_frame: Same (implicit stop) when there is
@@ -602,8 +624,23 @@ fn applyPlacement(ctx: *Context, obj: *DisplayObject, po: swf.place.PlaceObject,
 /// whole clip subtree `removed` so AVM1 reads return undefined, and hands
 /// the object to the tick's graveyard.
 fn retire(ctx: *Context, obj: *DisplayObject) Error!void {
+    // `unload` fires on the way out, deepest child first, and is queued
+    // BEFORE the subtree is marked removed so the handlers survive the
+    // drain's removed-clip filter (they carry `on_removed`).
+    try dispatchUnload(ctx, obj);
     markRemoved(obj);
     try ctx.graveyard.append(ctx.gpa, obj);
+}
+
+fn dispatchUnload(ctx: *Context, obj: *DisplayObject) Error!void {
+    if (obj.kind != .clip) return;
+    const mc = obj.kind.clip;
+    var i = mc.children.items.len;
+    while (i > 0) {
+        i -= 1;
+        try dispatchUnload(ctx, mc.children.items[i]);
+    }
+    try mc.dispatchClipEventEx(ctx, swf.place.ClipEvent.UNLOAD, "onUnload", true);
 }
 
 fn markRemoved(obj: *DisplayObject) void {

@@ -167,6 +167,7 @@ strictly_equals
 string_paths_hidden
 string_paths_keyevents
 string_paths_timer
+string_paths_unload
 super_edge_cases
 swf4_bool
 swf5_encoding
@@ -193,6 +194,7 @@ typeof_globals
 uncaught_exception
 uncaught_exception_bubbled
 undefined_to_string_swf6
+unload_clip_event
 use_hand_cursor
 variable_args
 watch
