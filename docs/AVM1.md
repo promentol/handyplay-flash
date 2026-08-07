@@ -15,6 +15,11 @@ Status: `todo` → `decode` (opcodes.zig) → `exec` (interpreter) → `done`
 but have no effect yet) — promotion is workstream A of docs/M4-SPEC.md.
 Corpus: 140/680 (tests/conformance/pass_list.txt).
 
+**Workstream A complete (A1-A6)**: display properties, target paths, clip
+member resolution, runtime clip creation, `Call`, throw propagation and
+`super` all land. `_xmouse`/`_ymouse` still read the (zero) `Vm.mouse_*`
+and `_droptarget` awaits StartDrag — both workstream C.
+
 **M4-A1 landed**: GetProperty/SetProperty (0x22/23) are real, sharing one
 22-entry table in `core/avm1/stage_object.zig` with the named form
 (`mc._x`) reached through GetMember/SetMember/GetVariable/SetVariable.
@@ -29,9 +34,7 @@ tree. TargetPath (0x45) returns the DOT path.
 
 | Stub | Why | Milestone |
 |---|---|---|
-| CloneSprite / RemoveSprite (0x24/25) | duplicateMovieClip | M4 |
 | StartDrag / EndDrag (0x27/28) | needs mouse state | M4 |
-| Call (0x9E) | call-frame-actions | M4 |
 | GetURL / GetURL2 (0x83/0x9A) | network/loadMovie | out of scope (M4 partial for loadMovie tests) |
 | ImplementsOp (0x2C) | interface registry unused | as needed |
 | ToggleQuality (0x08) | quality is a no-op for us | never |

@@ -202,7 +202,15 @@ Implement as: when `memberGet`'s target object has `native == .clip`,
 run steps 1-3 before the normal `getChained`. Same for writes
 (display props write through; everything else is a normal put).
 
-### A4. CloneSprite / RemoveSprite (duplicateMovieClip)
+### A4. CloneSprite / RemoveSprite (duplicateMovieClip) — ✅ DONE
+Absorbed the workstream-B instantiation methods (duplicateMovieClip,
+attachMovie, createEmptyMovieClip, removeMovieClip, getDepth) because they
+share the one primitive — §4 below should NOT re-specify them. Two things
+the sketch below misses:
+  • the METHOD biases the depth, the OPCODE does not, and validation
+    applies to the BIASED value (createEmptyMovieClip validates nothing);
+  • DisplayObject.depth had to widen from u16 to i32.
+
 `CloneSprite` pops depth, target(new name), source(path). Behavior
 (ruffle movie_clip.rs `duplicate_movie_clip`): instantiate a NEW clip of
 the same character id at the given depth on the SOURCE'S PARENT, with the
@@ -212,7 +220,14 @@ attachMovie). Depth arithmetic: AVM1 scripts use 0-based depths that map
 to 16384+depth internally in Flash — ruffle adds `AVM_DEPTH_BIAS = 16384`;
 mirror it (place tags use 0..16383, scripts 16384+).
 
-### A5. super + cross-function Throw
+### A5. super + cross-function Throw — ✅ DONE
+Throw travels as a Zig error (`error.Avm1Thrown` + `Vm.pending_throw`), so
+no call site needed editing. Two extras the sketch omits: `Try` restores
+the value stack to its pre-try depth, and an uncaught throw traces
+`Warning: Uncaught exception, <msg>` and continues. For `super`, the
+prototype DEPTH is the subtle part — constructors start at 1, methods at
+the depth owning the method.
+
 - Build a real `super` object for DefineFunction2 preloads: a callable
   whose call invokes `this.__proto__.__constructor__` with the parent
   proto chain — ruffle object/super_object.rs. Minimum for corpus: super
@@ -223,7 +238,11 @@ mirror it (place tags use 0..16383, scripts 16384+).
   `Activation.exec`'s call sites catch that error and convert to
   `Flow{ .thrown = vm.pending_throw }` so outer Try blocks catch it.
 
-### A6. Call (0x9E)
+### A6. Call (0x9E) — ✅ DONE
+The stub was UNREACHABLE, not just empty: every opcode >= 0x80 gets a
+length field in `readAction`, and Call was the only one with no case, so
+it decoded as `.unknown`.
+
 Pops a frame reference ("label" or number or "path:label") and executes
 that frame's DoActions IMMEDIATELY (not queued), without moving the
 playhead. Frames come from `MovieClip.frames[n].controls` (filter
