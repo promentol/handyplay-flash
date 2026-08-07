@@ -58,6 +58,8 @@ pub const Player = struct {
     /// Flash's `instanceN` counter. Monotonic for the life of the movie;
     /// ruffle resets it only when the root movie is replaced.
     instance_counter: u32 = 0,
+    /// DoInitAction runs once, before frame 1 (see `runInitActions`).
+    init_actions_done: bool = false,
     /// Fixed timestep (ms/frame) from the SWF header, clamped 0.01–120 fps.
     frame_ms: f64,
     acc_ms: f64 = 0,
@@ -162,6 +164,9 @@ pub const Player = struct {
             .gpa = self.gpa,
             .movie = &self.movie,
             .instance_counter = &self.instance_counter,
+            .class_lookup = hostRegisteredClass,
+            .class_lookup_user = @ptrCast(self),
+            .run_inline = hostRunInline,
         };
         defer ctx.deinit(self.gpa);
         self.cur_ctx = &ctx;
@@ -170,6 +175,7 @@ pub const Player = struct {
             self.cur_ctx = null;
             self.vm.display_ctx = null;
         }
+        try self.runInitActions(&ctx);
         try self.root.runFrame(&ctx);
         try self.root.applyPendingGoto(&ctx);
         // Drain the action queue (actions can queue more via gotos —
@@ -178,23 +184,30 @@ pub const Player = struct {
         // remove a clip whose own DoAction is still queued behind us; such
         // clips are marked `removed` and stay alive until `retireDead`
         // below, so the pointer is safe and scripts see undefined.
-        var i: usize = 0;
-        while (i < ctx.actions.items.len) : (i += 1) {
-            const qa = ctx.actions.items[i];
+        while (ctx.popAction()) |qa| {
             if (qa.clip.removed) continue;
             const clip_obj = try self.clipObject(qa.clip);
             switch (qa.what) {
-                .code => |code| {
-                    var act = avm1.activation.Activation.init(
-                        self.vm,
-                        code,
-                        .{ .object = clip_obj },
-                        clip_obj,
-                        self.vm.active_pool,
-                    );
-                    _ = act.run() catch |e| self.reportUncaught(e);
-                },
+                .code => |code| self.runBytecode(clip_obj, code),
                 .method => |name| self.callClipHandler(clip_obj, name),
+                .construct => |c| {
+                    // Order is load-bearing: the prototype must be in place
+                    // before the construct handlers run, and the constructor
+                    // itself runs last (ruffle player.rs:2169-2196).
+                    if (c.ctor != 0) {
+                        const proto = self.vm.objects.getChained(
+                            c.ctor,
+                            avm1.strings.ascii("prototype"),
+                            self.vm.case_sensitive,
+                        ) orelse avm1.value.Value.undefined_value;
+                        self.vm.objects.get(clip_obj).proto = proto;
+                    }
+                    for (c.events) |code| self.runBytecode(clip_obj, code);
+                    if (c.ctor != 0) {
+                        _ = self.vm.constructOnExisting(c.ctor, clip_obj) catch |e|
+                            self.reportUncaught(e);
+                    }
+                },
             }
             try self.root.applyPendingGoto(&ctx);
         }
@@ -204,6 +217,37 @@ pub const Player = struct {
         self.vm.budget = 5_000_000;
         self.vm.halted = false;
         if (ctx.background_color) |c| self.background = c | 0xFF000000;
+    }
+
+    /// Every `DoInitAction` in the main timeline, run once before the first
+    /// frame. Ruffle executes these during PRELOAD rather than on the
+    /// timeline, so a class registered by `#initclip` is available to
+    /// PlaceObject tags that appear before it in the tag stream.
+    ///
+    /// Init actions nested inside a DefineSprite are skipped: the SWF spec
+    /// forbids them and ruffle notes its own handling there is nonsense.
+    fn runInitActions(self: *Player, ctx: *display.movie_clip.Context) !void {
+        if (self.init_actions_done) return;
+        self.init_actions_done = true;
+        const root_obj = try self.clipObject(&self.root);
+        for (self.movie.frames) |frame| {
+            for (frame.controls) |control| {
+                if (control != .init_action) continue;
+                self.runBytecode(root_obj, control.init_action.code);
+                try self.root.applyPendingGoto(ctx);
+            }
+        }
+    }
+
+    fn runBytecode(self: *Player, clip_obj: avm1.runtime.ObjectHandle, code: []const u8) void {
+        var act = avm1.activation.Activation.init(
+            self.vm,
+            code,
+            .{ .object = clip_obj },
+            clip_obj,
+            self.vm.active_pool,
+        );
+        _ = act.run() catch |e| self.reportUncaught(e);
     }
 
     /// Invoke a script-assigned event handler (`clip.onEnterFrame = f`)
@@ -272,6 +316,28 @@ pub const Player = struct {
             _ = self.vm.objects.deleteOwn(self.vm.globals, S("_level0"), self.vm.case_sensitive);
         }
         return h;
+    }
+
+    /// `Object.registerClass` maps an ExportAssets SYMBOL to a constructor,
+    /// while the display list only knows character ids — so the lookup has
+    /// to go back through the export table.
+    fn hostRegisteredClass(user: *anyopaque, char_id: u16) u32 {
+        const self: *Player = @ptrCast(@alignCast(user));
+        if (char_id == 0 or self.vm.class_registry.items.len == 0) return 0;
+        var it = self.movie.lib.exports.iterator();
+        while (it.next()) |e| {
+            if (e.value_ptr.* != char_id) continue;
+            const wide = avm1.strings.fromSwf(self.vm.arena(), e.key_ptr.*, self.movie.swf_version) catch
+                return 0;
+            if (self.vm.registeredClass(wide)) |ctor| return ctor;
+        }
+        return 0;
+    }
+
+    fn hostRunInline(user: *anyopaque, clip: *MovieClipT, code: []const u8) void {
+        const self: *Player = @ptrCast(@alignCast(user));
+        const clip_obj = self.clipObject(clip) catch return;
+        self.runBytecode(clip_obj, code);
     }
 
     fn installHost(self: *Player) void {

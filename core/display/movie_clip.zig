@@ -28,11 +28,13 @@ pub const Context = struct {
     movie: *const swf.movie.Movie,
     /// Set by SetBackgroundColor during execution.
     background_color: ?swf.reader.Color = null,
-    /// DoAction bytecodes queued this tick (drained by the player AFTER
-    /// all clips ran — Ruffle's ActionQueue model). Initialize-priority
-    /// entries (DoInitAction) occupy the first `init_count` slots.
-    actions: std.ArrayList(QueuedAction) = .empty,
-    init_count: usize = 0,
+    /// Actions queued this tick, drained by the Player AFTER every clip has
+    /// run (Ruffle's ActionQueue). THREE FIFO buckets, not one sorted list:
+    /// each pop takes the front of the highest non-empty bucket, so an
+    /// Initialize queued while a Normal action is running still overtakes
+    /// the Normal actions behind it.
+    queues: [3]std.ArrayList(QueuedAction) = @splat(.empty),
+    heads: [3]usize = @splat(0),
     /// Children removed this tick, NOT yet freed. The action queue holds
     /// raw `*MovieClip`s and AVM1 objects hold them via `native.clip`, so
     /// freeing at removal time is a use-after-free: a queued script that
@@ -45,11 +47,44 @@ pub const Context = struct {
     /// across ticks (ruffle's UpdateContext.instance_counter). Every
     /// unnamed display object consumes one at placement.
     instance_counter: *u32,
+    /// `Object.registerClass` lookup: character id -> constructor handle
+    /// (0 = none). The Player supplies it; display code cannot see the VM,
+    /// and pure-display tests leave it null.
+    class_lookup: ?*const fn (user: *anyopaque, char_id: u16) u32 = null,
+    class_lookup_user: ?*anyopaque = null,
+
+    /// Run bytecode RIGHT NOW with `clip` as the base clip. Only
+    /// DoInitAction uses this; everything else goes through the queue.
+    run_inline: ?*const fn (user: *anyopaque, clip: *MovieClip, code: []const u8) void = null,
+
+    pub fn registeredClass(self: *Context, char_id: u16) u32 {
+        const f = self.class_lookup orelse return 0;
+        return f(self.class_lookup_user.?, char_id);
+    }
+
+    pub fn runInline(self: *Context, clip: *MovieClip, code: []const u8) void {
+        const f = self.run_inline orelse return;
+        f(self.class_lookup_user.?, clip, code);
+    }
 
     pub fn deinit(self: *Context, gpa: std.mem.Allocator) void {
         self.drainGraveyard(gpa);
         self.graveyard.deinit(gpa);
-        self.actions.deinit(gpa);
+        for (&self.queues) |*q| q.deinit(gpa);
+    }
+
+    pub fn queue(self: *Context, gpa: std.mem.Allocator, a: QueuedAction) Error!void {
+        try self.queues[@intFromEnum(a.priority)].append(gpa, a);
+    }
+
+    pub fn popAction(self: *Context) ?QueuedAction {
+        for (&self.queues, &self.heads) |*q, *h| {
+            if (h.* < q.items.len) {
+                defer h.* += 1;
+                return q.items[h.*];
+            }
+        }
+        return null;
     }
 
     pub fn drainGraveyard(self: *Context, gpa: std.mem.Allocator) void {
@@ -61,8 +96,12 @@ pub const Context = struct {
     }
 };
 
+/// Ruffle's ActionPriority, in drain order (context.rs:670-676).
+pub const Priority = enum(u2) { initialize = 0, construct = 1, normal = 2 };
+
 pub const QueuedAction = struct {
     clip: *MovieClip,
+    priority: Priority = .normal,
     what: union(enum) {
         /// A DoAction / ClipAction bytecode slice.
         code: []const u8,
@@ -70,6 +109,11 @@ pub const QueuedAction = struct {
         /// Queued AFTER the SWF-defined handlers for the same event
         /// (ruffle movie_clip.rs:2956-2970).
         method: []const u8,
+        /// A timeline-placed clip being given its registered class: re-point
+        /// `__proto__`, run the `onClipEvent(construct)` bodies, then invoke
+        /// the constructor. `ctor` is 0 when nothing is registered, in which
+        /// case only the event bodies run.
+        construct: struct { ctor: u32, events: []const []const u8 },
     },
 };
 
@@ -209,11 +253,11 @@ pub const MovieClip = struct {
         if (self.placement) |p| {
             for (p.clip_actions) |handler| {
                 if (handler.events & flag != 0) {
-                    try ctx.actions.append(ctx.gpa, .{ .clip = self, .what = .{ .code = handler.actions } });
+                    try ctx.queue(ctx.gpa, .{ .clip = self, .what = .{ .code = handler.actions } });
                 }
             }
         }
-        try ctx.actions.append(ctx.gpa, .{ .clip = self, .what = .{ .method = method } });
+        try ctx.queue(ctx.gpa, .{ .clip = self, .what = .{ .method = method } });
     }
 
     /// Ruffle determine_next_frame: Same (implicit stop) when there is
@@ -234,13 +278,17 @@ pub const MovieClip = struct {
             .remove => |ro| try self.removeAtDepth(ctx, ro.depth),
             .set_background_color => |c| ctx.background_color = c,
             .do_action => |bytecode| if (run_actions) {
-                try ctx.actions.append(ctx.gpa, .{ .clip = self, .what = .{ .code = bytecode } });
+                try ctx.queue(ctx.gpa, .{ .clip = self, .what = .{ .code = bytecode } });
             },
-            .init_action => |ia| if (run_actions) {
-                // Initialize priority: runs before this frame's DoActions.
-                try ctx.actions.insert(ctx.gpa, ctx.init_count, .{ .clip = self, .what = .{ .code = ia.code } });
-                ctx.init_count += 1;
-            },
+            // `#initclip` does NOT run here. Ruffle handles DoInitAction in
+            // PRELOAD (movie_clip.rs:556, inside `preload`, not
+            // `run_frame_internal`), so every init action in the movie has
+            // already executed before frame 1 places anything. That is what
+            // lets `Object.registerClass` in an initclip apply to clips
+            // whose PlaceObject tag appears EARLIER in the same frame —
+            // corpus register_and_init_order and on_construct both depend
+            // on it. `Player.runInitActions` does the pass.
+            .init_action => {},
             .start_sound, .sound_stream_block => {}, // M6
         };
     }
@@ -367,7 +415,7 @@ pub const MovieClip = struct {
     fn instantiate(self: *MovieClip, ctx: *Context, id: u16, po: swf.place.PlaceObject, frame_num: u16) Error!void {
         const obj = try self.instantiateAt(ctx, id, po.depth, frame_num) orelse return;
         try applyPlacement(ctx, obj, po, true);
-        try self.finishInstantiate(ctx, obj);
+        try self.finishInstantiate(ctx, obj, true);
     }
 
     /// Create a character instance at `depth` and link it to this timeline,
@@ -414,7 +462,13 @@ pub const MovieClip = struct {
     }
 
     /// Name it, insert it depth-ordered, and run its first frame.
-    pub fn finishInstantiate(self: *MovieClip, ctx: *Context, obj: *DisplayObject) Error!void {
+    ///
+    /// `queue_construct` is false when the AVM is doing the instantiating
+    /// (`attachMovie` and friends): there the registered class is applied
+    /// IMMEDIATELY by the caller instead of through the action queue, which
+    /// is the whole difference between ruffle's two branches in
+    /// `construct_as_avm1_object`.
+    pub fn finishInstantiate(self: *MovieClip, ctx: *Context, obj: *DisplayObject, queue_construct: bool) Error!void {
         // Flash names every unnamed instance `instanceN` from one global
         // counter (ruffle set_default_instance_name). This happens BEFORE
         // the child runs its own first frame below, so nested placements
@@ -433,9 +487,50 @@ pub const MovieClip = struct {
         // New clips run their first frame on the tick they appear (and
         // are skipped by this tick's child loop — see `ran_this_tick`).
         if (obj.kind == .clip) {
+            // Construct is queued BEFORE the first frame runs. Ruffle's
+            // instantiate_child passes `run_frame = false` to
+            // post_instantiation and only then calls run_frame_avm1, so a
+            // parent's constructor is queued ahead of the children that
+            // parent's frame 1 is about to place (corpus
+            // register_and_init_order traces the parent first).
+            if (queue_construct) try queueConstruct(ctx, obj);
             try obj.kind.clip.runFrame(ctx);
             obj.kind.clip.ran_this_tick = true;
         }
+    }
+
+    /// `onClipEvent(initialize)` bodies go to the Initialize bucket; the
+    /// `construct` bodies ride along with the registered constructor in one
+    /// Construct entry, because the prototype has to be re-pointed before
+    /// they run (ruffle movie_clip.rs:2060-2090).
+    fn queueConstruct(ctx: *Context, obj: *DisplayObject) Error!void {
+        const clip = obj.kind.clip;
+        var events: std.ArrayList([]const u8) = .empty;
+        for (obj.clip_actions) |handler| {
+            if (handler.events & swf.place.ClipEvent.INITIALIZE != 0) {
+                try ctx.queue(ctx.gpa, .{
+                    .clip = clip,
+                    .priority = .initialize,
+                    .what = .{ .code = handler.actions },
+                });
+            }
+            if (handler.events & swf.place.ClipEvent.CONSTRUCT != 0) {
+                try events.append(ctx.gpa, handler.actions);
+            }
+        }
+        const ctor = ctx.registeredClass(obj.character_id);
+        if (ctor == 0 and events.items.len == 0) {
+            events.deinit(ctx.gpa);
+            return;
+        }
+        try ctx.queue(ctx.gpa, .{
+            .clip = clip,
+            .priority = .construct,
+            .what = .{ .construct = .{
+                .ctor = ctor,
+                .events = try events.toOwnedSlice(ctx.gpa),
+            } },
+        });
     }
 };
 
@@ -575,8 +670,10 @@ test "timeline: place, sprite instantiation, remove, implicit stop, goto replay"
     // only BYTECODE entries — every clip also queues an onLoad/
     // onEnterFrame method entry per tick.
     var code_entries: usize = 0;
-    for (ctx.actions.items) |qa| {
-        if (qa.what == .code) code_entries += 1;
+    for (ctx.queues) |q| {
+        for (q.items) |qa| {
+            if (qa.what == .code) code_entries += 1;
+        }
     }
     try testing.expectEqual(@as(usize, 1), code_entries);
     try testing.expectEqual(root.frames[2].controls.len, 2); // remove + do_action

@@ -98,7 +98,8 @@ pub fn install(vm: *Vm) !void {
     try method(vm, vm.boolean_proto, "valueOf", boolValueOf, hidden);
 
     // --- Constructors -----------------------------------------------------
-    _ = try decl.class(vm, "Object", ctorObject, vm.object_proto, attrs);
+    const object_class = try decl.class(vm, "Object", ctorObject, vm.object_proto, attrs);
+    try method(vm, object_class, "registerClass", objRegisterClass, frozen);
     _ = try decl.class(vm, "Function", ctorFunction, vm.function_proto, ver(attrs, decl.V6));
     _ = try decl.class(vm, "Array", ctorArray, vm.array_proto, attrs);
     const string_class = try decl.class(vm, "String", ctorString, vm.string_proto, attrs);
@@ -280,6 +281,25 @@ fn objValueOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 /// `a.isPrototypeOf(b)` — is `a` anywhere on `b`'s prototype chain? Uses
 /// `Vm.protoValue` so it obeys the same chain rules as everything else
 /// (a `super` contributes its base proto; a display object ends the chain).
+/// `Object.registerClass(symbol, ctor)` — bind an ExportAssets symbol to a
+/// constructor, so every future instance of that character is built from it.
+/// `null`/`undefined` unregisters. Anything that is not a function returns
+/// false and changes nothing (ruffle globals/object.rs register_class).
+fn objRegisterClass(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    if (args.len < 2) return .{ .boolean = false };
+    const ctor = args[1];
+    const handle: runtime.ObjectHandle = switch (ctor) {
+        .null_value, .undefined_value => 0,
+        .object => |h| if (vm.isCallable(ctor)) h else return .{ .boolean = false },
+        else => return .{ .boolean = false },
+    };
+    const name = try vm.toStringValue(args[0]);
+    try vm.registerClass(name, handle);
+    return .{ .boolean = true };
+}
+
 fn objIsPrototypeOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .{ .boolean = false };

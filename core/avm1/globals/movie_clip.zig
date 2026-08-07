@@ -415,26 +415,10 @@ fn duplicateMovieClip(p: *anyopaque, this: Value, args: []const Value) anyerror!
     // The METHOD biases the depth; the CloneSprite opcode does not
     // (ruffle globals/movie_clip.rs:928).
     const depth = stage.biasDepth(try depthArg(vm, arg(args, 1)));
-    const obj = try stage.cloneSprite(vm, t, name, depth) orelse return .undefined_value;
-    const v = try newClipValue(vm, obj);
-    try applyInitObject(vm, v, arg(args, 2));
+    const obj = try stage.cloneSprite(vm, t, name, depth, arg(args, 2)) orelse return .undefined_value;
     // SWF5 and below return nothing at all.
     if (vm.swf_version < 6) return .undefined_value;
-    return v;
-}
-
-/// The optional trailing `initObject`: every enumerable key is copied onto
-/// the new clip before anything else can observe it
-/// (ruffle movie_clip.rs:2042-2054).
-fn applyInitObject(vm: *Vm, clip: Value, init: Value) !void {
-    if (init != .object or clip != .object) return;
-    const src = init.object;
-    var i: usize = 0;
-    while (i < vm.objects.get(src).props.items.len) : (i += 1) {
-        const prop = vm.objects.get(src).props.items[i];
-        if (prop.attrs.dont_enum) continue;
-        try vm.setProperty(clip.object, prop.key, prop.value, clip);
-    }
+    return newClipValue(vm, obj);
 }
 
 fn attachMovie(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -446,10 +430,9 @@ fn attachMovie(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const name = try vm.toStringValue(arg(args, 1));
     const depth = stage.biasDepth(try depthArg(vm, arg(args, 2)));
     if (!stage.depthPlaceable(depth)) return .undefined_value;
-    const obj = try stage.createAt(vm, clip, char_id, depth, name, null) orelse return .undefined_value;
-    const v = try newClipValue(vm, obj);
-    try applyInitObject(vm, v, arg(args, 3));
-    return v;
+    const obj = try stage.createAt(vm, clip, char_id, depth, name, null, arg(args, 3)) orelse
+        return .undefined_value;
+    return newClipValue(vm, obj);
 }
 
 fn createEmptyMovieClip(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -460,7 +443,8 @@ fn createEmptyMovieClip(p: *anyopaque, this: Value, args: []const Value) anyerro
     // No depth validation here — ruffle's create_empty_movie_clip has none.
     const depth = stage.biasDepth(try depthArg(vm, arg(args, 1)));
     // Character 0 means "no character": an empty, frameless timeline.
-    const obj = try stage.createAt(vm, clip, 0, depth, name, null) orelse return .undefined_value;
+    const obj = try stage.createAt(vm, clip, 0, depth, name, null, .undefined_value) orelse
+        return .undefined_value;
     return newClipValue(vm, obj);
 }
 

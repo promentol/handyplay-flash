@@ -9,6 +9,7 @@ array_properties
 array_prototyping
 array_slice
 array_trivial
+as1_constructor_v6
 as1_constructor_v7
 as2_oop
 as2_super_via_manual_prototype
@@ -35,6 +36,7 @@ bitxor
 call
 call_method_empty_name
 catch_references_registers
+clip_constructors
 closure_scope
 conflicting_instance_names
 constructor_function
@@ -84,6 +86,7 @@ greaterthan_swf5
 greaterthan_swf8
 hittest_lockroot
 hittest_winding_rule
+init_object_order
 is_finite
 is_prototype_of
 issue_1086
@@ -110,6 +113,7 @@ movieclip_default_state
 movieclip_get_instance_at_depth
 movieclip_getbounds
 movieclip_hittest
+movieclip_init_object
 movieclip_line_gradient_style
 movieclip_name_from_timeline
 movieclip_prototype_extension
@@ -119,9 +123,12 @@ nested_textfields_in_buttons
 netstream_play_flv_screen
 new_object_enumerate
 o
+on_construct
 primitive_instanceof
 property_invalid_base_clip
 prototype_properties
+register_and_init_order
+register_class_return_value
 remove_movie_clip
 removed_base_clip_tell_target
 removed_target_clip_scope

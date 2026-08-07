@@ -56,6 +56,8 @@ pub const Drag = struct {
     offset_y: i32 = 0,
 };
 
+pub const ClassEntry = struct { name: strings.AvmString, ctor: ObjectHandle };
+
 pub const Vm = struct {
     gpa: std.mem.Allocator,
     arena_state: *std.heap.ArenaAllocator,
@@ -150,6 +152,9 @@ pub const Vm = struct {
     /// method call is 0; `super.m()` sets 1 so the chain walks upward
     /// instead of recursing forever.
     super_depth: u8 = 0,
+    /// `Object.registerClass` symbol -> constructor. Small and rarely
+    /// written, so a list beats a map; lookup obeys the movie's case rule.
+    class_registry: std.ArrayList(ClassEntry) = .empty,
     /// Non-zero while inside `construct` — native constructors box their
     /// argument only for `new X()`, and coerce for a plain `X()` call
     /// (ruffle globals/{number,string,boolean}.rs split those paths).
@@ -277,11 +282,14 @@ pub const Vm = struct {
         const second: strings.AvmString = if (hint == .string) S("valueOf") else S("toString");
         const lookup_order = [2]strings.AvmString{ first, second };
         for (lookup_order) |name| {
-            if (self.objects.getChained(h, name, self.case_sensitive)) |m| {
-                if (self.isCallable(m)) {
-                    const r = self.callFunction(m, v, &.{}) catch Value.undefined_value;
-                    if (r.isPrimitive()) return r;
-                }
+            // getProperty, not getChained: a `super` view owns nothing and
+            // has no prototype of its own, so a raw chain walk finds no
+            // toString and `trace(super)` degrades to "[type Object]"
+            // instead of "[object Object]" (corpus clip_constructors).
+            const m = self.getProperty(h, name, v) catch Value.undefined_value;
+            if (self.isCallable(m)) {
+                const r = self.callFunction(m, v, &.{}) catch Value.undefined_value;
+                if (r.isPrimitive()) return r;
             }
         }
         // Boxed primitives unwrap even without methods.
@@ -551,6 +559,52 @@ pub const Vm = struct {
         }
     }
 
+    // --- Object.registerClass ---------------------------------------------
+
+    /// Register (ctor != 0) or unregister a class for an export symbol.
+    pub fn registerClass(self: *Vm, name: strings.AvmString, ctor: ObjectHandle) Error!void {
+        for (self.class_registry.items, 0..) |e, i| {
+            if (self.nameMatches(e.name, name)) {
+                if (ctor == 0) {
+                    _ = self.class_registry.orderedRemove(i);
+                } else {
+                    self.class_registry.items[i].ctor = ctor;
+                }
+                return;
+            }
+        }
+        if (ctor == 0) return;
+        const key = try self.arena().dupe(u16, name);
+        try self.class_registry.append(self.arena(), .{ .name = key, .ctor = ctor });
+    }
+
+    pub fn registeredClass(self: *Vm, name: strings.AvmString) ?ObjectHandle {
+        for (self.class_registry.items) |e| {
+            if (self.nameMatches(e.name, name)) return e.ctor;
+        }
+        return null;
+    }
+
+    fn nameMatches(self: *Vm, a: strings.AvmString, b: strings.AvmString) bool {
+        return if (self.case_sensitive) strings.eql(a, b) else strings.eqlIgnoreCase(a, b);
+    }
+
+    /// Run a constructor against an object that already exists — what a
+    /// registered class does to a clip the timeline placed. Ruffle's
+    /// `construct_on_existing`: define `__constructor__`, call with `super`
+    /// starting one prototype up, and IGNORE the return value.
+    pub fn constructOnExisting(self: *Vm, ctor: ObjectHandle, obj: ObjectHandle) anyerror!void {
+        const c: Value = .{ .object = ctor };
+        if (!self.isCallable(c)) return;
+        try self.objects.putWithAttrs(obj, S("__constructor__"), c, .{ .dont_enum = true }, self.case_sensitive);
+        if (self.swf_version < 7) {
+            try self.objects.putWithAttrs(obj, S("constructor"), c, .{ .dont_enum = true }, self.case_sensitive);
+        }
+        self.in_construct += 1;
+        defer self.in_construct -= 1;
+        _ = try self.callWithSuperDepth(c, .{ .object = obj }, &.{}, 1);
+    }
+
     /// `new` semantics: fresh object with ctor.prototype, ctor invoked
     /// with it as this; object result overrides.
     pub fn construct(self: *Vm, ctor: Value, args: []const Value) anyerror!Value {
@@ -562,6 +616,11 @@ pub const Vm = struct {
             Value{ .object = self.object_proto };
         self.objects.get(obj).proto = if (proto == .object) proto else .{ .object = self.object_proto };
         try self.objects.putWithAttrs(obj, S("__constructor__"), ctor, .{ .dont_enum = true }, self.case_sensitive);
+        // Below SWF7 `constructor` is defined on the INSTANCE as well, not
+        // just inherited from the prototype (ruffle define_constructor_props).
+        if (self.swf_version < 7) {
+            try self.objects.putWithAttrs(obj, S("constructor"), ctor, .{ .dont_enum = true }, self.case_sensitive);
+        }
         const this: Value = .{ .object = obj };
         // A constructor frame's `super` starts at depth 1, i.e. at
         // `this.__proto__` — which is exactly where ActionExtends put the

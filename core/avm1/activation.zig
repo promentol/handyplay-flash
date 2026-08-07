@@ -1205,7 +1205,7 @@ pub const Activation = struct {
                 const name = try self.popString();
                 const source = self.pop();
                 if (try self.resolveDisplayTarget(source)) |t| {
-                    _ = try stage.cloneSprite(self.vm, t, name, depth);
+                    _ = try stage.cloneSprite(self.vm, t, name, depth, .undefined_value);
                 }
             },
             .remove_sprite => {

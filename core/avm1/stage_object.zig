@@ -887,6 +887,7 @@ pub fn createAt(
     depth: i32,
     name: []const u16,
     copy_from: ?*const DisplayObject,
+    init_object: Value,
 ) !?*DisplayObject {
     const ctx = displayCtx(vm) orelse return null;
     // Occupying a depth replaces whatever is there (ruffle
@@ -907,20 +908,59 @@ pub fn createAt(
             if (src.kind.clip.drawing) |*d| obj.kind.clip.drawing = try d.clone(ctx.gpa);
         }
     }
-    try parent.finishInstantiate(ctx, obj);
+    // A registered class replaces the clip's prototype BEFORE its first
+    // frame runs, so frame-1 code already sees the class's methods
+    // (ruffle construct_as_avm1_object, AVM branch).
+    const ctor = ctx.registeredClass(char_id);
+    if (ctor != 0 and obj.kind == .clip) {
+        const h = try clipObject(vm, obj.kind.clip);
+        if (vm.objects.getChained(ctor, S("prototype"), vm.case_sensitive)) |proto| {
+            vm.objects.get(h).proto = proto;
+        }
+    }
+    try parent.finishInstantiate(ctx, obj, ctor == 0);
+    if (ctor != 0 and obj.kind == .clip) {
+        const h = try clipObject(vm, obj.kind.clip);
+        // The init object lands BETWEEN the first frame and the
+        // constructor. Ruffle reverses ENUMERATION order here, and AVM1
+        // enumeration is already reverse-insertion, so a constructed clip
+        // sees the keys in insertion order — the opposite of the plain
+        // attachMovie case below. Corpus init_object_order pins both.
+        try applyInitObject(vm, h, init_object, false);
+        try vm.constructOnExisting(ctor, h);
+    } else if (init_object == .object) {
+        const h = try handleOf(vm, obj);
+        try applyInitObject(vm, h, init_object, true);
+    }
     return obj;
+}
+
+/// Copy every enumerable key of `init` onto `dest`, in insertion order or
+/// its reverse. The order is observable through setters and content depends
+/// on it (ruffle movie_clip.rs:2042-2054).
+pub fn applyInitObject(vm: *Vm, dest: ObjectHandle, init: Value, reverse: bool) !void {
+    if (init != .object) return;
+    const src = init.object;
+    const n = vm.objects.get(src).props.items.len;
+    var i: usize = 0;
+    while (i < n and i < vm.objects.get(src).props.items.len) : (i += 1) {
+        const idx = if (reverse) n - 1 - i else i;
+        const prop = vm.objects.get(src).props.items[idx];
+        if (prop.attrs.dont_enum) continue;
+        try vm.setProperty(dest, prop.key, prop.value, .{ .object = dest });
+    }
 }
 
 /// ruffle `clone_sprite` (globals/movie_clip.rs:954-1031): a NEW instance
 /// of the source's character on the SOURCE'S PARENT, carrying the source's
 /// matrix and colour transform, playing from frame 1. The root cannot be
 /// duplicated because it has no parent.
-pub fn cloneSprite(vm: *Vm, source: Target, name: []const u16, depth: i32) !?*DisplayObject {
+pub fn cloneSprite(vm: *Vm, source: Target, name: []const u16, depth: i32, init_object: Value) !?*DisplayObject {
     const parent = source.parent() orelse return null;
     if (!depthPlaceable(depth)) return null;
     // Matrix, colour transform and onClipEvent handlers all come from the
     // source (ruffle clone_sprite:1004-1013).
-    return createAt(vm, parent, source.obj.character_id, depth, name, source.obj);
+    return createAt(vm, parent, source.obj.character_id, depth, name, source.obj, init_object);
 }
 
 /// The clip's script-drawing store, created on first use. Null when the
