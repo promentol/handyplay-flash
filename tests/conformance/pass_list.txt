@@ -86,6 +86,7 @@ greaterthan_swf5
 greaterthan_swf8
 hittest_lockroot
 hittest_winding_rule
+infinite_recursion_virtual_property
 init_object_order
 is_finite
 is_prototype_of
@@ -127,6 +128,7 @@ on_construct
 primitive_instanceof
 property_invalid_base_clip
 prototype_properties
+recursive_prototypes
 register_and_init_order
 register_class_return_value
 remove_movie_clip
@@ -178,4 +180,9 @@ uncaught_exception_bubbled
 undefined_to_string_swf6
 use_hand_cursor
 variable_args
+watch
+watch_infinite_recursion
+watch_proto_recursion
+watch_textfield
+watch_virtual_property_proto
 with_return

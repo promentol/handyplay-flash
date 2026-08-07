@@ -93,6 +93,15 @@ pub const Activation = struct {
                 return .next;
             }
             self.vm.budget -= 1;
+            // A cyclic prototype chain is a hard stack overflow in Flash.
+            // It aborts the WHOLE action, not just the frame that hit it —
+            // corpus watch_proto_recursion traces one line and stops, with
+            // the statements after the offending read never running. So it
+            // travels as a Zig error and unwinds every activation.
+            if (self.vm.objects.chain_overflow) {
+                self.vm.objects.chain_overflow = false;
+                return error.Avm1StackOverflow;
+            }
             const before_pos = self.r.pos;
             _ = before_pos;
             const action = (opcodes.readAction(&self.r) catch return .next) orelse return .next;
@@ -408,15 +417,22 @@ pub const Activation = struct {
         var bottom = self.scopeObject(self.scope);
         while (cur != 0) {
             const node = self.scopeObject(cur);
-            if (self.vm.objects.hasOwn(node, name, cs)) {
-                try self.vm.objects.put(node, name, v, cs);
-                return;
-            }
+            if (self.vm.objects.hasOwn(node, name, cs)) return self.storeInScope(node, name, v);
             if (try stage.assignMember(self.vm, node, name, v)) return;
             bottom = node;
             cur = self.vm.objects.get(cur).scope_parent;
         }
-        try self.vm.objects.put(bottom, name, v, cs);
+        try self.storeInScope(bottom, name, v);
+    }
+
+    /// A timeline variable is an ordinary property of the clip's object, so
+    /// a `watch` on the clip applies to it — but only take the accessor-
+    /// aware path when something is actually watching.
+    fn storeInScope(self: *Activation, node: ObjectHandle, name: strings.AvmString, v: Value) !void {
+        if (self.vm.objects.get(node).watchers.len == 0) {
+            return self.vm.objects.put(node, name, v, self.vm.case_sensitive);
+        }
+        return self.vm.setProperty(node, name, v, .{ .object = node });
     }
 
     // --- member access ----------------------------------------------------

@@ -57,6 +57,8 @@ pub fn install(vm: *Vm) !void {
     try method(vm, vm.object_proto, "isPropertyEnumerable", objIsPropEnum, ver(hidden, decl.V6));
     try method(vm, vm.object_proto, "isPrototypeOf", objIsPrototypeOf, ver(hidden, decl.V6));
     try method(vm, vm.object_proto, "addProperty", objAddProperty, ver(hidden, decl.V6));
+    try method(vm, vm.object_proto, "watch", objWatch, ver(hidden, decl.V6));
+    try method(vm, vm.object_proto, "unwatch", objUnwatch, ver(hidden, decl.V6));
 
     // --- Function.prototype ----------------------------------------------
     try method(vm, vm.function_proto, "call", fnCall, hidden);
@@ -281,6 +283,52 @@ fn objValueOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 /// `a.isPrototypeOf(b)` — is `a` anywhere on `b`'s prototype chain? Uses
 /// `Vm.protoValue` so it obeys the same chain rules as everything else
 /// (a `super` contributes its base proto; a display object ends the chain).
+/// `obj.watch(name, callback, userData)` — intercept writes to `name`.
+/// The watch lives beside the properties, not on one: it can be installed
+/// before the property exists and survives `delete`.
+fn objWatch(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object or args.len == 0) return .{ .boolean = false };
+    const callback = arg(args, 1);
+    if (!vm.isCallable(callback)) return .{ .boolean = false };
+    const name = try vm.toStringValue(args[0]);
+    const o = vm.objects.get(this.object);
+    if (o.findWatcher(name, vm.case_sensitive)) |w| {
+        w.callback = callback.object;
+        w.user_data = arg(args, 2);
+        return .{ .boolean = true };
+    }
+    const grown = try vm.arena().alloc(object_mod.Watcher, o.watchers.len + 1);
+    @memcpy(grown[0..o.watchers.len], o.watchers);
+    grown[o.watchers.len] = .{
+        .key = try vm.arena().dupe(u16, name),
+        .callback = callback.object,
+        .user_data = arg(args, 2),
+    };
+    o.watchers = grown;
+    return .{ .boolean = true };
+}
+
+fn objUnwatch(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object or args.len == 0) return .{ .boolean = false };
+    const name = try vm.toStringValue(args[0]);
+    const o = vm.objects.get(this.object);
+    for (o.watchers, 0..) |w, i| {
+        const match = if (vm.case_sensitive)
+            strings.eql(w.key, name)
+        else
+            strings.eqlIgnoreCase(w.key, name);
+        if (!match) continue;
+        const shrunk = try vm.arena().alloc(object_mod.Watcher, o.watchers.len - 1);
+        @memcpy(shrunk[0..i], o.watchers[0..i]);
+        @memcpy(shrunk[i..], o.watchers[i + 1 ..]);
+        o.watchers = shrunk;
+        return .{ .boolean = true };
+    }
+    return .{ .boolean = false };
+}
+
 /// `Object.registerClass(symbol, ctor)` — bind an ExportAssets symbol to a
 /// constructor, so every future instance of that character is built from it.
 /// `null`/`undefined` unregisters. Anything that is not a function returns
@@ -1317,9 +1365,12 @@ fn objAddProperty(p: *anyopaque, this: Value, args: []const Value) anyerror!Valu
     }
     const o = vm.objects.get(this.object);
     if (o.find(name, vm.case_sensitive)) |idx| {
+        // The STORED value survives: ruffle's `Property::set_virtual` only
+        // installs the accessors. `watch` then reports that stored value as
+        // the old one, without ever calling the getter — corpus
+        // watch_virtual_property_proto expects `old_val: 3`.
         o.props.items[idx].getter = getter.object;
         o.props.items[idx].setter = setter_h;
-        o.props.items[idx].value = .undefined_value;
     } else {
         const key = try vm.arena().dupe(u16, name);
         try o.props.append(vm.arena(), .{

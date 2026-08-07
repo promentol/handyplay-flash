@@ -152,6 +152,12 @@ pub const Vm = struct {
     /// method call is 0; `super.m()` sets 1 so the chain walks upward
     /// instead of recursing forever.
     super_depth: u8 = 0,
+    /// Watcher invocations currently on the stack, as (object, name-hash)
+    /// keys. Flash caps recursion PER PROPERTY at 65 nested calls rather
+    /// than by total stack depth (ruffle activation.rs
+    /// is_over_property_recursion_limit), and the two watch_recursion tests
+    /// measure exactly how deep it gets.
+    property_call_stack: std.ArrayList(u64) = .empty,
     /// `Object.registerClass` symbol -> constructor. Small and rarely
     /// written, so a list beats a map; lookup obeys the movie's case rule.
     class_registry: std.ArrayList(ClassEntry) = .empty,
@@ -186,6 +192,7 @@ pub const Vm = struct {
         const gpa = self.gpa;
         self.stack.deinit(gpa);
         self.pools.deinit(gpa);
+        self.property_call_stack.deinit(gpa);
         self.trace_buf.deinit(gpa);
         self.arena_state.deinit();
         gpa.destroy(self.arena_state);
@@ -469,7 +476,11 @@ pub const Vm = struct {
         const slot = self.objects.findChained(start, name, self.case_sensitive) orelse
             return .undefined_value;
         if (slot.getter != 0) {
-            return self.callFunction(.{ .object = slot.getter }, recv, &.{});
+            if (self.enterPropertyCall(start, name)) |_| {
+                defer self.leavePropertyCall();
+                return self.callFunction(.{ .object = slot.getter }, recv, &.{});
+            }
+            return .undefined_value;
         }
         return slot.value;
     }
@@ -489,12 +500,83 @@ pub const Vm = struct {
         return p;
     }
 
+    const PROPERTY_RECURSION_LIMIT = 65;
+
+    fn propertyKey(h: ObjectHandle, name: strings.AvmString) u64 {
+        var hash: u32 = 2166136261;
+        for (name) |c| {
+            hash ^= c;
+            hash *%= 16777619;
+        }
+        return (@as(u64, h) << 32) | hash;
+    }
+
+    /// Claim a slot on the per-property recursion stack. Null means the
+    /// limit is reached and the call must be SKIPPED — Flash does not warn,
+    /// it simply stops descending. Getters, setters and watchers for the
+    /// same property share one budget, which is what the two
+    /// `watch_recursion` tests measure.
+    fn enterPropertyCall(self: *Vm, h: ObjectHandle, name: strings.AvmString) ?void {
+        const key = propertyKey(h, name);
+        var same: usize = 0;
+        for (self.property_call_stack.items) |k| {
+            if (k == key) same += 1;
+        }
+        if (same >= PROPERTY_RECURSION_LIMIT) return null;
+        self.property_call_stack.append(self.gpa, key) catch return null;
+        return {};
+    }
+
+    fn leavePropertyCall(self: *Vm) void {
+        _ = self.property_call_stack.pop();
+    }
+
+    /// Run the watcher registered for `name` on `h`, if any, and return the
+    /// value it wants stored — the callback's RETURN VALUE replaces the
+    /// assignment, which is what lets a watcher veto or rewrite a write.
+    /// A throw out of the watcher stores undefined and keeps unwinding.
+    fn callWatcher(self: *Vm, h: ObjectHandle, name: strings.AvmString, v: Value, this: Value) anyerror!Value {
+        const w = (self.objects.get(h).findWatcher(name, self.case_sensitive) orelse return v).*;
+        if (!self.isCallable(.{ .object = w.callback })) return v;
+
+        const key = propertyKey(h, name);
+        var same: usize = 0;
+        for (self.property_call_stack.items) |k| {
+            if (k == key) same += 1;
+        }
+        // Over the limit the call is simply skipped and the plain write
+        // goes ahead; Flash does not report it.
+        if (same >= PROPERTY_RECURSION_LIMIT) return v;
+
+        // The STORED value, not the getter's — ruffle calls `get_stored`.
+        const old = self.objects.getChained(h, name, self.case_sensitive) orelse Value.undefined_value;
+        return self.callFunction(
+            .{ .object = w.callback },
+            this,
+            &.{ .{ .string = name }, old, v, w.user_data },
+        ) catch |e| {
+            if (e == error.Avm1Thrown) {
+                // The watcher throwing stores undefined, then rethrows.
+                try self.objects.put(h, name, .undefined_value, self.case_sensitive);
+            }
+            return e;
+        };
+    }
+
     /// Property write honoring addProperty setters (proto-chain aware:
     /// an inherited accessor intercepts writes to the child).
-    pub fn setProperty(self: *Vm, h: ObjectHandle, name: strings.AvmString, v: Value, this: Value) anyerror!void {
+    pub fn setProperty(self: *Vm, h: ObjectHandle, name: strings.AvmString, v_in: Value, this: Value) anyerror!void {
+        if (name.len == 0) return;
+        const v = if (self.objects.get(h).watchers.len == 0)
+            v_in
+        else
+            try self.callWatcher(h, name, v_in, this);
         if (self.objects.findChainedForWrite(h, name, self.case_sensitive)) |slot| {
             if (slot.setter != 0) {
-                _ = try self.callFunction(.{ .object = slot.setter }, this, &.{v});
+                if (self.enterPropertyCall(h, name)) |_| {
+                    defer self.leavePropertyCall();
+                    _ = try self.callFunction(.{ .object = slot.setter }, this, &.{v});
+                }
                 return;
             }
             if (slot.getter != 0) return; // getter-only: writes ignored
@@ -523,18 +605,27 @@ pub const Vm = struct {
 
     /// SetVariable semantics: overwrite an existing binding anywhere on
     /// the chain, else define on the BOTTOM (target/timeline) scope.
-    pub fn scopeSet(self: *Vm, scope: ObjectHandle, name: strings.AvmString, v: Value) Error!void {
+    pub fn scopeSet(self: *Vm, scope: ObjectHandle, name: strings.AvmString, v: Value) anyerror!void {
         var cur = scope;
         var bottom = scope;
         while (cur != 0) {
             if (self.objects.hasOwn(cur, name, self.case_sensitive)) {
-                try self.objects.put(cur, name, v, self.case_sensitive);
-                return;
+                return self.storeInScope(cur, name, v);
             }
             bottom = cur;
             cur = self.objects.get(cur).scope_parent;
         }
-        try self.objects.put(bottom, name, v, self.case_sensitive);
+        return self.storeInScope(bottom, name, v);
+    }
+
+    /// A timeline variable is an ordinary property of the clip's object, so
+    /// `watch` applies to it too — but only pay for the accessor-aware path
+    /// when something is actually watching.
+    fn storeInScope(self: *Vm, h: ObjectHandle, name: strings.AvmString, v: Value) anyerror!void {
+        if (self.objects.get(h).watchers.len == 0) {
+            return self.objects.put(h, name, v, self.case_sensitive);
+        }
+        return self.setProperty(h, name, v, .{ .object = h });
     }
 
     /// DefineLocal: always on the innermost scope.

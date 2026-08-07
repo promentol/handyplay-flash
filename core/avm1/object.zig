@@ -54,6 +54,15 @@ pub const Property = struct {
     setter: ObjectHandle = 0,
 };
 
+/// An `Object.prototype.watch` registration. Kept in a list of its own, not
+/// on `Property`: a watch can be installed on a name that has no property
+/// yet, and it must survive that property being deleted.
+pub const Watcher = struct {
+    key: strings.AvmString,
+    callback: ObjectHandle,
+    user_data: Value,
+};
+
 /// Native function signature. `vm` is *runtime.Vm behind anyopaque to keep
 /// this module cycle-light; runtime.zig provides a typed wrapper.
 pub const NativeFn = *const fn (vm: *anyopaque, this: Value, args: []const Value) anyerror!Value;
@@ -120,6 +129,16 @@ pub const ScriptObject = struct {
     interfaces: []const ObjectHandle = &.{},
     /// Scope-chain parent link (scope objects only; 0 = none).
     scope_parent: ObjectHandle = 0,
+    /// `Object.prototype.watch` registrations. Almost always empty.
+    watchers: []Watcher = &.{},
+
+    pub fn findWatcher(self: *const ScriptObject, name: strings.AvmString, cs: bool) ?*Watcher {
+        for (self.watchers) |*w| {
+            const match = if (cs) strings.eql(w.key, name) else strings.eqlIgnoreCase(w.key, name);
+            if (match) return w;
+        }
+        return null;
+    }
 
     pub fn find(self: *const ScriptObject, name: strings.AvmString, case_sensitive: bool) ?usize {
         for (self.props.items, 0..) |p, i| {
@@ -140,6 +159,12 @@ pub const Objects = struct {
     /// Needed here because reads must honour the ASSetPropFlags version
     /// gate (ruffle filters in get_local_stored, not just on enumeration).
     swf_version: u8 = 6,
+    /// Set when a prototype chain walk hit the depth cap — i.e. the chain
+    /// is a cycle. Flash treats that as a hard stack overflow and abandons
+    /// the running action, so the interpreter checks and bails rather than
+    /// quietly reporting "not found" (corpus watch_proto_recursion stops
+    /// mid-handler). Cleared by the interpreter when it acts on it.
+    chain_overflow: bool = false,
 
     pub fn init(arena: std.mem.Allocator) Objects {
         return .{ .arena = arena };
@@ -178,6 +203,7 @@ pub const Objects = struct {
         var current = h;
         var depth: u32 = 0;
         while (depth < 256) : (depth += 1) {
+            if (depth == 255) self.chain_overflow = true;
             if (self.findOwn(current, name, cs)) |p| {
                 if (!versionHidden(p.attrs, self.swf_version)) return p;
             }
@@ -245,6 +271,7 @@ pub const Objects = struct {
         var current = h;
         var depth: u32 = 0;
         while (depth < 256) : (depth += 1) {
+            if (depth == 255) self.chain_overflow = true;
             if (self.getOwn(current, name, cs)) |v| return v;
             const proto = self.get(current).proto;
             if (proto != .object) return null;
