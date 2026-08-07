@@ -18,7 +18,11 @@ const movie_clip = @import("movie_clip.zig");
 
 pub const DisplayObject = struct {
     character_id: u16,
-    depth: u16,
+    /// SWF tags only ever use 0..65535, but SCRIPTS address a much wider
+    /// range (ruffle's Depth is i32) — `remove_movie_clip` exercises
+    /// "wacky depths" well past u16. Timeline depths are promoted on the
+    /// way in; only clip_depth stays a raw tag field.
+    depth: i32,
     /// Non-zero: this object masks depths (depth, clip_depth].
     clip_depth: u16 = 0,
     matrix: swf.reader.Matrix = .identity,
@@ -49,6 +53,10 @@ pub const DisplayObject = struct {
     /// Lazily-created AVM1 object (0 = none). Clips keep theirs on the
     /// MovieClip; buttons and text fields keep theirs here.
     avm_object: u32 = 0,
+    /// Off the display list but possibly still script-referenced. Clips
+    /// carry the same flag on their MovieClip; buttons and text fields
+    /// need it here or a removed one keeps reading as a live object.
+    removed: bool = false,
 
     // Decomposed transform cache — valid only while `sr_cached`.
     // Scales are PERCENT (100 = 1.0), stored exactly as ActionScript set

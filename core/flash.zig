@@ -147,7 +147,11 @@ pub const Player = struct {
         };
         defer ctx.deinit(self.gpa);
         self.cur_ctx = &ctx;
-        defer self.cur_ctx = null;
+        self.vm.display_ctx = @ptrCast(&ctx);
+        defer {
+            self.cur_ctx = null;
+            self.vm.display_ctx = null;
+        }
         try self.root.runFrame(&ctx);
         try self.root.applyPendingGoto(&ctx);
         // Drain the action queue (actions can queue more via gotos —
@@ -344,5 +348,6 @@ test {
     _ = @import("avm1/runtime.zig");
     _ = @import("avm1/activation.zig");
     _ = @import("avm1/stage_object.zig");
+    _ = @import("avm1/globals/movie_clip.zig");
     _ = @import("avm1/globals/globals.zig");
 }

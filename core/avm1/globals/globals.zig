@@ -162,6 +162,7 @@ pub fn install(vm: *Vm) !void {
         vm.objects.get(mc_proto).proto = .{ .object = vm.object_proto };
         vm.movieclip_proto = mc_proto;
         try ctor(vm, "MovieClip", ctorMovieClip, mc_proto);
+        try @import("movie_clip.zig").install(vm);
     }
 
     // --- Error ------------------------------------------------------------

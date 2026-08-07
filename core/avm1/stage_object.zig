@@ -59,6 +59,7 @@ pub fn targetOf(vm: *Vm, handle: ObjectHandle) ?Target {
         },
         .display => |ptr| {
             const obj: *DisplayObject = @ptrCast(@alignCast(ptr));
+            if (obj.removed) return null;
             return .{ .clip = null, .obj = obj };
         },
         else => return null,
@@ -801,4 +802,84 @@ test "for..in keys: named children, highest depth first" {
     try testing.expectEqual(@as(usize, 2), keys.items.len);
     try testing.expect(strings.eql(keys.items[0], S("hi")));
     try testing.expect(strings.eql(keys.items[1], S("lo")));
+}
+
+// --- clip creation / removal (A4) ------------------------------------------
+
+/// Scripts address depth N; the display list stores N + 16384. That offset
+/// is what keeps script-created clips above timeline ones, and it doubles
+/// as the "was this placed by a script" test — which is why removal needs
+/// no separate flag. ruffle avm1/globals.rs:858-872.
+pub const AVM_DEPTH_BIAS: i32 = 16384;
+const AVM_MAX_DEPTH: i32 = 2130706428;
+const AVM_MAX_REMOVE_DEPTH: i32 = 2130706416;
+
+fn displayCtx(vm: *Vm) ?*movie_clip.Context {
+    const p = vm.display_ctx orelse return null;
+    return @ptrCast(@alignCast(p));
+}
+
+/// Is this a depth the AVM will place at? Applied to the BIASED value —
+/// so a script depth of -16384 (biased 0) is legal while -20000 is not.
+/// `createEmptyMovieClip` deliberately skips this; ruffle validates only
+/// in attachMovie and clone_sprite.
+pub fn depthPlaceable(swf_depth: i32) bool {
+    return swf_depth >= 0 and swf_depth <= AVM_MAX_DEPTH;
+}
+
+pub fn biasDepth(as_depth: i32) i32 {
+    return as_depth +% AVM_DEPTH_BIAS;
+}
+
+/// Create a character instance on `parent` at a FINAL display-list depth
+/// (already biased by the caller, which is also where validation lives).
+/// `char_id == 0` yields an empty clip (createEmptyMovieClip).
+pub fn createAt(
+    vm: *Vm,
+    parent: *MovieClip,
+    char_id: u16,
+    depth: i32,
+    name: []const u16,
+) !?*DisplayObject {
+    const ctx = displayCtx(vm) orelse return null;
+    // Occupying a depth replaces whatever is there (ruffle
+    // replace_at_depth), unlike a timeline `.place` which refuses.
+    try parent.removeAtDepth(ctx, depth);
+    const obj = try parent.instantiateAt(ctx, char_id, depth, 1) orelse return null;
+    try obj.setName(ctx.gpa, name);
+    try parent.finishInstantiate(ctx, obj);
+    return obj;
+}
+
+/// ruffle `clone_sprite` (globals/movie_clip.rs:954-1031): a NEW instance
+/// of the source's character on the SOURCE'S PARENT, carrying the source's
+/// matrix and colour transform, playing from frame 1. The root cannot be
+/// duplicated because it has no parent.
+pub fn cloneSprite(vm: *Vm, source: Target, name: []const u16, depth: i32) !?*DisplayObject {
+    const parent = source.parent() orelse return null;
+    if (!depthPlaceable(depth)) return null;
+    const obj = try createAt(vm, parent, source.obj.character_id, depth, name) orelse return null;
+    obj.matrix = source.obj.matrix;
+    obj.color_transform = source.obj.color_transform;
+    return obj;
+}
+
+/// ruffle `remove_display_object` (globals.rs:886-897). Only depths in the
+/// script range can be removed, which is what stops a script deleting a
+/// clip the timeline placed.
+pub fn removeDisplayObject(vm: *Vm, t: Target) !bool {
+    const ctx = displayCtx(vm) orelse return false;
+    const depth: i32 = t.obj.depth;
+    if (depth < AVM_DEPTH_BIAS or depth >= AVM_MAX_REMOVE_DEPTH) return false;
+    const parent = t.parent() orelse return false;
+    try parent.removeAtDepth(ctx, t.obj.depth);
+    return true;
+}
+
+/// ExportAssets name -> character id. The library stores the raw SWF bytes,
+/// so the UCS-2 argument comes back down to UTF-8 first.
+pub fn exportedCharacter(vm: *Vm, name: []const u16) !?u16 {
+    const ctx = displayCtx(vm) orelse return null;
+    const utf8 = strings.toUtf8(vm.arena(), name) catch return null;
+    return ctx.movie.lib.exports.get(utf8);
 }

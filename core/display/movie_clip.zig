@@ -234,14 +234,14 @@ pub const MovieClip = struct {
         }
     }
 
-    pub fn childAtDepth(self: *MovieClip, depth: u16) ?*DisplayObject {
+    pub fn childAtDepth(self: *MovieClip, depth: i32) ?*DisplayObject {
         for (self.children.items) |child| {
             if (child.depth == depth) return child;
         }
         return null;
     }
 
-    fn removeAtDepth(self: *MovieClip, ctx: *Context, depth: u16) Error!void {
+    pub fn removeAtDepth(self: *MovieClip, ctx: *Context, depth: i32) Error!void {
         for (self.children.items, 0..) |child, i| {
             if (child.depth == depth) {
                 _ = self.children.orderedRemove(i);
@@ -270,25 +270,42 @@ pub const MovieClip = struct {
     }
 
     fn instantiate(self: *MovieClip, ctx: *Context, id: u16, po: swf.place.PlaceObject, frame_num: u16) Error!void {
-        const character = ctx.movie.lib.getConstPtr(id) orelse return;
-        const kind: DisplayObject.Kind = switch (character.*) {
-            .shape => |*s| .{ .shape = s },
-            .morph_shape => .{ .morph_shape = id },
-            .text => |*t| .{ .text = t },
-            .edit_text => |*et| .{ .edit_text = et },
-            .button => |*btn| .{ .button = btn },
-            .bitmap => .{ .bitmap = id },
-            .sprite => |sprite| blk: {
-                const mc = try ctx.gpa.create(MovieClip);
-                mc.* = MovieClip.init(sprite.frames);
-                break :blk .{ .clip = mc };
-            },
-            .sound, .font => return, // not placeable
+        const obj = try self.instantiateAt(ctx, id, po.depth, frame_num) orelse return;
+        try applyPlacement(ctx, obj, po, true);
+        try self.finishInstantiate(ctx, obj);
+    }
+
+    /// Create a character instance at `depth` and link it to this timeline,
+    /// WITHOUT placing it in the child list yet — the caller applies its
+    /// placement (a PlaceObject tag, or a script's matrix copy) and then
+    /// calls `finishInstantiate`. `char_id == 0` makes an empty clip, which
+    /// is what `createEmptyMovieClip` needs.
+    pub fn instantiateAt(self: *MovieClip, ctx: *Context, id: u16, depth: i32, frame_num: u16) Error!?*DisplayObject {
+        const kind: DisplayObject.Kind = if (id == 0) blk: {
+            const mc = try ctx.gpa.create(MovieClip);
+            mc.* = MovieClip.init(&.{});
+            break :blk .{ .clip = mc };
+        } else blk: {
+            const character = ctx.movie.lib.getConstPtr(id) orelse return null;
+            break :blk switch (character.*) {
+                .shape => |*s| .{ .shape = s },
+                .morph_shape => .{ .morph_shape = id },
+                .text => |*t| .{ .text = t },
+                .edit_text => |*et| .{ .edit_text = et },
+                .button => |*btn| .{ .button = btn },
+                .bitmap => .{ .bitmap = id },
+                .sprite => |sprite| .{ .clip = c: {
+                    const mc = try ctx.gpa.create(MovieClip);
+                    mc.* = MovieClip.init(sprite.frames);
+                    break :c mc;
+                } },
+                .sound, .font => return null, // not placeable
+            };
         };
         const obj = try ctx.gpa.create(DisplayObject);
         obj.* = .{
             .character_id = id,
-            .depth = po.depth,
+            .depth = depth,
             .place_frame = frame_num,
             .kind = kind,
         };
@@ -297,7 +314,11 @@ pub const MovieClip = struct {
             kind.clip.placement = obj;
             kind.clip.parent = self;
         }
-        try applyPlacement(ctx, obj, po, true);
+        return obj;
+    }
+
+    /// Name it, insert it depth-ordered, and run its first frame.
+    pub fn finishInstantiate(self: *MovieClip, ctx: *Context, obj: *DisplayObject) Error!void {
         // Flash names every unnamed instance `instanceN` from one global
         // counter (ruffle set_default_instance_name). This happens BEFORE
         // the child runs its own first frame below, so nested placements
@@ -307,7 +328,7 @@ pub const MovieClip = struct {
         // Insert keeping depth order (render walks the list directly).
         var insert_at: usize = self.children.items.len;
         for (self.children.items, 0..) |child, i| {
-            if (child.depth > po.depth) {
+            if (child.depth > obj.depth) {
                 insert_at = i;
                 break;
             }
@@ -377,6 +398,7 @@ fn retire(ctx: *Context, obj: *DisplayObject) Error!void {
 }
 
 fn markRemoved(obj: *DisplayObject) void {
+    obj.removed = true;
     if (obj.kind != .clip) return;
     const mc = obj.kind.clip;
     mc.removed = true;

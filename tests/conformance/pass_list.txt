@@ -21,6 +21,7 @@ as_set_prop_flags_version_swf7
 as_set_prop_flags_version_swf8
 as_set_prop_flags_version_swf9
 as_transformed_flag
+attach_movie_stop
 bad_swf_tag_past_eof
 bitand
 bitmap_data_colortransform
@@ -43,12 +44,14 @@ delete
 depth_replacement_audio_unloading
 display_object_properties
 do_init_action
+empty_movieclip_can_attach_movies
 enumerate
 equals
 equals_swf4_alt
 equals_swf5
 error
 execution_order3
+export_assets
 focusrect_mouse_swf8
 focusrect_mouse_swf9
 focusrect_swf5
@@ -88,6 +91,7 @@ movieclip_begin_gradient_fill
 movieclip_line_gradient_style
 movieclip_name_from_timeline
 movieclip_prototype_extension
+named_shapes
 nested_textfields_in_buttons
 netstream_play_flv_screen
 new_object_enumerate
@@ -96,6 +100,8 @@ prototype_properties
 removed_base_clip_tell_target
 root_global_parent
 set_target_2_swf5
+set_target_2_swf6
+set_target_2_swf7
 shared_object_serialize_typed_objects
 single_frame
 slash_syntax

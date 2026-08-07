@@ -1111,11 +1111,29 @@ pub const Activation = struct {
                 }
             },
             .clone_sprite => {
-                _ = self.pop();
-                _ = self.pop();
-                _ = self.pop();
+                // Pops depth, the NEW NAME, then the source path.
+                const depth = value_mod.toInt32(try self.popNumber());
+                const name = try self.popString();
+                const source = self.pop();
+                if (try self.resolveDisplayTarget(source)) |t| {
+                    _ = try stage.cloneSprite(self.vm, t, name, depth);
+                }
             },
-            .remove_sprite => _ = self.pop(),
+            .remove_sprite => {
+                const target = self.pop();
+                if (try self.resolveDisplayTarget(target)) |t| {
+                    if (try stage.removeDisplayObject(self.vm, t)) {
+                        // If that killed our own target, fall back to the
+                        // base clip — which setTargetClip nulls in turn if
+                        // the base is gone too (ruffle activation.rs:1859).
+                        if (self.target_clip) |h| {
+                            if (stage.targetOf(self.vm, h) == null) {
+                                self.setTargetClip(self.base_clip);
+                            }
+                        }
+                    }
+                }
+            },
             .start_drag => {
                 _ = self.pop(); // target
                 const lock = try self.popNumber();

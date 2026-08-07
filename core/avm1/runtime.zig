@@ -81,6 +81,11 @@ pub const Vm = struct {
     /// Mouse position in stage pixels; the frontend writes it (M4-C).
     mouse_x: f64 = 0,
     mouse_y: f64 = 0,
+    /// The tick's `movie_clip.Context`, valid only while the Player is
+    /// inside runOneFrame. Scripts that create or destroy clips need it;
+    /// stage_object.zig is the one file allowed to cast it back. Null in
+    /// pure-VM tests, where every such operation no-ops.
+    display_ctx: ?*anyopaque = null,
     /// trace() output collects here as UTF-8 lines.
     trace_buf: std.ArrayList(u8) = .empty,
     /// Scratch for cross-frame throw propagation (unused in M3 — uncaught
