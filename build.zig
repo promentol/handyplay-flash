@@ -15,6 +15,20 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Vendored simdra drawing core (vendor/simdra, MIT — see its LICENSE).
+    // Needs libc + the stb C sources (SmFont/stb_truetype, decode/stb_image).
+    const simdra_mod = b.createModule(.{
+        .root_source_file = b.path("vendor/simdra/simdra.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    simdra_mod.addIncludePath(b.path("vendor/simdra"));
+    simdra_mod.addCSourceFiles(.{ .files = &.{
+        "vendor/simdra/simdra/utils/stb_image.c",
+        "vendor/simdra/simdra/utils/stb_truetype.c",
+    } });
+
     // Core module rooted at the umbrella (re-exports swf/ + display/;
     // grows the host seam in M2).
     const flash_mod = b.addModule("flash", .{
@@ -22,6 +36,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    flash_mod.addImport("simdra", simdra_mod);
 
     // --- tools -------------------------------------------------------------
     const Tool = struct { name: []const u8, src: []const u8 };

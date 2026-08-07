@@ -10,6 +10,11 @@ pub const display = struct {
     // M2: display_object.zig, movie_clip.zig; M4: button.zig, text.zig.
 };
 
+pub const render = struct {
+    pub const canvas = @import("render/canvas.zig");
+    // M2: shape_utils.zig (SWF records → SmPath), fills.zig.
+};
+
 test {
     @import("std").testing.refAllDecls(@This());
 }
