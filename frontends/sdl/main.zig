@@ -31,6 +31,66 @@ fn localOffsetMinutes() i32 {
     return @intCast(@divTrunc(local.tm_gmtoff, 60));
 }
 
+/// Window pixels → stage pixels. The window may have been resized, and
+/// the movie's coordinate space never changes with it.
+fn stagePoint(player: *flash.Player, x: f32, y: f32) [2]f64 {
+    var w: c_int = 0;
+    var h: c_int = 0;
+    _ = c.SDL_GetWindowSize(window_handle, &w, &h);
+    const sx: f64 = if (w > 0) @as(f64, @floatFromInt(player.width())) / @as(f64, @floatFromInt(w)) else 1;
+    const sy: f64 = if (h > 0) @as(f64, @floatFromInt(player.height())) / @as(f64, @floatFromInt(h)) else 1;
+    return .{ @as(f64, x) * sx, @as(f64, y) * sy };
+}
+
+fn sdlButton(b: u8) u8 {
+    return switch (b) {
+        c.SDL_BUTTON_MIDDLE => 1,
+        c.SDL_BUTTON_RIGHT => 2,
+        else => 0,
+    };
+}
+
+/// SDL keycode → Flash key code. Flash uses the Windows virtual-key
+/// numbering, in which letters are their UPPERCASE ASCII value.
+fn flashKeyCode(k: c.SDL_Keycode) i32 {
+    return switch (k) {
+        c.SDLK_BACKSPACE => 8,
+        c.SDLK_TAB => 9,
+        c.SDLK_RETURN, c.SDLK_KP_ENTER => 13,
+        c.SDLK_LSHIFT, c.SDLK_RSHIFT => 16,
+        c.SDLK_LCTRL, c.SDLK_RCTRL => 17,
+        c.SDLK_LALT, c.SDLK_RALT => 18,
+        c.SDLK_CAPSLOCK => 20,
+        c.SDLK_ESCAPE => 27,
+        c.SDLK_SPACE => 32,
+        c.SDLK_PAGEUP => 33,
+        c.SDLK_PAGEDOWN => 34,
+        c.SDLK_END => 35,
+        c.SDLK_HOME => 36,
+        c.SDLK_LEFT => 37,
+        c.SDLK_UP => 38,
+        c.SDLK_RIGHT => 39,
+        c.SDLK_DOWN => 40,
+        c.SDLK_INSERT => 45,
+        c.SDLK_DELETE => 46,
+        else => blk: {
+            if (k >= 'a' and k <= 'z') break :blk @as(i32, @intCast(k)) - 32;
+            if (k >= ' ' and k <= '~') break :blk @intCast(k);
+            break :blk 0;
+        },
+    };
+}
+
+/// What `Key.getAscii` reports — the character as typed, not the key code.
+fn asciiOf(k: c.SDL_Keycode) i32 {
+    if (k >= ' ' and k <= '~') return @intCast(k);
+    return 0;
+}
+
+/// Set once the window exists; `stagePoint` needs it and SDL gives no way
+/// to reach the window from an event.
+var window_handle: ?*c.SDL_Window = null;
+
 pub fn main(init: std.process.Init) !u8 {
     const gpa = init.gpa;
     const io = init.io;
@@ -126,6 +186,7 @@ fn runWindowed(player: *flash.Player, err_out: *std.Io.Writer) !u8 {
     }
     defer c.SDL_DestroyRenderer(sdl_renderer);
     defer c.SDL_DestroyWindow(window);
+    window_handle = window;
 
     const tex = c.SDL_CreateTexture(
         sdl_renderer,
@@ -149,8 +210,28 @@ fn runWindowed(player: *flash.Player, err_out: *std.Io.Writer) !u8 {
         while (c.SDL_PollEvent(&event)) {
             switch (event.type) {
                 c.SDL_EVENT_QUIT => running = false,
+                c.SDL_EVENT_MOUSE_MOTION => {
+                    const p = stagePoint(player, event.motion.x, event.motion.y);
+                    try player.mouseMove(p[0], p[1]);
+                    dirty = true;
+                },
+                c.SDL_EVENT_MOUSE_BUTTON_DOWN, c.SDL_EVENT_MOUSE_BUTTON_UP => {
+                    const p = stagePoint(player, event.button.x, event.button.y);
+                    player.setMousePosition(p[0], p[1]);
+                    try player.mouseButton(
+                        sdlButton(event.button.button),
+                        event.type == c.SDL_EVENT_MOUSE_BUTTON_DOWN,
+                    );
+                    dirty = true;
+                },
                 c.SDL_EVENT_KEY_DOWN => {
                     if (event.key.key == c.SDLK_ESCAPE) running = false;
+                    try player.keyDown(flashKeyCode(event.key.key), asciiOf(event.key.key));
+                    dirty = true;
+                },
+                c.SDL_EVENT_KEY_UP => {
+                    try player.keyUp(flashKeyCode(event.key.key), asciiOf(event.key.key));
+                    dirty = true;
                 },
                 else => {},
             }

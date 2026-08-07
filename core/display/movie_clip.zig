@@ -233,6 +233,23 @@ pub const MovieClip = struct {
         }
     }
 
+    /// A global input event: every clip in the subtree gets it, wherever it
+    /// is on screen — that is what makes AVM1's `onClipEvent(keyDown)` fire
+    /// on clips the pointer is nowhere near.
+    ///
+    /// Order is children before parent, and among children HIGHEST DEPTH
+    /// FIRST (corpus clip_event_propagation_order traces depth30, depth20,
+    /// depth10, then Main).
+    pub fn broadcastClipEvent(self: *MovieClip, ctx: *Context, flag: u32, comptime method: []const u8) Error!void {
+        var i = self.children.items.len;
+        while (i > 0) {
+            i -= 1;
+            const child = self.children.items[i];
+            if (child.kind == .clip) try child.kind.clip.broadcastClipEvent(ctx, flag, method);
+        }
+        try self.dispatchClipEvent(ctx, flag, method);
+    }
+
     /// Clear the "already ticked" marks for the whole subtree. This must
     /// happen at END of tick: a clip created DURING the action drain sets
     /// the flag after its parent's child loop has already run, so letting

@@ -296,6 +296,11 @@ pub fn broadcast(vm: *Vm, target: Value, name: strings.AvmString, args: []const 
     while (i < len) : (i += 1) {
         const listener = try elementAt(vm, list, i);
         if (listener != .object) continue;
+        // A clip that has been removed stops receiving broadcasts even
+        // though the listener list still holds it — the same rule timers
+        // follow (ruffle: every member read on a removed display object is
+        // undefined). Corpus string_paths_keyevents expects silence.
+        if (stage_object.isRemovedClip(vm, listener.object)) continue;
         const f = try vm.getProperty(listener.object, name, listener);
         if (!vm.isCallable(f)) continue;
         _ = vm.callFunction(f, listener, args) catch |e| {

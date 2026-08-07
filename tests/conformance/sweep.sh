@@ -47,7 +47,11 @@ one() {
         "$toml" 2>/dev/null | head -1)
     [ -n "$n" ] || n=1
     T=$(mktemp)
-    timeout 20 "$BIN" "$swf" --frames "$n" >"$T" 2>/dev/null
+    # Input-driven dirs ship an input.json; `Wait` in it marks a tick.
+    inp=""
+    [ -f "$CORPUS/$d/input.json" ] && inp="--input $CORPUS/$d/input.json"
+    # shellcheck disable=SC2086
+    timeout 20 "$BIN" "$swf" --frames "$n" $inp >"$T" 2>/dev/null
     if grep -q '^bare_numbers *= *true' "$toml" 2>/dev/null; then
         eps=$(sed -n 's/^epsilon *= *\([0-9.eE+-]*\).*/\1/p' "$toml" | head -1)
         [ -n "$eps" ] || eps=2.220446049250313e-16

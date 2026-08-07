@@ -111,6 +111,12 @@ pub const NativeInfo = union(enum) {
     /// `super`: the same `this`, viewed with `depth` layers of prototype
     /// peeled off (ruffle object/super_object.rs).
     super_obj: struct { this: ObjectHandle, depth: u8 },
+    /// A display object whose instance is GONE. The script reference
+    /// survives it (AVM1 objects outlive the display list), so the pointer
+    /// has to be cut, but the object must still remember what it was: a
+    /// removed clip stops receiving broadcasts and timer callbacks, and
+    /// `.none` would make it indistinguishable from a plain object.
+    removed_display,
     /// A `Date`: milliseconds since the Unix epoch, UTC (NaN = invalid).
     date: f64,
     /// flash.geom.Transform — a live view of the display object whose AVM1
@@ -223,7 +229,7 @@ pub const Objects = struct {
     /// `_root.__constructor__` through `obj.__proto__ = _root`. It does not
     /// affect a clip's OWN lookups, which start at the clip itself.
     fn isDisplay(n: NativeInfo) bool {
-        return n == .clip or n == .display;
+        return n == .clip or n == .display or n == .removed_display;
     }
 
     /// How many prototype hops from `h` to the object that owns `name`

@@ -38,6 +38,7 @@ call
 call_method_empty_name
 catch_references_registers
 clip_constructors
+clip_event_propagation_order
 closure_scope
 color
 conflicting_instance_names
@@ -103,6 +104,7 @@ issue_3169
 issue_3446
 issue_4377
 issue_768
+key_isToggled
 lessthan
 lessthan_swf4_alt
 lessthan_swf5

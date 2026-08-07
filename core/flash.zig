@@ -14,6 +14,7 @@ pub const avm1 = struct {
     pub const runtime = @import("avm1/runtime.zig");
     pub const activation = @import("avm1/activation.zig");
     pub const stage_object = @import("avm1/stage_object.zig");
+    pub const singletons = @import("avm1/globals/singletons.zig");
 };
 
 pub const display = struct {
@@ -358,10 +359,10 @@ pub const Player = struct {
         // Buttons and text fields carry their handle on the DisplayObject
         // itself; clips carry theirs on the MovieClip. Both must be cut
         // loose or a retained script reference outlives the memory.
-        if (obj.avm_object != 0) self.vm.objects.get(obj.avm_object).native = .none;
+        if (obj.avm_object != 0) self.vm.objects.get(obj.avm_object).native = .removed_display;
         if (obj.kind != .clip) return;
         const mc = obj.kind.clip;
-        if (mc.avm_object != 0) self.vm.objects.get(mc.avm_object).native = .none;
+        if (mc.avm_object != 0) self.vm.objects.get(mc.avm_object).native = .removed_display;
         for (mc.children.items) |child| self.severClipObjects(child);
     }
 
@@ -467,6 +468,107 @@ pub const Player = struct {
         }
         mc.playing = false;
         self.applyGotoNow(mc);
+    }
+
+    // --- input seam ---------------------------------------------------------
+    //
+    // Frontends call these; `core/` never polls anything. Each one updates
+    // the VM's input state, re-applies any drag, broadcasts to the clips and
+    // then to the Key/Mouse listeners, and drains whatever that queued —
+    // input events run script OUTSIDE the frame loop, like timers do.
+
+    pub fn mouseMove(self: *Player, x: f64, y: f64) !void {
+        self.setMousePosition(x, y);
+        try self.dispatchInput(swf.place.ClipEvent.MOUSE_MOVE, "onMouseMove", self.vm.mouse_object);
+    }
+
+    /// Move the pointer WITHOUT raising a move event. A button event
+    /// carries a position too, and delivering it as a move as well would
+    /// double every `onMouseMove` handler.
+    pub fn setMousePosition(self: *Player, x: f64, y: f64) void {
+        self.vm.mouse_x = x;
+        self.vm.mouse_y = y;
+        avm1.stage_object.applyDrag(self.vm);
+    }
+
+    pub fn mouseButton(self: *Player, button: u8, down: bool) !void {
+        const bit = @as(u8, 1) << @intCast(@min(button, 7));
+        if (down) {
+            self.vm.mouse_buttons |= bit;
+        } else {
+            self.vm.mouse_buttons &= ~bit;
+        }
+        // Only the primary button drives the AVM1 events; the others exist
+        // for `Mouse` listeners that ask, which none of the corpus does.
+        if (button != 0) return;
+        // The left mouse button IS key code 1 as far as `Key` is concerned,
+        // so it participates in the toggle state — corpus key_isToggled
+        // reads `Key.isToggled(1)` between clicks.
+        if (down and !self.vm.keys_down[1]) self.vm.keys_toggled[1] = !self.vm.keys_toggled[1];
+        self.vm.keys_down[1] = down;
+        if (down) {
+            try self.dispatchInput(swf.place.ClipEvent.MOUSE_DOWN, "onMouseDown", self.vm.mouse_object);
+        } else {
+            try self.dispatchInput(swf.place.ClipEvent.MOUSE_UP, "onMouseUp", self.vm.mouse_object);
+        }
+    }
+
+    /// `code` is a Flash key code (the Windows virtual-key numbering);
+    /// `char` is the ASCII/UTF-16 code unit `Key.getAscii` reports, or 0.
+    pub fn keyDown(self: *Player, code: i32, char: i32) !void {
+        if (code >= 0 and code < 256) {
+            const i: usize = @intCast(code);
+            // Toggle keys flip on the PRESS, and only on a fresh press —
+            // auto-repeat must not flicker Caps Lock back off.
+            if (!self.vm.keys_down[i]) self.vm.keys_toggled[i] = !self.vm.keys_toggled[i];
+            self.vm.keys_down[i] = true;
+        }
+        self.vm.last_key_code = code;
+        self.vm.last_key_char = char;
+        try self.dispatchInput(swf.place.ClipEvent.KEY_DOWN, "onKeyDown", self.vm.key_object);
+    }
+
+    pub fn keyUp(self: *Player, code: i32, char: i32) !void {
+        if (code >= 0 and code < 256) self.vm.keys_down[@intCast(code)] = false;
+        self.vm.last_key_code = code;
+        self.vm.last_key_char = char;
+        try self.dispatchInput(swf.place.ClipEvent.KEY_UP, "onKeyUp", self.vm.key_object);
+    }
+
+    fn dispatchInput(
+        self: *Player,
+        flag: u32,
+        comptime method: []const u8,
+        listener_target: avm1.runtime.ObjectHandle,
+    ) !void {
+        var ctx: display.movie_clip.Context = .{
+            .gpa = self.gpa,
+            .movie = &self.movie,
+            .instance_counter = &self.instance_counter,
+            .class_lookup = hostRegisteredClass,
+            .class_lookup_user = @ptrCast(self),
+            .run_inline = hostRunInline,
+        };
+        defer ctx.deinit(self.gpa);
+        self.cur_ctx = &ctx;
+        self.vm.display_ctx = @ptrCast(&ctx);
+        defer {
+            self.cur_ctx = null;
+            self.vm.display_ctx = null;
+        }
+        try self.root.broadcastClipEvent(&ctx, flag, method);
+        try self.drainActions(&ctx);
+        // The Key/Mouse listener lists come AFTER the clips.
+        if (listener_target != 0) {
+            _ = avm1.singletons.broadcast(
+                self.vm,
+                .{ .object = listener_target },
+                avm1.strings.ascii(method),
+                &.{},
+            ) catch {};
+            try self.drainActions(&ctx);
+        }
+        self.retireDead(&ctx);
     }
 
     /// Take accumulated trace() output (UTF-8; caller-owned view valid

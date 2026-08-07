@@ -104,13 +104,19 @@ scorable_dirs() {
     )
 }
 
+# Input-driven dirs ship an input.json; `Wait` in it marks a tick boundary.
+input_for() {
+    [ -f "$CORPUS/$1/input.json" ] && printf -- '--input %s' "$CORPUS/$1/input.json"
+}
+
 run_one() {
     d="$1"
     swf="$CORPUS/$d/test.swf"
     exp="$CORPUS/$d/output.txt"
     toml="$CORPUS/$d/test.toml"
     [ -f "$swf" ] && [ -f "$exp" ] || return 2
-    "$BIN" "$swf" --frames "$(frames_for "$toml")" >"$TMP" 2>/dev/null || return 1
+    # shellcheck disable=SC2086
+    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") >"$TMP" 2>/dev/null || return 1
     if have_approx "$toml"; then
         # `approx`'s defaults are f64::EPSILON for both knobs.
         approx_cmp "$TMP" "$exp" \
@@ -170,7 +176,8 @@ case "${1:-}" in
     if run_one "$d"; then verdict=PASS; else verdict=FAIL; fi
     have_approx "$toml" && verdict="$verdict (approximate)"
     # Re-run with stderr merged so panics show up in the diff.
-    "$BIN" "$swf" --frames "$(frames_for "$toml")" >"$TMP" 2>&1
+    # shellcheck disable=SC2086
+    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") >"$TMP" 2>&1
     echo "--- $verdict: ours vs expected ($d):"
     diff "$TMP" "$CORPUS/$d/output.txt" | head -40
     ;;

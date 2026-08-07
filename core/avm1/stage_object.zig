@@ -113,6 +113,10 @@ pub fn displayValue(vm: *Vm, obj: *DisplayObject) !Value {
 pub fn isRemovedClip(vm: *Vm, handle: ObjectHandle) bool {
     if (handle == 0) return false;
     const n = vm.objects.get(handle).native;
+    // `removed_display` is the state after the instance has actually been
+    // freed; `.clip` with `removed` set is the window between the removal
+    // and the end of the tick.
+    if (n == .removed_display) return true;
     if (n != .clip) return false;
     const mc: *MovieClip = @ptrCast(@alignCast(n.clip));
     return mc.removed;
