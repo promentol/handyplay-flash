@@ -145,7 +145,16 @@ Semantics (all from ruffle stage_object.rs + movie_clip.rs):
 - The target operand: `""` = current clip; else resolve via target path
   (§A2). GetProperty on a missing target → undefined.
 
-### A2. SetTarget / SetTarget2 / TargetPath / slash paths
+### A2. SetTarget / SetTarget2 / TargetPath / slash paths — ✅ DONE
+Three corrections to the sketch below, found while implementing:
+  • `target_clip` needs THREE states, not `Value`: base / retargeted /
+    FAILED. A failed path sends variables to `_root` while play/stop/goto
+    silently no-op — except GotoFrame2, the one op that falls back to the
+    root (ruffle action_goto_frame_2 vs action_play).
+  • SetTarget also REPLACES the timeline scope, which is what makes
+    `tellTarget('bogus') { trace(n) }` read `_root`'s `n`.
+  • TargetPath returns the DOT path (`_level0.mc`), not the slash path.
+
 `Activation.setTarget` currently no-ops and path resolution in
 `getVariable` only walks objects. Implement real clip targeting:
 - Add `target_clip: Value` to Activation (init = `this`); `SetTarget("")`

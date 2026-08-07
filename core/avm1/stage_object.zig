@@ -325,8 +325,20 @@ fn setName(vm: *Vm, t: Target, v: Value) !void {
     try t.obj.setName(vm.gpa, name);
 }
 
-/// Slash path from the root: `""` for _level0, `/mc/child` below it.
-/// ruffle display_object.rs:1840-1867.
+/// The clip's root — walk `parent` to the top (ruffle avm1_root).
+pub fn rootOf(clip: *MovieClip) *MovieClip {
+    var cur = clip;
+    while (cur.parent) |p| cur = p;
+    return cur;
+}
+
+fn clipName(clip: *MovieClip) []const u16 {
+    const placement = clip.placement orelse return S("");
+    return placement.name orelse S("");
+}
+
+/// Flash 4 slash syntax: `""` for _level0, `/mc/child` below it. This is
+/// the `_target` property. ruffle display_object.rs:1840-1867.
 pub fn slashPath(vm: *Vm, clip: *MovieClip) ![]const u16 {
     if (clip.parent == null) return S("/"); // _target of _level0 is just "/"
     return buildSlashPath(vm, clip);
@@ -338,9 +350,63 @@ fn buildSlashPath(vm: *Vm, clip: *MovieClip) anyerror![]const u16 {
         return S("");
     };
     const head = try buildSlashPath(vm, parent);
-    const name = if (clip.placement) |p| (p.name orelse S("")) else S("");
     const with_slash = try strings.concat(vm.arena(), head, S("/"));
-    return strings.concat(vm.arena(), with_slash, name);
+    return strings.concat(vm.arena(), with_slash, clipName(clip));
+}
+
+/// Dot syntax rooted at a level: `_level0.mc.child`. DISTINCT from
+/// `slashPath` — this is what `targetPath()` returns, what a MovieClip
+/// coerces to as a string, and what clip equality compares.
+/// ruffle display_object.rs:1824-1835.
+pub fn dotPath(vm: *Vm, clip: *MovieClip) std.mem.Allocator.Error![]const u16 {
+    const parent = clip.parent orelse {
+        // Only level 0 exists; the depth would select the level otherwise.
+        return S("_level0");
+    };
+    const head = try dotPath(vm, parent);
+    const with_dot = try strings.concat(vm.arena(), head, S("."));
+    return strings.concat(vm.arena(), with_dot, clipName(clip));
+}
+
+/// `dotPath` for callers that only hold the opaque `NativeInfo.clip`
+/// pointer — runtime.zig must not name display types.
+pub fn dotPathOf(vm: *Vm, clip: *anyopaque) std.mem.Allocator.Error![]const u16 {
+    return dotPath(vm, @ptrCast(@alignCast(clip)));
+}
+
+/// The `_parent` of an object handle, or undefined. Used by the
+/// DefineFunction2 register preload.
+pub fn parentOf(vm: *Vm, handle: ObjectHandle) !Value {
+    const t = targetOf(vm, handle) orelse return .undefined_value;
+    const parent = t.clip.parent orelse return .undefined_value;
+    return .{ .object = try clipObject(vm, parent) };
+}
+
+/// `_levelN` / `_flashN` (a relic synonym from the earliest Flash
+/// versions). ruffle stage_object.rs:174-207. We only ever have level 0,
+/// so any other level is a valid NAME that resolves to nothing — which is
+/// still different from "not a level name at all" (null).
+pub fn parseLevel(vm: *Vm, name: []const u16) ?Value {
+    if (name.len < 6) return null;
+    const prefix = name[0..6];
+    if (!nameEql(vm, prefix, S("_level")) and !nameEql(vm, prefix, S("_flash"))) return null;
+    const id = parseLevelId(name[6..]);
+    return if (id == 0) vm.root_object else .undefined_value;
+}
+
+fn parseLevelId(digits: []const u16) i32 {
+    var s = digits;
+    var neg = false;
+    if (s.len > 0 and s[0] == '-') {
+        neg = true;
+        s = s[1..];
+    }
+    var acc: i32 = 0;
+    for (s) |c| {
+        if (c < '0' or c > '9') break; // map_while: stop at the first non-digit
+        acc = acc *% 10 +% @as(i32, @intCast(c - '0'));
+    }
+    return if (neg) -acc else acc;
 }
 
 fn getTarget(vm: *Vm, t: Target) !Value {
@@ -484,6 +550,16 @@ pub fn clipObject(vm: *Vm, mc: *MovieClip) !ObjectHandle {
     return h;
 }
 
+/// A clip AS A SCRIPT VALUE. SWF4 has no object model, so a clip simply
+/// has no value representation there: `trace(a)` and `eval("a:child")`
+/// are undefined even though `getProperty("a", _name)` and
+/// `tellTarget("a")` resolve the very same path. Internal resolution goes
+/// through `clipObject` and is unaffected.
+pub fn clipValue(vm: *Vm, mc: *MovieClip) !Value {
+    if (vm.swf_version < 5) return .undefined_value;
+    return .{ .object = try clipObject(vm, mc) };
+}
+
 pub fn childByName(mc: *MovieClip, name: []const u16, case_sensitive: bool) ?*DisplayObject {
     for (mc.children.items) |child| {
         const n = child.name orelse continue;
@@ -515,8 +591,8 @@ pub fn resolveMember(vm: *Vm, handle: ObjectHandle, name: []const u16) !?Value {
     if (childByName(t.clip, name, vm.case_sensitive)) |child| {
         // Non-scriptable children (shapes, text) resolve to their PARENT
         // rather than to nothing — ruffle stage_object.rs:32-43.
-        if (child.kind == .clip) return .{ .object = try clipObject(vm, child.kind.clip) };
-        return .{ .object = handle };
+        if (child.kind == .clip) return try clipValue(vm, child.kind.clip);
+        return try clipValue(vm, t.clip);
     }
 
     if (magic) {
@@ -528,7 +604,7 @@ pub fn resolveMember(vm: *Vm, handle: ObjectHandle, name: []const u16) !?Value {
 /// ruffle `resolve_path_property`. SWF4 has none of these; `_global` waits
 /// until SWF6. Unlike the display properties, these obey the version's
 /// case-sensitivity rule.
-fn resolvePathProperty(vm: *Vm, t: Target, name: []const u16) !?Value {
+pub fn resolvePathProperty(vm: *Vm, t: Target, name: []const u16) !?Value {
     if (vm.swf_version < 5) return null;
     if (nameEql(vm, name, S("_root"))) return vm.root_object;
     if (nameEql(vm, name, S("_parent"))) {
@@ -538,14 +614,10 @@ fn resolvePathProperty(vm: *Vm, t: Target, name: []const u16) !?Value {
     if (vm.swf_version >= 6 and nameEql(vm, name, S("_global"))) {
         return .{ .object = vm.globals };
     }
-    // Only _level0 exists — loading into other levels is not supported.
-    if (nameEql(vm, name, S("_level0")) or nameEql(vm, name, S("_flash0"))) {
-        return vm.root_object;
-    }
-    return null;
+    return parseLevel(vm, name);
 }
 
-fn nameEql(vm: *Vm, a: []const u16, b: []const u16) bool {
+pub fn nameEql(vm: *Vm, a: []const u16, b: []const u16) bool {
     return if (vm.case_sensitive) strings.eql(a, b) else strings.eqlIgnoreCase(a, b);
 }
 

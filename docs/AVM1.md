@@ -13,7 +13,7 @@ Status: `todo` → `decode` (opcodes.zig) → `exec` (interpreter) → `done`
 **M3 CLOSED**: every opcode 0x00–0x9F decodes and executes. All ops are
 `exec` except the stubs listed below (they pop their operands correctly
 but have no effect yet) — promotion is workstream A of docs/M4-SPEC.md.
-Corpus: 92/696 (tests/conformance/pass_list.txt).
+Corpus: 102/680 (tests/conformance/pass_list.txt).
 
 **M4-A1 landed**: GetProperty/SetProperty (0x22/23) are real, sharing one
 22-entry table in `core/avm1/stage_object.zig` with the named form
@@ -21,9 +21,14 @@ Corpus: 92/696 (tests/conformance/pass_list.txt).
 `_xmouse`/`_ymouse` read the (still-zero) `Vm.mouse_*` until workstream C
 wires the frontend; `_droptarget` awaits StartDrag; `_url` is always "".
 
+**M4-A2 landed**: real target-path resolution. SetTarget/SetTarget2 keep a
+tri-state target (base / retargeted / FAILED), a failed `tellTarget` sends
+variable reads to `_root` while movie control silently no-ops, and
+GetVariable/SetVariable split at the rightmost `:`/`.` and walk the display
+tree. TargetPath (0x45) returns the DOT path.
+
 | Stub | Why | Milestone |
 |---|---|---|
-| TargetPath (0x45) | needs clip path strings | M4 |
 | CloneSprite / RemoveSprite (0x24/25) | duplicateMovieClip | M4 |
 | StartDrag / EndDrag (0x27/28) | needs mouse state | M4 |
 | Call (0x9E) | call-frame-actions | M4 |
@@ -71,7 +76,7 @@ wires the frontend; `_droptarget` awaits StartDrag; `_url` is always "".
 | 0x18 | ToInteger | exec | |
 | 0x1C | GetVariable | exec | slash paths |
 | 0x1D | SetVariable | exec | |
-| 0x20 | SetTarget2 | exec | dynamic SetTarget |
+| 0x20 | SetTarget2 | done | undefined resets to base below SWF7, nulls above |
 | 0x21 | StringAdd | exec | |
 | 0x22 | GetProperty | done | index into display-prop table (order load-bearing) |
 | 0x23 | SetProperty | done | value coerced by index even when the write is dropped |
@@ -113,7 +118,7 @@ wires the frontend; `_droptarget` awaits StartDrag; `_url` is always "".
 | 0x42 | InitArray | exec | |
 | 0x43 | InitObject | exec | |
 | 0x44 | TypeOf | exec | movieclip ⇒ "movieclip" |
-| 0x45 | TargetPath | exec | |
+| 0x45 | TargetPath | done | DOT path (`_level0.mc`), unlike `_target`'s slash form |
 | 0x46 | Enumerate | exec | pushes null terminator first |
 | 0x47 | Add2 | exec | ES3 (string concat rules) |
 | 0x48 | Less2 | exec | ES3 relational |

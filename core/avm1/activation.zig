@@ -36,23 +36,49 @@ pub const Activation = struct {
     scope: ObjectHandle,
     /// DefineFunction2 local registers ([] = use the VM's 4 globals).
     local_registers: []Value = &.{},
-    /// SetTarget/tellTarget retarget: movie-control ops and unqualified
-    /// variables act on this clip (ruffle base_clip vs target_clip). 0
-    /// means "same as `this`".
-    target_override: ObjectHandle = 0,
+    /// The clip whose bytecode this is. Fixed for the activation.
+    base_clip: ObjectHandle = 0,
+    /// Where movie control and variables go, changed by SetTarget.
+    /// `null` means a SetTarget path FAILED, which is a THIRD state
+    /// distinct from "no SetTarget in effect" (== base_clip): control ops
+    /// then do nothing while variables fall through to _root.
+    /// Ruffle's `target_clip: Option<DisplayObject>`.
+    target_clip: ?ObjectHandle = null,
+    /// The timeline (ruffle ScopeClass::Target) node this activation was
+    /// built with — the tail of the scope chain. SetTarget substitutes
+    /// `target_clip` for it during lookup; see `scopeObject`.
+    timeline_scope: ObjectHandle = 0,
     constant_pool: u32,
     swf_version: u8,
 
     pub fn init(vm: *Vm, code: []const u8, this: Value, scope: ObjectHandle, pool: u32) Activation {
+        const base: ObjectHandle = if (this == .object) this.object else 0;
         return .{
             .vm = vm,
             .code = code,
             .r = rdr.Reader.init(code),
             .this = this,
             .scope = scope,
+            .base_clip = base,
+            .target_clip = base,
+            .timeline_scope = timelineScopeOf(vm, scope),
             .constant_pool = pool,
             .swf_version = vm.swf_version,
         };
+    }
+
+    /// The Target-class scope: the tail of the `scope_parent` chain.
+    /// Timeline code passes the clip object directly as its scope;
+    /// `Vm.callAvm1` chains a fresh local onto the captured scope, so the
+    /// clip is always at the bottom.
+    fn timelineScopeOf(vm: *Vm, scope: ObjectHandle) ObjectHandle {
+        var cur = scope;
+        while (cur != 0) {
+            const next = vm.objects.get(cur).scope_parent;
+            if (next == 0) return cur;
+            cur = next;
+        }
+        return scope;
     }
 
     pub fn run(self: *Activation) anyerror!Flow {
@@ -76,8 +102,13 @@ pub const Activation = struct {
     fn runSlice(self: *Activation, code: []const u8, scope: ObjectHandle) anyerror!Flow {
         var child = Activation.init(self.vm, code, self.this, scope, self.constant_pool);
         child.local_registers = self.local_registers;
+        // A `with {}` or `try {}` body inside a tellTarget stays targeted.
+        child.base_clip = self.base_clip;
+        child.target_clip = self.target_clip;
+        child.timeline_scope = self.timeline_scope;
         const flow = try child.run();
         self.constant_pool = child.constant_pool; // pool changes persist
+        self.target_clip = child.target_clip; // SetTarget inside persists
         return flow;
     }
 
@@ -123,52 +154,203 @@ pub const Activation = struct {
 
     // --- variable paths ---------------------------------------------------
 
-    /// GetVariable with dot/slash path support: `a.b.c`, `_root.x`,
-    /// `/mc/child:var`, `..`. Pure-VM fallback resolves path heads through
-    /// the scope chain; clip traversal proper lands with the display glue.
-    fn getVariable(self: *Activation, name: strings.AvmString) !Value {
-        if (pathSeparator(name) == null) {
-            return try self.scopeLookup(name) orelse .undefined_value;
+    /// Resolve a TARGET PATH to an object, walking the DISPLAY tree.
+    /// Ports ruffle activation.rs:2562-2676. This is a different animal
+    /// from GetMember: children are resolved before ordinary properties,
+    /// and the delimiter set changes as the path is consumed.
+    ///
+    /// `first_element` allows `this`/`_root`/`_levelN` at the head only;
+    /// `handle_this` enables the `this` keyword at all.
+    fn resolveTargetPath(
+        self: *Activation,
+        root: ObjectHandle,
+        start: ObjectHandle,
+        path_in: strings.AvmString,
+        first_in: bool,
+        handle_this: bool,
+    ) anyerror!?ObjectHandle {
+        var path = path_in;
+        var first_element = first_in;
+        // An empty path is the start object itself.
+        if (path.len == 0) return start;
+
+        // `this`, `_root` and the `.`/`:` delimiters are SWF5+. SWF4 paths
+        // are markedly more restrictive.
+        const is_swf5 = self.swf_version >= 5;
+
+        // A leading `/` is absolute: `/bar` means `_root.bar`.
+        var object: ObjectHandle = start;
+        var is_slash_path = false;
+        if (path.len > 0 and path[0] == '/') {
+            path = path[1..];
+            first_element = false;
+            object = root;
+            is_slash_path = true;
         }
-        var it = PathIter.init(name);
-        var current: Value = .undefined_value;
-        var first = true;
-        while (it.next()) |part| {
-            if (part.len == 0) {
-                if (first) current = self.vm.root_object; // leading '/'
-                first = false;
-                continue;
+
+        while (path.len > 0) {
+            // Any number of leading `:` are the same as none.
+            if (is_swf5) {
+                while (path.len > 0 and path[0] == ':') path = path[1..];
+                if (path.len == 0) break;
             }
-            if (first) {
-                current = try self.scopeLookup(part) orelse return .undefined_value;
-                first = false;
-                continue;
+
+            var val: Value = .undefined_value;
+            const prefix = path[0..@min(3, path.len)];
+            if (startsWith(prefix, "..") and
+                (prefix.len == 2 or prefix[2] == '/' or (is_swf5 and prefix[2] == ':')))
+            {
+                // SWF4-style `_parent`.
+                if (path.len > 2 and path[2] == '/') is_slash_path = true;
+                path = if (path.len > 3) path[3..] else path[path.len..];
+                const t = stage.targetOf(self.vm, object) orelse return null;
+                const parent = t.clip.parent orelse return null; // parent of root
+                val = .{ .object = try stage.clipObject(self.vm, parent) };
+            } else {
+                // Step to the next delimiter. `:` and `.` are SWF5+, and
+                // once a `/` has appeared `.` is no longer a delimiter.
+                var pos: usize = 0;
+                while (pos < path.len) : (pos += 1) {
+                    const c = path[pos];
+                    if (is_swf5 and c == ':') break;
+                    if (is_swf5 and c == '.' and !is_slash_path) break;
+                    if (c == '/') {
+                        is_slash_path = true;
+                        break;
+                    }
+                }
+                const name = path[0..pos];
+                path = if (pos + 1 <= path.len) path[@min(pos + 1, path.len)..] else path[path.len..];
+
+                if (is_swf5 and handle_this and strings.eql(name, S("this"))) {
+                    val = self.this;
+                } else if (is_swf5 and first_element and strings.eql(name, S("_root"))) {
+                    val = self.vm.root_object;
+                } else if (first_element and stage.parseLevel(self.vm, name) != null) {
+                    val = stage.parseLevel(self.vm, name).?;
+                } else {
+                    // DISPLAY CHILDREN FIRST, then ordinary properties —
+                    // the reverse of GetMember. A child with no scriptable
+                    // object resolves to its parent instead of nothing.
+                    val = blk: {
+                        if (stage.targetOf(self.vm, object)) |t| {
+                            if (stage.childByName(t.clip, name, self.vm.case_sensitive)) |child| {
+                                if (child.kind == .clip) {
+                                    break :blk .{ .object = try stage.clipObject(self.vm, child.kind.clip) };
+                                }
+                                break :blk .{ .object = object };
+                            }
+                        }
+                        break :blk try self.memberGet(.{ .object = object }, name);
+                    };
+                }
             }
-            current = try self.memberGet(current, part);
+
+            // `this`/`_root` are only meaningful at the head.
+            first_element = false;
+
+            if (val != .object) return null;
+            object = val.object;
         }
-        return current;
+        return object;
     }
 
-    fn setVariable(self: *Activation, name: strings.AvmString, v: Value) !void {
-        const sep = pathSeparator(name) orelse {
-            try self.scopeAssign(name, v);
-            return;
-        };
-        _ = sep;
-        // path.member = value → resolve the container, set the last part.
-        var last_start: usize = 0;
-        var i: usize = 0;
-        while (i < name.len) : (i += 1) {
+    /// The rightmost `:` — or `.` at SWF5+ — splits a variable path into
+    /// (target path, variable name). RIGHTMOST is load-bearing: `a.b.c`
+    /// targets `a.b` and reads `c`.
+    fn variableSeparator(self: *Activation, name: strings.AvmString) ?usize {
+        var i = name.len;
+        while (i > 0) {
+            i -= 1;
             const c = name[i];
-            if (c == '.' or c == '/' or c == ':') last_start = i + 1;
+            if (c == ':' or (self.swf_version >= 5 and c == '.')) return i;
         }
-        if (last_start == 0 or last_start >= name.len) return;
-        const container_path = trimTrailingSep(name[0 .. last_start - 1]);
-        const member = name[last_start..];
-        const container = try self.getVariable(container_path);
-        if (container == .object) {
-            try self.memberSet(container, member, v);
+        return null;
+    }
+
+    fn containsSlash(name: strings.AvmString) bool {
+        for (name) |c| {
+            if (c == '/') return true;
         }
+        return false;
+    }
+
+    /// ruffle activation.rs:2738-2793. Note each candidate scope gets its
+    /// own shot at the target path, and a scope only wins if the resolved
+    /// object actually HAS the variable.
+    fn getVariable(self: *Activation, name: strings.AvmString) !Value {
+        const root = self.rootHandle();
+        if (self.variableSeparator(name)) |sep| {
+            const path = name[0..sep];
+            const var_name = name[sep + 1 ..];
+            if (path.len == 0) return .undefined_value;
+            var cur = self.scope;
+            while (cur != 0) {
+                const node = self.scopeObject(cur);
+                if (try self.resolveTargetPath(root, node, path, true, true)) |obj| {
+                    if (try self.hasVariable(obj, var_name)) {
+                        return try self.memberGet(.{ .object = obj }, var_name);
+                    }
+                }
+                cur = self.vm.objects.get(cur).scope_parent;
+            }
+            return .undefined_value;
+        }
+
+        // No trailing variable, but it can still be a slash path (SWF5+;
+        // SWF4 always requires the trailing variable).
+        if (self.swf_version >= 5 and containsSlash(name)) {
+            var cur = self.scope;
+            while (cur != 0) {
+                const node = self.scopeObject(cur);
+                if (try self.resolveTargetPath(root, node, name, false, false)) |obj| {
+                    return .{ .object = obj };
+                }
+                cur = self.vm.objects.get(cur).scope_parent;
+            }
+        }
+
+        // A plain old variable name: the scope chain, as normal.
+        return try self.scopeLookup(name) orelse .undefined_value;
+    }
+
+    /// Does `obj` expose `name` — as an own/inherited property, a display
+    /// property, a child, or a path property?
+    fn hasVariable(self: *Activation, obj: ObjectHandle, name: strings.AvmString) !bool {
+        if (self.vm.objects.getChained(obj, name, self.vm.case_sensitive) != null) return true;
+        return (try stage.resolveMember(self.vm, obj, name)) != null;
+    }
+
+    /// ruffle activation.rs:2818-2870. Unlike the read path, a scope wins
+    /// as soon as its target path resolves — the variable need not exist.
+    fn setVariable(self: *Activation, name: strings.AvmString, v: Value) !void {
+        if (name.len == 0) return;
+        // `this` is assignable from SWF5 on.
+        if (self.swf_version >= 5 and strings.eql(name, S("this"))) {
+            self.this = v;
+            return;
+        }
+        const root = self.rootHandle();
+        if (self.variableSeparator(name)) |sep| {
+            const path = name[0..sep];
+            const var_name = name[sep + 1 ..];
+            var cur = self.scope;
+            while (cur != 0) {
+                const node = self.scopeObject(cur);
+                if (try self.resolveTargetPath(root, node, path, true, true)) |obj| {
+                    try self.memberSet(.{ .object = obj }, var_name, v);
+                    return;
+                }
+                cur = self.vm.objects.get(cur).scope_parent;
+            }
+            return;
+        }
+        try self.scopeAssign(name, v);
+    }
+
+    fn startsWith(haystack: strings.AvmString, comptime needle: []const u8) bool {
+        if (haystack.len < needle.len) return false;
+        return strings.eql(haystack[0..needle.len], S(needle));
     }
 
     /// Vm.scopeGet, but each scope object that is a clip also exposes its
@@ -178,10 +360,11 @@ pub const Activation = struct {
         const cs = self.vm.case_sensitive;
         var cur = self.scope;
         while (cur != 0) {
-            if (self.vm.objects.getChained(cur, name, cs)) |_| {
-                return try self.vm.getProperty(cur, name, .{ .object = cur });
+            const node = self.scopeObject(cur);
+            if (self.vm.objects.getChained(node, name, cs)) |_| {
+                return try self.vm.getProperty(node, name, .{ .object = node });
             }
-            if (try stage.resolveMember(self.vm, cur, name)) |v| return v;
+            if (try stage.resolveMember(self.vm, node, name)) |v| return v;
             cur = self.vm.objects.get(cur).scope_parent;
         }
         return self.vm.objects.getChained(self.vm.globals, name, cs);
@@ -193,54 +376,19 @@ pub const Activation = struct {
     fn scopeAssign(self: *Activation, name: strings.AvmString, v: Value) !void {
         const cs = self.vm.case_sensitive;
         var cur = self.scope;
-        var bottom = self.scope;
+        var bottom = self.scopeObject(self.scope);
         while (cur != 0) {
-            if (self.vm.objects.hasOwn(cur, name, cs)) {
-                try self.vm.objects.put(cur, name, v, cs);
+            const node = self.scopeObject(cur);
+            if (self.vm.objects.hasOwn(node, name, cs)) {
+                try self.vm.objects.put(node, name, v, cs);
                 return;
             }
-            if (try stage.assignMember(self.vm, cur, name, v)) return;
-            bottom = cur;
+            if (try stage.assignMember(self.vm, node, name, v)) return;
+            bottom = node;
             cur = self.vm.objects.get(cur).scope_parent;
         }
         try self.vm.objects.put(bottom, name, v, cs);
     }
-
-    fn pathSeparator(name: strings.AvmString) ?usize {
-        for (name, 0..) |c, i| {
-            if (c == '.' or c == '/' or c == ':') return i;
-        }
-        return null;
-    }
-
-    fn trimTrailingSep(name: strings.AvmString) strings.AvmString {
-        if (name.len > 0 and (name[name.len - 1] == '/' or name[name.len - 1] == ':')) {
-            return name[0 .. name.len - 1];
-        }
-        return name;
-    }
-
-    const PathIter = struct {
-        s: strings.AvmString,
-        pos: usize = 0,
-
-        fn init(s: strings.AvmString) PathIter {
-            return .{ .s = s };
-        }
-
-        fn next(self: *PathIter) ?strings.AvmString {
-            if (self.pos > self.s.len) return null;
-            const start = self.pos;
-            var i = self.pos;
-            while (i < self.s.len) : (i += 1) {
-                const c = self.s[i];
-                if (c == '.' or c == '/' or c == ':') break;
-            }
-            self.pos = i + 1;
-            if (start == 0 and i == self.s.len and start == self.pos - 1) {}
-            return self.s[start..i];
-        }
-    };
 
     // --- member access ----------------------------------------------------
 
@@ -379,7 +527,7 @@ pub const Activation = struct {
                 });
                 if (f.name.len > 0) {
                     const name = try self.swfStr(f.name);
-                    try self.vm.scopeDefineLocal(self.scope, name, .{ .object = fn_obj });
+                    try self.vm.scopeDefineLocal(self.localScope(), name, .{ .object = fn_obj });
                 } else {
                     try self.push(.{ .object = fn_obj });
                 }
@@ -398,7 +546,7 @@ pub const Activation = struct {
                 });
                 if (f.name.len > 0) {
                     const name = try self.swfStr(f.name);
-                    try self.vm.scopeDefineLocal(self.scope, name, .{ .object = fn_obj });
+                    try self.vm.scopeDefineLocal(self.localScope(), name, .{ .object = fn_obj });
                 } else {
                     try self.push(.{ .object = fn_obj });
                 }
@@ -421,7 +569,7 @@ pub const Activation = struct {
                         self.setRegister(t.catch_register, caught);
                     } else {
                         const name = try self.swfStr(t.catch_name);
-                        try self.vm.scopeDefineLocal(self.scope, name, caught);
+                        try self.vm.scopeDefineLocal(self.localScope(), name, caught);
                     }
                     flow = try self.runSlice(t.catch_body, self.scope);
                 }
@@ -433,11 +581,33 @@ pub const Activation = struct {
             },
             .goto_frame => |frame| self.hostGotoFrame(frame + 1, null),
             .goto_frame2 => |g| {
+                // The ONE control op that falls back to the root when the
+                // target is invalid — everything else silently no-ops
+                // (ruffle action_goto_frame_2 uses target_clip_or_root,
+                // action_play/stop/goto_frame use target_clip). This is
+                // what makes `tellTarget('bogus'){gotoAndPlay(2)}` move
+                // _root; corpus tell_target_invalid.
+                const clip = self.clipOrRoot();
                 const v = self.pop();
-                switch (v) {
-                    .number => |n| self.hostGotoFrame(@intFromFloat(@max(1, n + 1 - @as(f64, @floatFromInt(g.scene_offset)))), g.set_playing),
-                    .string => |s| self.hostGotoLabel(s, g.set_playing),
-                    else => {},
+                // The operand is 1-BASED here (unlike GotoFrame 0x81), and
+                // only an INTEGER number is a direct index — anything else
+                // is coerced to a string and looked up as a label, which is
+                // how `gotoAndPlay("3")` and `gotoAndPlay("intro")` both
+                // work. ruffle globals/movie_clip.rs goto_frame:1109-1157.
+                var target: ?i32 = null;
+                var label: ?strings.AvmString = null;
+                if (v == .number and std.math.isFinite(v.number) and @rem(v.number, 1) == 0) {
+                    target = value_mod.toInt32(v.number);
+                } else {
+                    const s = try self.vm.toStringValue(v);
+                    if (strictFrameNumber(s)) |n| target = n else label = s;
+                }
+                if (label) |s| {
+                    self.hostGotoLabelOn(clip, s, g.set_playing);
+                } else if (target) |n| {
+                    const f = n +% @as(i32, g.scene_offset);
+                    // Gotoing <= 0 has no effect; past the end clamps.
+                    if (f > 0) self.hostGoto(clip, @intCast(@min(f, 65535)), g.set_playing);
                 }
             },
             .goto_label => |label| self.hostGotoLabel(try self.swfStr(label), null),
@@ -607,12 +777,13 @@ pub const Activation = struct {
             .define_local => {
                 const v = self.pop();
                 const name = try self.popString();
-                try self.vm.scopeDefineLocal(self.scope, name, v);
+                try self.vm.scopeDefineLocal(self.localScope(), name, v);
             },
             .define_local2 => {
                 const name = try self.popString();
-                if (!self.vm.objects.hasOwn(self.scope, name, self.vm.case_sensitive)) {
-                    try self.vm.scopeDefineLocal(self.scope, name, .undefined_value);
+                const sc = self.localScope();
+                if (!self.vm.objects.hasOwn(sc, name, self.vm.case_sensitive)) {
+                    try self.vm.scopeDefineLocal(sc, name, .undefined_value);
                 }
             },
             .delete => {
@@ -630,7 +801,7 @@ pub const Activation = struct {
                 var cur = self.scope;
                 var deleted = false;
                 while (cur != 0 and !deleted) {
-                    deleted = self.vm.objects.deleteOwn(cur, name, self.vm.case_sensitive);
+                    deleted = self.vm.objects.deleteOwn(self.scopeObject(cur), name, self.vm.case_sensitive);
                     cur = self.vm.objects.get(cur).scope_parent;
                 }
                 try self.push(.{ .boolean = deleted });
@@ -841,15 +1012,28 @@ pub const Activation = struct {
                 try self.vm.traceLine(s);
             },
             .target_path => {
+                // The DOT path (`_level0.mc.child`) — NOT `_target`'s
+                // slash form. Anything that isn't a display object, a
+                // string path included, gives undefined.
                 const v = self.pop();
-                _ = v; // M4: real clip paths
-                try self.push(.undefined_value);
+                if (stage.targetOfValue(self.vm, v)) |t| {
+                    try self.push(.{ .string = try stage.dotPath(self.vm, t.clip) });
+                } else {
+                    try self.push(.undefined_value);
+                }
             },
             .set_target2 => {
                 const v = self.pop();
-                if (v == .object and self.vm.objects.get(v.object).native == .clip) {
-                    self.target_override = v.object;
+                // Everything is invalid once the base clip is gone.
+                if (self.base_clip != 0 and stage.targetOf(self.vm, self.base_clip) == null) {
+                    self.target_clip = null;
+                } else if (v == .undefined_value) {
+                    // SWF<=6 treats an undefined target as "back to base";
+                    // SWF7+ nulls it (corpus tell_target_invalid_swf6).
+                    self.target_clip = if (self.swf_version > 6) null else self.base_clip;
                 } else {
+                    // Note this coerces even a clip to a string first, so
+                    // a plain object's toString runs and is observable.
                     try self.setTarget(try self.vm.toStringValue(v));
                 }
             },
@@ -1044,63 +1228,117 @@ pub const Activation = struct {
         self.r.byteAlign();
     }
 
-    /// SetTarget("") resets to the base clip. A path that resolves to a
-    /// clip retargets; an INVALID path in SWF <= 6 leaves the target
-    /// unchanged (execution continues — corpus tell_target_invalid_swf6),
-    /// while SWF 7+ players null the target.
+    /// SetTarget("") retargets to the base clip. Any other path resolves
+    /// through the DISPLAY tree; failure sets `target_clip = null` at every
+    /// SWF version, which makes movie control silently no-op while
+    /// variables fall back to _root. ruffle activation.rs:3060-3089.
     fn setTarget(self: *Activation, path: strings.AvmString) !void {
         if (path.len == 0) {
-            self.target_override = 0;
+            self.target_clip = self.base_clip;
             return;
         }
-        const resolved = try self.getVariable(path);
-        if (resolved == .object and self.vm.objects.get(resolved.object).native == .clip) {
-            self.target_override = resolved.object;
-        } else if (self.swf_version >= 7) {
-            self.target_override = 0;
+        const root = self.rootHandle();
+        const resolved = try self.resolveTargetPath(root, self.base_clip, path, true, false);
+        // Every property is invalid once the base clip has been removed.
+        const base_removed = self.base_clip != 0 and
+            stage.targetOf(self.vm, self.base_clip) == null;
+        if (!base_removed) {
+            if (resolved) |h| {
+                if (stage.targetOf(self.vm, h) != null) {
+                    self.target_clip = h;
+                    return;
+                }
+            }
         }
+        self.target_clip = null;
     }
 
-    /// The clip movie-control ops act on: the SetTarget override when
-    /// present, else `this`.
-    fn targetValue(self: *Activation) Value {
-        if (self.target_override != 0) return .{ .object = self.target_override };
-        return self.this;
+    /// Variables and StartDrag: an invalid target reads from _root.
+    fn targetClipOrRoot(self: *Activation) ObjectHandle {
+        if (self.target_clip) |h| return h;
+        return if (self.vm.root_object == .object) self.vm.root_object.object else 0;
+    }
+
+    /// SetTarget2's re-scope: an invalid target falls back to the BASE
+    /// clip, not the root.
+    fn targetClipOrBaseClip(self: *Activation) ObjectHandle {
+        return self.target_clip orelse self.base_clip;
+    }
+
+    fn rootHandle(self: *Activation) ObjectHandle {
+        return if (self.vm.root_object == .object) self.vm.root_object.object else 0;
+    }
+
+    /// Substitute the retarget when a scope walk reaches the timeline
+    /// node. Ruffle clones the chain with the Target scope's object
+    /// swapped (`Scope::new_target_scope`); our chain nodes ARE the
+    /// objects, so cloning would mean mutating state that closures share.
+    /// Substituting on the way past is equivalent and side-effect free.
+    /// The innermost scope for DEFINING things. Inside a function this is
+    /// the local scope; in timeline code it is the (possibly retargeted)
+    /// timeline scope — `tellTarget(x) { var n = 1 }` defines n on x, and
+    /// reading it back must find it there.
+    fn localScope(self: *Activation) ObjectHandle {
+        return self.scopeObject(self.scope);
+    }
+
+    fn scopeObject(self: *Activation, node: ObjectHandle) ObjectHandle {
+        if (node != self.timeline_scope or self.timeline_scope == 0) return node;
+        const t = self.targetClipOrRoot();
+        return if (t != 0) t else node;
     }
 
     /// GetProperty/SetProperty's target operand. An empty path means "the
-    /// current target clip"; anything else resolves as a variable path.
+    /// current target clip"; anything else resolves as a target path.
     /// A missing target yields null and the op pushes undefined.
     fn resolveDisplayTarget(self: *Activation, path: Value) !?stage.Target {
         // A value that already is a clip is used directly.
         if (stage.targetOfValue(self.vm, path)) |t| return t;
         const s = try self.vm.toStringValue(path);
-        if (s.len == 0) return stage.targetOfValue(self.vm, self.targetValue());
-        const resolved = try self.getVariable(s);
-        return stage.targetOfValue(self.vm, resolved);
+        if (s.len == 0) {
+            const h = self.target_clip orelse return null;
+            return stage.targetOf(self.vm, h);
+        }
+        const resolved = try self.resolveTargetPath(self.rootHandle(), self.targetClipOrRoot(), s, true, false) orelse
+            return null;
+        return stage.targetOf(self.vm, resolved);
     }
 
     // --- host bridges (movie control) -------------------------------------
 
+    /// Movie control acts on the target clip ONLY. A failed SetTarget
+    /// leaves `target_clip` null and every control op silently does
+    /// nothing — unlike variables, which fall back to _root.
     fn currentClip(self: *Activation) ?*anyopaque {
-        const t = self.targetValue();
-        if (t == .object) {
-            const native = self.vm.objects.get(t.object).native;
-            if (native == .clip) return native.clip;
-        }
-        return null;
+        const h = self.target_clip orelse return null;
+        const t = stage.targetOf(self.vm, h) orelse return null;
+        return @ptrCast(t.clip);
+    }
+
+    /// GotoFrame2's target: the retarget, else the root.
+    fn clipOrRoot(self: *Activation) ?*anyopaque {
+        const t = stage.targetOf(self.vm, self.targetClipOrRoot()) orelse return null;
+        return @ptrCast(t.clip);
+    }
+
+    fn hostGoto(self: *Activation, clip: ?*anyopaque, frame: u16, play: ?bool) void {
+        const host = self.vm.host;
+        const c = clip orelse return;
+        if (host.goto_frame) |f| f(host.ctx.?, c, frame, play orelse false);
+    }
+
+    fn hostGotoLabelOn(self: *Activation, clip: ?*anyopaque, label: strings.AvmString, play: ?bool) void {
+        const host = self.vm.host;
+        const c = clip orelse return;
+        if (host.goto_label) |f| _ = f(host.ctx.?, c, label, play orelse false);
     }
 
     fn hostGotoFrame(self: *Activation, frame: u16, play: ?bool) void {
-        const host = self.vm.host;
-        const clip = self.currentClip() orelse return;
-        if (host.goto_frame) |f| f(host.ctx.?, clip, frame, play orelse false);
+        self.hostGoto(self.currentClip(), frame, play);
     }
 
     fn hostGotoLabel(self: *Activation, label: strings.AvmString, play: ?bool) void {
-        const host = self.vm.host;
-        const clip = self.currentClip() orelse return;
-        if (host.goto_label) |f| _ = f(host.ctx.?, clip, label, play orelse false);
+        self.hostGotoLabelOn(self.currentClip(), label, play);
     }
 
     fn hostSetPlaying(self: *Activation, playing: bool) void {
@@ -1116,6 +1354,20 @@ pub const Activation = struct {
     }
 };
 
+/// A frame operand that is a STRING is a frame number only when the whole
+/// string parses; otherwise it is a label. Ruffle uses Rust's strict
+/// `parse()` here, so "3x" is a label, not frame 3.
+fn strictFrameNumber(s: strings.AvmString) ?i32 {
+    if (s.len == 0 or s.len > 32) return null;
+    var buf: [32]u8 = undefined;
+    for (s, 0..) |c, i| {
+        if (c > 0x7F) return null;
+        buf[i] = @intCast(c);
+    }
+    const n = std.fmt.parseFloat(f64, buf[0..s.len]) catch return null;
+    return value_mod.toInt32(n);
+}
+
 /// GetProperty/SetProperty's index operand. Non-finite or <= -1 is not a
 /// property at all; everything else truncates toward zero, so -0.8 is
 /// index 0 (`_x`) rather than an error.
@@ -1129,4 +1381,51 @@ fn ecmaMod(a: f64, b: f64) f64 {
     if (std.math.isNan(a) or std.math.isNan(b) or b == 0 or std.math.isInf(a)) return std.math.nan(f64);
     if (std.math.isInf(b)) return a;
     return @rem(a, b);
+}
+
+// --- Tests -----------------------------------------------------------------
+
+const testing = std.testing;
+
+test "frame operands: strict number-vs-label split" {
+    const S_ = strings.ascii;
+    // A fully-parsing string is a frame NUMBER...
+    try testing.expectEqual(@as(?i32, 3), strictFrameNumber(S_("3")));
+    try testing.expectEqual(@as(?i32, -2), strictFrameNumber(S_("-2")));
+    try testing.expectEqual(@as(?i32, 3), strictFrameNumber(S_("3.7"))); // truncated
+    // ...anything with trailing junk is a LABEL, not frame 3.
+    try testing.expectEqual(@as(?i32, null), strictFrameNumber(S_("3x")));
+    try testing.expectEqual(@as(?i32, null), strictFrameNumber(S_("intro")));
+    try testing.expectEqual(@as(?i32, null), strictFrameNumber(S_("")));
+}
+
+test "GetProperty index operand" {
+    // Non-finite or <= -1 is not a property; -0.8 truncates to _x.
+    try testing.expectEqual(@as(?usize, 0), propertyIndex(-0.8));
+    try testing.expectEqual(@as(?usize, null), propertyIndex(-1));
+    try testing.expectEqual(@as(?usize, null), propertyIndex(std.math.nan(f64)));
+    try testing.expectEqual(@as(?usize, null), propertyIndex(std.math.inf(f64)));
+    try testing.expectEqual(@as(?usize, 11), propertyIndex(11));
+    try testing.expectEqual(@as(?usize, null), propertyIndex(22));
+}
+
+test "variable paths split at the RIGHTMOST separator, version-gated" {
+    const S_ = strings.ascii;
+    const vm = try Vm.create(testing.allocator, 6);
+    defer vm.destroy();
+    var act = Activation.init(vm, &.{}, .undefined_value, 0, 0);
+
+    // `a.b.c` targets `a.b` and reads `c` — not `a` then `b.c`.
+    try testing.expectEqual(@as(?usize, 3), act.variableSeparator(S_("a.b.c")));
+    try testing.expectEqual(@as(?usize, 1), act.variableSeparator(S_("a:b")));
+    try testing.expectEqual(@as(?usize, 4), act.variableSeparator(S_("/a/b:c")));
+    try testing.expectEqual(@as(?usize, null), act.variableSeparator(S_("/a/b")));
+
+    // SWF4 has no `.` separator at all: `a.b` is one opaque name.
+    act.swf_version = 4;
+    try testing.expectEqual(@as(?usize, null), act.variableSeparator(S_("a.b.c")));
+    try testing.expectEqual(@as(?usize, 1), act.variableSeparator(S_("a:b")));
+
+    try testing.expect(Activation.containsSlash(S_("/a")));
+    try testing.expect(!Activation.containsSlash(S_("a.b")));
 }

@@ -201,6 +201,11 @@ pub const Vm = struct {
     pub fn toPrimitive(self: *Vm, v: Value, hint: Hint) Error!Value {
         if (v != .object) return v;
         const h = v.object;
+        // Display objects are NOT coerced here — ruffle value.rs:203
+        // guards `to_primitive_num` with `as_display_object().is_none()`.
+        // Leaving the clip intact is what lets `"x " + mc` reach
+        // toStringValue's path special-case instead of Object.toString.
+        if (self.objects.get(h).native == .clip) return v;
         const first: strings.AvmString = if (hint == .string) S("toString") else S("valueOf");
         const second: strings.AvmString = if (hint == .string) S("valueOf") else S("toString");
         const lookup_order = [2]strings.AvmString{ first, second };
@@ -246,13 +251,19 @@ pub const Vm = struct {
             },
             .string => |s| return s,
             .object => |h| {
+                // Display objects are special-cased to their DOT path, and
+                // it wins over any user toString (ruffle value.rs:325
+                // checks as_display_object before dispatching toString).
+                if (self.objects.get(h).native == .clip) {
+                    const stage = @import("stage_object.zig");
+                    return stage.dotPathOf(self, self.objects.get(h).native.clip);
+                }
                 // toString via the chain, else type-tagged default.
                 const p = try self.toPrimitive(v, .string);
                 if (p == .string) return p.string;
                 if (p != .undefined_value) return self.toStringValue(p);
                 return switch (self.objects.get(h).native) {
                     .function => S("[type Function]"),
-                    .clip => S("[type MovieClip]"),
                     else => S("[type Object]"),
                 };
             },
@@ -490,7 +501,13 @@ pub const Vm = struct {
             next_reg += 1;
         }
         if (preload and fl.preload_parent) {
-            if (next_reg < registers.len) registers[next_reg] = self.root_object; // M4: real _parent
+            if (next_reg < registers.len) {
+                const stage = @import("stage_object.zig");
+                registers[next_reg] = if (this == .object)
+                    try stage.parentOf(self, this.object)
+                else
+                    .undefined_value;
+            }
             next_reg += 1;
         }
         if (preload and fl.preload_global) {

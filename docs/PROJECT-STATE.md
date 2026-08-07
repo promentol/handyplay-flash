@@ -30,16 +30,17 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 A1 done (**92/696**); B–F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 A1+A2 done (**102/680**); B–F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
 
 **Visually working today**: `squares.swf` and `homestuck-beta.swf` render
 correctly (shapes, curves, strokes, gradients, layering, timeline).
-**Scripting today**: every AVM1 opcode executes and the display-property
-table is live (`_x`, `_alpha`, `_rotation`, … via both `getProperty` and
-`mc._x`); 92 of Ruffle's 696 conformance tests pass.
+**Scripting today**: every AVM1 opcode executes, the display-property table
+is live (`_x`, `_alpha`, `_rotation`, … via both `getProperty` and `mc._x`),
+and target paths resolve for real (`tellTarget`, `/slash/paths:var`, `..`,
+`_levelN`); 102 of Ruffle's 680 scorable conformance dirs pass.
 
 ---
 
@@ -245,7 +246,8 @@ zig build run-sdl -- file.swf                          # windowed
 
 # AVM1 conformance
 sh tests/conformance/run_avm1.sh              # full run (SLOW serially)
-sh tests/conformance/run_avm1.sh <dir>        # one test + diff
+sh tests/conformance/run_avm1.sh <dir>        # one test + diff (dir may be nested,
+                                              #   e.g. target_paths/swf4)
 sh tests/conformance/run_avm1.sh --ratchet    # regression check vs pass_list
 sh tests/conformance/run_avm1.sh --update     # rewrite pass_list.txt
 ```
@@ -294,8 +296,8 @@ getters/setters, ASSetPropFlags **version-gate bits**, SetTarget
 retargeting, DoInitAction at Initialize priority, proto-chain `for..in`,
 goto rewind survival, no double-tick of newly placed clips.
 
-**Documented stubs (10)** — listed with rationale in `docs/AVM1.md`.
-Chief among them: TargetPath, CloneSprite, StartDrag, `Call`. Some are
+**Documented stubs (9)** — listed with rationale in `docs/AVM1.md`.
+Chief among them: CloneSprite, StartDrag, `Call`. Some are
 also no-ops in Ruffle (StrictMode, FsCommand2, and WaitForFrame which is
 behaviorally identical for local files).
 

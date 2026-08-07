@@ -86,6 +86,12 @@ pub const Player = struct {
         };
         self.root.placement = &self.root_placement;
         self.installHost();
+        // Bind `_root` BEFORE frame 1. Lazily creating it in the action
+        // drain was a trap: a root frame that places a child before its own
+        // DoAction drains the CHILD first, so every `_root`-anchored path
+        // resolved against Vm.create's placeholder object instead of the
+        // real clip — and a movie with no DoAction at all never bound it.
+        _ = try self.clipObject(&self.root);
         // Frame 1 executes immediately so the first present isn't blank.
         try self.runOneFrame();
         try self.renderNow();
@@ -168,21 +174,24 @@ pub const Player = struct {
         for (mc.children.items) |child| self.severClipObjects(child);
     }
 
-    /// Lazily create/fetch the AVM1 object for a clip. The clip object IS
-    /// the timeline's variable scope (scope_parent = 0 → falls through to
-    /// _global), with native = the MovieClip pointer for host dispatch.
+    /// Fetch (creating once) the AVM1 object for a clip. Object creation
+    /// itself lives in `stage_object.clipObject` — this wrapper only adds
+    /// the root's global bindings, which nothing below the Player knows
+    /// about.
     fn clipObject(self: *Player, mc: *MovieClipT) !avm1.runtime.ObjectHandle {
-        if (mc.avm_object != 0) return mc.avm_object;
-        const h = try self.vm.objects.create();
-        self.vm.objects.get(h).proto = .{ .object = self.vm.object_proto };
-        self.vm.objects.get(h).native = .{ .clip = @ptrCast(mc) };
-        mc.avm_object = h;
-        if (mc == &self.root) {
+        const existed = mc.avm_object != 0;
+        const h = try avm1.stage_object.clipObject(self.vm, mc);
+        if (!existed and mc == &self.root) {
             self.vm.root_scope = h;
             self.vm.root_object = .{ .object = h };
+            // NOT registered as _global properties: `_root`/`_levelN` are
+            // resolved through the display tree (stage_object's path
+            // properties), which correctly yields undefined below SWF5
+            // where they do not exist. A _global entry would leak them
+            // into SWF4 — corpus target_paths/swf4.
             const S = avm1.strings.ascii;
-            try self.vm.objects.put(self.vm.globals, S("_root"), self.vm.root_object, self.vm.case_sensitive);
-            try self.vm.objects.put(self.vm.globals, S("_level0"), self.vm.root_object, self.vm.case_sensitive);
+            _ = self.vm.objects.deleteOwn(self.vm.globals, S("_root"), self.vm.case_sensitive);
+            _ = self.vm.objects.deleteOwn(self.vm.globals, S("_level0"), self.vm.case_sensitive);
         }
         return h;
     }
