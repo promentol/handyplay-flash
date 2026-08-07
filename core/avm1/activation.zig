@@ -826,8 +826,8 @@ pub const Activation = struct {
 
             // --- ES3 ops --------------------------------------------------
             .add2 => {
-                const b = try self.vm.toPrimitive(self.pop(), .number);
-                const a = try self.vm.toPrimitive(self.pop(), .number);
+                const b = try self.vm.toPrimitiveAdd(self.pop());
+                const a = try self.vm.toPrimitiveAdd(self.pop());
                 if (a == .string or b == .string) {
                     const sa = try self.vm.toStringValue(a);
                     const sb = try self.vm.toStringValue(b);

@@ -118,6 +118,9 @@ pub const ScriptObject = struct {
 pub const Objects = struct {
     arena: std.mem.Allocator,
     slots: std.ArrayList(ScriptObject) = .empty,
+    /// Needed here because reads must honour the ASSetPropFlags version
+    /// gate (ruffle filters in get_local_stored, not just on enumeration).
+    swf_version: u8 = 6,
 
     pub fn init(arena: std.mem.Allocator) Objects {
         return .{ .arena = arena };
@@ -148,8 +151,27 @@ pub const Objects = struct {
         return &o.props.items[i];
     }
 
-    /// Find a property slot anywhere on the proto chain.
+    /// Find a property slot anywhere on the proto chain, for READING: a
+    /// version-gated property is skipped and the search continues UP the
+    /// chain, so a hidden own property lets the prototype's show through
+    /// (ruffle filters inside get_local_stored, per object).
     pub fn findChained(self: *Objects, h: ObjectHandle, name: strings.AvmString, cs: bool) ?*Property {
+        var current = h;
+        var depth: u32 = 0;
+        while (depth < 256) : (depth += 1) {
+            if (self.findOwn(current, name, cs)) |p| {
+                if (!versionHidden(p.attrs, self.swf_version)) return p;
+            }
+            const proto = self.get(current).proto;
+            if (proto != .object) return null;
+            current = proto.object;
+        }
+        return null;
+    }
+
+    /// Same walk WITHOUT the version gate — writes must still find (and
+    /// honour the accessors of) a gated slot rather than shadowing it.
+    pub fn findChainedForWrite(self: *Objects, h: ObjectHandle, name: strings.AvmString, cs: bool) ?*Property {
         var current = h;
         var depth: u32 = 0;
         while (depth < 256) : (depth += 1) {
@@ -165,6 +187,10 @@ pub const Objects = struct {
     pub fn getOwn(self: *Objects, h: ObjectHandle, name: strings.AvmString, cs: bool) ?Value {
         const o = self.get(h);
         const i = o.find(name, cs) orelse return null;
+        // A version-gated property reads as ABSENT, so the proto chain (and
+        // then the display object) shows through — ruffle script_object.rs
+        // `.filter(|p| p.allow_swf_version(...))` inside get_local_stored.
+        if (versionHidden(o.props.items[i].attrs, self.swf_version)) return null;
         return o.props.items[i].value;
     }
 

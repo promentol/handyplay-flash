@@ -12,6 +12,11 @@ array_slice
 array_trivial
 as1_constructor_v7
 as_broadcaster_initialize
+as_set_prop_flags_version_swf5
+as_set_prop_flags_version_swf6
+as_set_prop_flags_version_swf7
+as_set_prop_flags_version_swf8
+as_set_prop_flags_version_swf9
 as_transformed_flag
 bad_swf_tag_past_eof
 bitand

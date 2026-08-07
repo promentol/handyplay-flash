@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 A1+A2+A3 done (**108/680**); B–F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 A1+A2+A3 done (**113/680**); B–F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -40,7 +40,7 @@ correctly (shapes, curves, strokes, gradients, layering, timeline).
 **Scripting today**: every AVM1 opcode executes, the display-property table
 is live (`_x`, `_alpha`, `_rotation`, … via both `getProperty` and `mc._x`),
 and target paths resolve for real (`tellTarget`, `/slash/paths:var`, `..`,
-`_levelN`); 108 of Ruffle's 680 scorable conformance dirs pass.
+`_levelN`); 113 of Ruffle's 680 scorable conformance dirs pass.
 
 ---
 
@@ -168,7 +168,7 @@ holds **slices into the decompressed buffer** (no copies). AVM2 (DoABC or
 
 **Interpreter** (Ruffle model, ADR D0): a byte reader over the action
 slice; `If`/`Jump` seek the reader; running off the end is an implicit
-return; a shared budget (200k actions/frame) guards runaway scripts.
+return; a shared budget (5M actions/frame) guards runaway scripts.
 
 **Clip ⇄ VM linkage**: `MovieClip.avm_object: u32` (lazily created in
 `Player.clipObject`); the ScriptObject's `native = .{ .clip = *MovieClip }`.

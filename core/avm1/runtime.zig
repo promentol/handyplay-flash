@@ -65,7 +65,7 @@ pub const Vm = struct {
     now_ms: f64 = 0,
     rng: std.Random.DefaultPrng,
     /// Per-frame action budget (recursion/time guard, ScriptLimits-ish).
-    budget: u32 = 200_000,
+    budget: u32 = 5_000_000,
     call_depth: u32 = 0,
     max_call_depth: u32 = 256,
     halted: bool = false,
@@ -96,7 +96,7 @@ pub const Vm = struct {
         self.* = .{
             .gpa = gpa,
             .arena_state = arena_state,
-            .objects = object_mod.Objects.init(arena_state.allocator()),
+            .objects = .{ .arena = arena_state.allocator(), .swf_version = swf_version },
             .swf_version = swf_version,
             .case_sensitive = swf_version >= 7,
             .rng = std.Random.DefaultPrng.init(0x5EED),
@@ -225,6 +225,30 @@ pub const Vm = struct {
             else => {},
         }
         return .undefined_value;
+    }
+
+    /// ruffle `Value::to_primitive` (value.rs:221) — the Add2 coercion,
+    /// which is NOT the same as ToPrimitive. It calls only `valueOf` and,
+    /// when that yields a non-primitive, falls back to the OBJECT ITSELF
+    /// rather than trying `toString`. That is load-bearing for ordering:
+    /// an operand's `toString` must fire in Add2's string phase, not here.
+    pub fn toPrimitiveAdd(self: *Vm, v: Value) Error!Value {
+        if (v != .object) return v;
+        const h = v.object;
+        if (self.objects.get(h).native == .clip) return v;
+        if (self.objects.getChained(h, S("valueOf"), self.case_sensitive)) |m| {
+            if (self.isCallable(m)) {
+                const r = self.callFunction(m, v, &.{}) catch Value.undefined_value;
+                if (r.isPrimitive()) return r;
+            }
+        }
+        switch (self.objects.get(h).native) {
+            .boxed_number => |n| return .{ .number = n },
+            .boxed_string => |s| return .{ .string = s },
+            .boxed_bool => |b| return .{ .boolean = b },
+            else => {},
+        }
+        return v;
     }
 
     pub fn toNumber(self: *Vm, v: Value) Error!f64 {
@@ -365,7 +389,7 @@ pub const Vm = struct {
     /// Property write honoring addProperty setters (proto-chain aware:
     /// an inherited accessor intercepts writes to the child).
     pub fn setProperty(self: *Vm, h: ObjectHandle, name: strings.AvmString, v: Value, this: Value) anyerror!void {
-        if (self.objects.findChained(h, name, self.case_sensitive)) |slot| {
+        if (self.objects.findChainedForWrite(h, name, self.case_sensitive)) |slot| {
             if (slot.setter != 0) {
                 _ = try self.callFunction(.{ .object = slot.setter }, this, &.{v});
                 return;

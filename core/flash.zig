@@ -166,7 +166,7 @@ pub const Player = struct {
         }
         self.retireDead(&ctx);
         self.vm.now_ms += self.frame_ms;
-        self.vm.budget = 200_000;
+        self.vm.budget = 5_000_000;
         self.vm.halted = false;
         if (ctx.background_color) |c| self.background = c | 0xFF000000;
     }
