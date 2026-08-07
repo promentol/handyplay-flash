@@ -43,6 +43,8 @@ zig build run-swfinfo -- file.swf
 
 ## Documentation
 
+- **[docs/PROJECT-STATE.md](docs/PROJECT-STATE.md) — START HERE.** Full state, environment traps, workflows, what's next.
+- [docs/M4-SPEC.md](docs/M4-SPEC.md) — the next milestone, specified for handover
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module map, frame lifecycle, memory model
 - [docs/SPEC.md](docs/SPEC.md) — the spec stack (open-flash AVM1 docs, Ruffle errata, Adobe PDF, ruffle source)
 - [docs/TESTING.md](docs/TESTING.md) — parser corpus, 697-case AVM1 trace conformance, determinism gates
