@@ -98,9 +98,22 @@ cxforms concat (8.8 fixed) and pass STRAIGHT into simdra's
 
 ---
 
-## 3. Interpreter stubs to promote (workstream A)
+## 3. Interpreter stubs to promote (workstream A) — ✅ CLOSED (156/680)
 
-These ops currently pop correctly but act as stubs (all in
+All six sections are done. What is left INSIDE workstream A is three
+properties whose semantics are implemented but whose INPUTS do not exist
+yet — none is fixable without the subsystem behind it:
+
+| Property | State | Blocked on |
+|---|---|---|
+| `_xmouse` / `_ymouse` | the inverse-transform into clip space is live (`stage_object.zig` `localMouse`); `vm.mouse_x/y` are never written, so it reports the clip-space image of the stage origin — what a never-moved pointer gives | frontend mouse wiring (§C) |
+| `_droptarget` | `""` at SWF6+, `undefined` below | StartDrag/EndDrag, which need mouse state (§C) |
+| `_url` | always `""` | the loader (no movie has a URL yet — M5) |
+
+The per-section notes below record what actually landed, INCLUDING the
+diagnoses that turned out to be wrong. Read those before re-deriving them.
+
+These ops once popped correctly but acted as stubs (all in
 `core/avm1/activation.zig`; search for "M3.5"/"M4" comments):
 
 ### A1. GetProperty / SetProperty (0x22/0x23) — ✅ DONE
@@ -187,7 +200,7 @@ automatic `instanceN` names. Two notes for later work:
     children — ruffle wires has_display_object_property as the fallback
     for has_property, not has_own_property.
   • `default_names` is NOT a gate for this section: it calls attachMovie,
-    so it needs workstream B.
+    so it needed A4. (It finally closed on goto-on-loop — see §A4.)
 
 `Activation.memberGet`/`memberSet` and `scopeGet` must learn the
 MovieClip name-resolution order (ruffle stage_object.rs:24-57):
@@ -206,18 +219,37 @@ run steps 1-3 before the normal `getChained`. Same for writes
 `getNextHighestDepth` had to come too: content stacks attached clips with
 it, and without it every attach lands on depth 0 and replaces the last —
 which read as a base-clip bug in property_invalid_base_clip. Export names
-match case-INSENSITIVELY. What still fails around here needs OTHER
-workstreams: duplicate_movie_clip and create_empty_movie_clip want clip
-events (C), default_names wants the action-queue priority order (C),
-remove_movie_clip wants Button/EditText stringification (C/D), and
-duplicate_movie_clip_drawing / clone_sprite_edittext want the drawing API.
+match case-INSENSITIVELY. Everything that once failed around here now passes except
+clone_sprite_edittext (§D). Three of the blockers first diagnosed here
+were WRONG, and the real causes are worth keeping:
+  • `default_names` was not action-queue priority. Our queue is plain FIFO
+    in placement order and that matches Flash. The bug was that LOOPING
+    past the last frame must run a GOTO (rewind + replay), not re-execute
+    frame 1's tags on top of the last frame's display list — where
+    `placeObject` refuses every occupied depth, so each lap silently lost
+    clips and the instance counter drifted. `MovieClip.runGoto`.
+  • `remove_movie_clip` was not Button/EditText stringification. It needed
+    `swapDepths`: the test hoists a timeline-placed text field into the
+    script depth range so `RemoveSprite` will accept it at all.
+  • `duplicate_movie_clip` / `create_empty_movie_clip` did need clip
+    events, but ALSO the ordering rule below — a clone's inherited state
+    must be in place before its first frame runs.
 Absorbed the workstream-B instantiation methods (duplicateMovieClip,
 attachMovie, createEmptyMovieClip, removeMovieClip, getDepth) because they
 share the one primitive — §4 below should NOT re-specify them. Two things
 the sketch below misses:
   • the METHOD biases the depth, the OPCODE does not, and validation
     applies to the BIASED value (createEmptyMovieClip validates nothing);
-  • DisplayObject.depth had to widen from u16 to i32.
+  • DisplayObject.depth had to widen from u16 to i32;
+  • everything a clone inherits (matrix, cxform, `onClipEvent` handlers,
+    drawing) must be copied BEFORE `finishInstantiate` runs its first
+    frame — that frame dispatches `load`, and the handler it dispatches is
+    one of the things being copied.
+Also landed here because the corpus measures it through `_width`: the
+script DRAWING API (`core/display/drawing.zig` +
+beginFill/endFill/lineStyle/moveTo/lineTo/curveTo/clear). It is a clip's
+SELF bounds, it renders under that clip's children, and
+duplicateMovieClip deep-copies it.
 
 `CloneSprite` pops depth, target(new name), source(path). Behavior
 (ruffle movie_clip.rs `duplicate_movie_clip`): instantiate a NEW clip of
@@ -233,8 +265,28 @@ All five exception dirs pass. A rethrow FROM A CATCH needs the same
 unwind conversion as the try body — easy to implement only on one path.
 ImplementsOp (0x2C) and interface-aware `instanceof` landed here too,
 since that was what the super cluster actually still failed on.
-super_edge_cases (coercion edge cases) and interface_implements_op
-(addProperty getters on prototypes) remain, neither about `super`.
+Neither of the two dirs left open here was what it looked like:
+  • `super_edge_cases` was not coercion. It needed `depth.max(1)` (a
+    method found on `this` still gets a `super` one layer up), reads
+    resolving from `SuperObject::proto()` — which is why
+    `super.__proto__` lands TWO layers up — getter-aware
+    `__constructor__`/method lookup, `InitObject` honouring `__proto__`,
+    and the display-object-as-prototype rule below. It PASSES.
+  • `interface_implements_op` was not addProperty getters (those work,
+    and now work through `super` too). Every trace in it runs inside
+    `MovieClipLoader.loadClip("child6.swf", ...)`'s `onLoadInit`, and one
+    assertion calls a function defined IN THE CHILD SWF. It needs the
+    loader subsystem plus cross-movie AVM1 — nothing in workstream A
+    reaches it, and `core/` does no I/O, so it needs a host seam (M5).
+
+One rule here is corpus-derived, NOT ruffle-derived, and is the single
+thing in workstream A most likely to look wrong later: **a display object
+reached AS a prototype ends the chain** — it contributes neither its own
+properties nor its `__proto__` link. Ruffle's `search_prototype` walks
+straight through it; real Flash (super_edge_cases output.txt) does not.
+Taken under the errata rule, verified against the whole corpus with zero
+regressions. A clip's OWN lookups are untouched (they start at the clip),
+so MovieClip.prototype methods still resolve.
 Throw travels as a Zig error (`error.Avm1Thrown` + `Vm.pending_throw`), so
 no call site needed editing. Two extras the sketch omits: `Try` restores
 the value stack to its pre-try depth, and an uncaught throw traces

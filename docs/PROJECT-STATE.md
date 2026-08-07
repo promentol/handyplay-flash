@@ -130,9 +130,13 @@ handyflash/
 │       └── canvas.zig        BGRA surface; pixels() IS the libretro framebuffer
 ├── frontends/sdl/main.zig    windowed playback + --headless-frames N PNG dump
 ├── tools/                    swfinfo · swfdump · trace_runner
+│   ├── avm1dis.py            AVM1 disassembler, RECURSES into fn bodies
+│   ├── swfstruct.py          timeline structure (frames/places/sprites)
+│   └── pngdiff.py            visual gate: pixel diff + bounding box
 ├── tests/
 │   ├── parse_corpus.sh       swfdump over ruffle's 56 tag SWFs (M1 gate)
-│   └── conformance/          run_avm1.sh + pass_list.txt (ratchet) + known_skip.txt
+│   └── conformance/          run_avm1.sh + sweep.sh (parallel) +
+│                             pass_list.txt (ratchet) + known_skip.txt
 ├── vendor/simdra/            vendored rasterizer (MIT, the user's own lib)
 └── docs/
     ├── PROJECT-STATE.md      ← you are here
@@ -255,24 +259,56 @@ sh tests/conformance/run_avm1.sh --ratchet    # regression check vs pass_list
 sh tests/conformance/run_avm1.sh --update     # rewrite pass_list.txt
 ```
 
-### ⚠️ Fast corpus runs (10 min → 40 s)
+### ⚠️ Fast corpus runs (10 min → 21 s)
 
-Build ReleaseFast and parallelize; the serial shell loop is unusably
-slow. Recipe (recreate in a scratch dir):
+Now committed — `tests/conformance/sweep.sh` (the recreate-it-yourself
+recipe that used to live here is gone; the script IS the recipe):
 
 ```sh
-# conf.sh <results-file> <test-dir-name>
-CORPUS=reference/ruffle/tests/tests/swfs/avm1; BIN=./zig-out/bin/trace_runner
-n=$(sed -n 's/^num_frames *= *\([0-9]*\).*/\1/p; s/^num_ticks *= *\([0-9]*\).*/\1/p' \
-    "$CORPUS/$2/test.toml" | head -1); [ -n "$n" ] || n=1
-got=$(timeout 10 "$BIN" "$CORPUS/$2/test.swf" --frames "$n" 2>/dev/null)
-[ "$got" = "$(cat "$CORPUS/$2/output.txt")" ] && echo "PASS $2" >>"$1" || echo "FAIL $2" >>"$1"
+~/.zvm/0.16.0/zig build -Doptimize=ReleaseFast      # REQUIRED first
+sh tests/conformance/sweep.sh /tmp/r.txt            # prints "156 of 680"
+grep PASS /tmp/r.txt | sed 's/^PASS //' | sort > /tmp/new.txt
+comm -23 <(sort tests/conformance/pass_list.txt) /tmp/new.txt   # LOST — stop
+comm -13 <(sort tests/conformance/pass_list.txt) /tmp/new.txt   # gained
+cp /tmp/new.txt tests/conformance/pass_list.txt     # only when LOST is empty
 ```
+
+### Diagnosing one failing dir
+
+In order of how often it settled things this session:
+
+1. **`cat $CORPUS/<dir>/*.as`** — the corpus ships each test's SOURCE
+   (`test.as`, plus per-class files). This is decisive far more often
+   than reading bytecode, and it is easy to forget it exists.
+2. **`python3 tools/swfstruct.py <test.swf>`** — the timeline shape:
+   which sprite holds which DoAction, in what tag order, at what depth.
+   Read this BEFORE theorising about action-queue ordering. It is what
+   proved our queue is plain FIFO and the real `default_names` bug was
+   the loop rewind.
+3. **`python3 tools/avm1dis.py <test.swf>`** — recurses into
+   DefineFunction/DefineFunction2 bodies and prints the fn2 flags.
+   `preload_super` means `super` is in a REGISTER; preloads fill r1.. in
+   the order printed, which is the only way to read a compiled
+   `super.m()` call site.
+4. Side-by-side beats a diff when ordering is the question:
+   `paste -d'|' <(./zig-out/bin/trace_runner $D/test.swf --frames N) \
+                <(cat $D/output.txt) | cat -n`
+
+### Visual gate (renderer / timeline changes)
+
 ```sh
-~/.zvm/0.16.0/zig build -Doptimize=ReleaseFast
-ls $CORPUS | grep -v __framework__ | xargs -P 8 -I{} sh conf.sh results.txt {}
-grep -c PASS results.txt
+~/.zvm/0.16.0/zig build sdl -Doptimize=ReleaseFast
+./zig-out/bin/handyflash-sdl <file.swf> --headless-frames N --out after.png
+python3 tools/pngdiff.py before.png after.png
 ```
+
+Dump frames 1/5/30 of `squares`, `homestuck-beta`, `homestuck-beta2`,
+`morph`, `shumway-3` from `reference/openflash/domu-player/src/static/`.
+`git worktree add <dir> <base-commit>` gives you the "before" build;
+symlink `reference/` and `vendor/simdra` into it. pngdiff's BOUNDING BOX
+is the point — the one pixel change in all of workstream A was a 17x17
+box in a 728x90 banner (a looping nested sprite whose phase the goto-on-
+loop fix corrected), which a bare `cmp` would have reported as alarming.
 
 **Method that works**: full run → bucket failures by their first diff
 line (`sort | uniq -c | sort -rn`) → fix the biggest bucket → repeat.
@@ -350,6 +386,30 @@ rasteriser. It is a clip's SELF bounds, so `_width`/`_height` see it, and
 bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697**.
+
+**Workstream A is CLOSED at 156/680.** Pick up B or C next. Three things
+to know before you start:
+
+1. **§A4/§A5 record diagnoses that turned out to be WRONG** and the real
+   causes next to them. In particular: `default_names` was NOT
+   action-queue priority (our FIFO matches Flash — it was the loop
+   rewind), and `remove_movie_clip` was NOT Button/EditText
+   stringification (it was `swapDepths`). Read those notes before
+   trusting any "blocked on X" claim elsewhere in the spec, including the
+   §8b cluster table, which is an M3-close snapshot.
+2. **One rule in the tree is corpus-derived, not Ruffle-derived**: a
+   display object reached AS a prototype ends the chain
+   (`Objects.findChained` + `Vm.protoValue`). Ruffle walks straight
+   through it; real Flash does not (`super_edge_cases`). If something
+   later looks wrong around `__proto__` chains through clips, this is the
+   first suspect — it is deliberately marked in both call sites.
+3. **The two dirs workstream A could not reach**, so nobody re-derives
+   them: `interface_implements_op` needs `MovieClipLoader.loadClip` of an
+   external SWF plus cross-movie AVM1 (loader subsystem — and `core/`
+   does no I/O, so it needs a host seam); `clone_sprite_edittext` needs
+   essentially all of §D (~30 TextField properties,
+   `TextField.StyleSheet`, `flash.filters.*`, `getNewTextFormat`,
+   `htmlText` `<TEXTFORMAT>` serialisation).
 
 Then: **M5** libretro core + HFS0 save-states (byte-identical
 serialize→restore→re-run gate; copy the ABI from
