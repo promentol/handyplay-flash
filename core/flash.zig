@@ -172,7 +172,7 @@ pub const Player = struct {
                 clip_obj,
                 self.vm.active_pool,
             );
-            _ = act.run() catch {};
+            _ = act.run() catch |e| self.reportUncaught(e);
             try self.root.applyPendingGoto(&ctx);
         }
         self.retireDead(&ctx);
@@ -180,6 +180,20 @@ pub const Player = struct {
         self.vm.budget = 5_000_000;
         self.vm.halted = false;
         if (ctx.background_color) |c| self.background = c | 0xFF000000;
+    }
+
+    /// A throw that escapes the outermost action is reported and execution
+    /// continues — Flash does not stop the movie (ruffle
+    /// avm1/runtime.rs:668-684). The message goes to the trace sink,
+    /// which is where the corpus expects to see it.
+    fn reportUncaught(self: *Player, e: anyerror) void {
+        if (e != error.Avm1Thrown) return;
+        const S = avm1.strings.ascii;
+        const msg = self.vm.toStringValue(self.vm.pending_throw) catch S("[type Object]");
+        const prefix = S("Warning: Uncaught exception, ");
+        const line = avm1.strings.concat(self.vm.arena(), prefix, msg) catch return;
+        self.vm.traceLine(line) catch {};
+        self.vm.pending_throw = .undefined_value;
     }
 
     /// Free the clips removed during this tick, now that no queued action

@@ -592,16 +592,29 @@ pub const Activation = struct {
                 if (flow != .next) return flow;
             },
             .try_op => |t| {
-                var flow = try self.runSlice(t.try_body, self.scope);
+                // Flash restores the value stack to its pre-try depth
+                // before the catch runs (ruffle activation.rs:2230,2236);
+                // a throw mid-expression otherwise leaves operands behind.
+                const stack_depth = self.vm.stack.items.len;
+                var flow = self.runSlice(t.try_body, self.scope) catch |e| blk: {
+                    if (e != error.Avm1Thrown) return e;
+                    break :blk Flow{ .thrown = self.vm.pending_throw };
+                };
                 if (flow == .thrown and t.has_catch) {
                     const caught = flow.thrown;
+                    if (self.vm.stack.items.len > stack_depth) {
+                        self.vm.stack.shrinkRetainingCapacity(stack_depth);
+                    }
                     if (t.catch_in_register) {
                         self.setRegister(t.catch_register, caught);
                     } else {
                         const name = try self.swfStr(t.catch_name);
                         try self.vm.scopeDefineLocal(self.localScope(), name, caught);
                     }
-                    flow = try self.runSlice(t.catch_body, self.scope);
+                    flow = self.runSlice(t.catch_body, self.scope) catch |e| blk: {
+                        if (e != error.Avm1Thrown) return e;
+                        break :blk Flow{ .thrown = self.vm.pending_throw };
+                    };
                 }
                 if (t.has_finally) {
                     const fin = try self.runSlice(t.finally_body, self.scope);
@@ -1041,7 +1054,10 @@ pub const Activation = struct {
                 try self.push(try self.vm.construct(ctor, args));
             },
             .return_op => return .{ .return_value = self.pop() },
-            .throw => return .{ .thrown = self.pop() },
+            .throw => {
+                self.vm.pending_throw = self.pop();
+                return error.Avm1Thrown;
+            },
 
             // --- misc -----------------------------------------------------
             .trace => {

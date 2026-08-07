@@ -21,6 +21,11 @@ const S = strings.ascii;
 
 pub const Error = error{OutOfMemory};
 
+/// A `throw` in flight. Carried as a Zig error so it unwinds every
+/// intermediate frame for free — the value itself rides on
+/// `Vm.pending_throw`. Ruffle uses `Error::ThrownValue` the same way.
+pub const Thrown = error{Avm1Thrown};
+
 /// Host hooks the display layer installs (movie control, clip variables).
 /// All optional so the pure VM runs standalone in tests.
 pub const Host = struct {
@@ -88,8 +93,8 @@ pub const Vm = struct {
     display_ctx: ?*anyopaque = null,
     /// trace() output collects here as UTF-8 lines.
     trace_buf: std.ArrayList(u8) = .empty,
-    /// Scratch for cross-frame throw propagation (unused in M3 — uncaught
-    /// function throws are swallowed at the call boundary; see callAvm1).
+    /// The value of the `throw` currently unwinding, paired with
+    /// `error.Avm1Thrown`.
     pending_throw: Value = .undefined_value,
     /// Non-zero while inside `construct` — native constructors box their
     /// argument only for `new X()`, and coerce for a plain `X()` call
@@ -570,12 +575,11 @@ pub const Vm = struct {
             act.base_clip = f.base_clip;
             act.target_clip = f.base_clip;
         }
+        // A throw propagates as error.Avm1Thrown, so an outer try/catch
+        // in a CALLING function still sees it.
         const flow = try act.run();
         return switch (flow) {
             .return_value => |v| v,
-            // Uncaught function-boundary throws are swallowed (M3; Flash
-            // reports and continues — recorded simplification).
-            .thrown => .undefined_value,
             else => .undefined_value,
         };
     }

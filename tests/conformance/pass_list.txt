@@ -133,9 +133,12 @@ tell_target_invalid_swf6
 this_swf7
 timeline_function_def
 timeout
+try_catch_stack
 try_finally_simple
 typeof
 typeof_globals
+uncaught_exception
+uncaught_exception_bubbled
 undefined_to_string_swf6
 variable_args
 with_return
