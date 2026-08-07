@@ -80,7 +80,12 @@ pub fn isScriptable(kind: DisplayObject.Kind) bool {
 pub fn displayObject(vm: *Vm, obj: *DisplayObject) !ObjectHandle {
     if (obj.avm_object != 0) return obj.avm_object;
     const h = try vm.objects.create();
-    vm.objects.get(h).proto = .{ .object = vm.object_proto };
+    const proto: ObjectHandle = switch (obj.kind) {
+        .button => vm.button_proto,
+        .edit_text => vm.textfield_proto,
+        else => 0,
+    };
+    vm.objects.get(h).proto = .{ .object = if (proto != 0) proto else vm.object_proto };
     vm.objects.get(h).native = .{ .display = @ptrCast(obj) };
     obj.avm_object = h;
     return h;
@@ -444,6 +449,13 @@ pub fn dotPathOf(vm: *Vm, clip: *anyopaque) std.mem.Allocator.Error![]const u16 
     return dotPathOfClip(vm, @ptrCast(@alignCast(clip)));
 }
 
+/// Same, for the non-clip scriptable kinds (buttons, text fields) whose
+/// AVM1 object holds the DisplayObject directly.
+pub fn dotPathOfDisplay(vm: *Vm, obj: *anyopaque) std.mem.Allocator.Error![]const u16 {
+    const d: *DisplayObject = @ptrCast(@alignCast(obj));
+    return dotPath(vm, .{ .obj = d, .clip = null });
+}
+
 /// The `_parent` of an object handle, or undefined. Used by the
 /// DefineFunction2 register preload.
 pub fn parentOf(vm: *Vm, handle: ObjectHandle) !Value {
@@ -483,18 +495,21 @@ fn getTarget(vm: *Vm, t: Target) !Value {
     return .{ .string = try slashPath(vm, t) };
 }
 
+/// While a drag is active this is the slash path of the top-most clip
+/// under the pointer, excluding the dragged object itself; otherwise "".
+/// Below SWF6 the absence reads as undefined rather than "".
 fn getDropTarget(vm: *Vm, t: Target) !Value {
     _ = t;
-    // No drag support yet (M4-C). Below SWF6 the absence reads as
-    // undefined rather than "".
     if (vm.swf_version < 6) return .undefined_value;
-    return .{ .string = S("") };
+    return .{ .string = try dropTargetPath(vm) };
 }
 
+/// The URL the clip's movie was loaded from. Content only ever compares or
+/// prints it, and the corpus expects the leading-slash local form
+/// ("/test.swf"), so the Player hands us the path it was given.
 fn getUrl(vm: *Vm, t: Target) !Value {
-    _ = vm;
     _ = t;
-    return .{ .string = S("") };
+    return .{ .string = vm.movie_url };
 }
 
 // --- stage globals ---------------------------------------------------------
@@ -589,21 +604,33 @@ fn getYMouse(vm: *Vm, t: Target) !Value {
     return .{ .number = localMouse(vm, t)[1] };
 }
 
-/// Stage mouse position pushed down into the clip's own space. Until the
-/// frontend feeds real coordinates (M4-C) `vm.mouse_*` stay at 0, so this
-/// reports the clip-space image of the stage origin — which is what a
-/// never-moved pointer would give.
+/// Stage mouse position pushed down into the clip's own space.
 fn localMouse(vm: *Vm, t: Target) [2]f64 {
-    var m = t.obj.matrix;
-    var clip = t.clip orelse return .{ 0, 0 };
-    while (clip.parent) |parent| {
-        const placement = parent.placement orelse break;
-        m = placement.matrix.mul(m);
-        clip = parent;
-    }
-    const inv = m.invert() orelse return .{ 0, 0 };
+    const inv = localToGlobalMatrix(t).invert() orelse return .{ 0, 0 };
     const p = inv.transformPoint(twipsFromPixels(vm.mouse_x), twipsFromPixels(vm.mouse_y));
     return .{ pixelsFromTwips(p[0]), pixelsFromTwips(p[1]) };
+}
+
+// --- coordinate spaces -------------------------------------------------------
+
+/// The object's own space → stage space: its matrix with every ancestor
+/// placement concatenated on the left, the root's included (a script that
+/// moved `_root._x` shifts everything under it).
+pub fn localToGlobalMatrix(t: Target) swf.reader.Matrix {
+    var m = t.obj.matrix;
+    var parent = t.parent();
+    while (parent) |p| {
+        const placement = p.placement orelse break;
+        m = placement.matrix.mul(m);
+        parent = p.parent;
+    }
+    return m;
+}
+
+/// Stage space → the object's own space. Null when the matrix is singular
+/// (a clip scaled to zero), which Flash treats as "nothing maps here".
+pub fn globalToLocalMatrix(t: Target) ?swf.reader.Matrix {
+    return localToGlobalMatrix(t).invert();
 }
 
 // --- clip object model -----------------------------------------------------
@@ -647,6 +674,16 @@ pub fn enumerateKeys(vm: *Vm, handle: ObjectHandle, out: *std.ArrayList([]const 
     }
 }
 
+/// A child AS A SCRIPT VALUE. A child with no script object of its own
+/// (graphic, static text, bitmap, morph shape) resolves to its CONTAINER
+/// rather than to nothing — ruffle stage_object.rs:32-43. Both name lookup
+/// and `getInstanceAtDepth` go through here, which is why
+/// `_root.getInstanceAtDepth(<a graphic>)` traces `_level0`.
+pub fn childValue(vm: *Vm, container: *MovieClip, child: *DisplayObject) !Value {
+    if (!isScriptable(child.kind)) return clipValue(vm, container);
+    return displayValue(vm, child);
+}
+
 pub fn childByName(mc: *MovieClip, name: []const u16, case_sensitive: bool) ?*DisplayObject {
     for (mc.children.items) |child| {
         const n = child.name orelse continue;
@@ -677,11 +714,7 @@ pub fn resolveMember(vm: *Vm, handle: ObjectHandle, name: []const u16) !?Value {
 
     const container = t.clip orelse return null;
     if (childByName(container, name, vm.case_sensitive)) |child| {
-        // A child with no script object of its own (graphic, static text)
-        // resolves to its PARENT rather than to nothing — ruffle
-        // stage_object.rs:32-43.
-        if (!isScriptable(child.kind)) return try clipValue(vm, container);
-        return try displayValue(vm, child);
+        return try childValue(vm, container, child);
     }
 
     if (magic) {
@@ -695,7 +728,7 @@ pub fn resolveMember(vm: *Vm, handle: ObjectHandle, name: []const u16) !?Value {
 /// case-sensitivity rule.
 pub fn resolvePathProperty(vm: *Vm, t: Target, name: []const u16) !?Value {
     if (vm.swf_version < 5) return null;
-    if (nameEql(vm, name, S("_root"))) return vm.root_object;
+    if (nameEql(vm, name, S("_root"))) return try rootValueFor(vm, t);
     if (nameEql(vm, name, S("_parent"))) {
         const parent = t.parent() orelse return .undefined_value;
         return .{ .object = try clipObject(vm, parent) };
@@ -704,6 +737,18 @@ pub fn resolvePathProperty(vm: *Vm, t: Target, name: []const u16) !?Value {
         return .{ .object = vm.globals };
     }
     return parseLevel(vm, name);
+}
+
+/// `_root` as seen from `t`: normally the main timeline, but a clip with
+/// `_lockroot` set becomes the root for everything inside it — the nearest
+/// such ancestor wins (ruffle DisplayObject::avm1_root).
+pub fn rootValueFor(vm: *Vm, t: Target) !Value {
+    var clip: ?*MovieClip = t.clip orelse t.obj.parent;
+    while (clip) |c| {
+        if (c.lock_root) return .{ .object = try clipObject(vm, c) };
+        clip = c.parent;
+    }
+    return vm.root_object;
 }
 
 pub fn nameEql(vm: *Vm, a: []const u16, b: []const u16) bool {
@@ -942,6 +987,306 @@ pub fn frameActions(clip: *MovieClip, frame: u16, out: *std.ArrayList([]const u8
     for (clip.frames[frame - 1].controls) |control| {
         if (control == .do_action) try out.append(a, control.do_action);
     }
+}
+
+// --- timeline control (shared by the SWF4 opcodes and the methods) ----------
+
+/// How ActionScript spells a frame: a direct 1-based index, or a label.
+pub const FrameArg = union(enum) { number: i32, label: strings.AvmString };
+
+/// The gotoAndPlay/gotoAndStop/GotoFrame2 operand rule, in one place so the
+/// opcode and the prototype methods cannot drift. Only an INTEGER number is
+/// a direct index; anything else stringifies and is treated as a label —
+/// unless the whole string parses as a number, which is how
+/// `gotoAndPlay("3")` reaches frame 3 while `gotoAndPlay("3x")` looks for a
+/// label. ruffle globals/movie_clip.rs goto_frame:1109-1157.
+pub fn frameArg(vm: *Vm, v: Value) !FrameArg {
+    if (v == .number and std.math.isFinite(v.number) and @rem(v.number, 1) == 0) {
+        return .{ .number = value_mod.toInt32(v.number) };
+    }
+    const s = try vm.toStringValue(v);
+    if (strictFrameNumber(s)) |n| return .{ .number = n };
+    return .{ .label = s };
+}
+
+/// A string operand is a frame NUMBER only when the whole string parses;
+/// ruffle uses Rust's strict `parse()` here, so "3x" is a label.
+pub fn strictFrameNumber(s: strings.AvmString) ?i32 {
+    if (s.len == 0 or s.len > 32) return null;
+    var buf: [32]u8 = undefined;
+    for (s, 0..) |c, i| {
+        if (c > 0x7F) return null;
+        buf[i] = @intCast(c);
+    }
+    const n = std.fmt.parseFloat(f64, buf[0..s.len]) catch return null;
+    return value_mod.toInt32(n);
+}
+
+pub fn hostGoto(vm: *Vm, clip: *MovieClip, frame: u16, play: bool) void {
+    const host = vm.host;
+    if (host.goto_frame) |f| f(host.ctx.?, @ptrCast(clip), frame, play);
+}
+
+pub fn hostGotoLabel(vm: *Vm, clip: *MovieClip, label: strings.AvmString, play: bool) bool {
+    const host = vm.host;
+    const f = host.goto_label orelse return false;
+    return f(host.ctx.?, @ptrCast(clip), label, play);
+}
+
+pub fn hostSetPlaying(vm: *Vm, clip: *MovieClip, playing: bool) void {
+    const host = vm.host;
+    if (host.set_playing) |f| f(host.ctx.?, @ptrCast(clip), playing);
+}
+
+pub fn hostNextPrev(vm: *Vm, clip: *MovieClip, delta: i2) void {
+    const host = vm.host;
+    if (host.next_prev) |f| f(host.ctx.?, @ptrCast(clip), delta);
+}
+
+/// Goto a 1-based frame INDEX. `scene_offset` is GotoFrame2's; the
+/// prototype methods pass 0.
+///
+/// The arithmetic looks pointless and is not: ruffle goes 1-based → 0-based
+/// → back with WRAPPING subtract, WRAPPING add and SATURATING add, then
+/// TRUNCATES to u16. That is what turns `gotoAndPlay(2147483648)` — which
+/// ToInt32 makes -2147483648, seemingly a no-op — into frame 65535, and
+/// thence into the last frame. `gotoAndPlay(-2147483647)` really does stay
+/// put. Corpus goto_methods pins every one of these.
+pub fn gotoFrameNumber(vm: *Vm, clip: *MovieClip, n: i32, scene_offset: u16, play: bool) void {
+    var f = n -% 1;
+    f = f +% @as(i32, scene_offset);
+    f = if (f == std.math.maxInt(i32)) f else f + 1;
+    if (f > 0) hostGoto(vm, clip, @truncate(@as(u32, @bitCast(f))), play);
+}
+
+// --- movie facts -------------------------------------------------------------
+
+/// `getBytesTotal`: the file's declared uncompressed length for the root,
+/// the clip's own DefineSprite tag stream otherwise (ruffle
+/// MovieClip::total_bytes). A scripted empty clip has neither, hence 0.
+pub fn bytesTotal(vm: *Vm, clip: *MovieClip) f64 {
+    if (clip.parent == null) {
+        const ctx = displayCtx(vm) orelse return 0;
+        return @floatFromInt(ctx.movie.file_length);
+    }
+    return @floatFromInt(clip.tag_stream_len);
+}
+
+/// Every movie is local and fully present, so loaded == total.
+pub fn bytesLoaded(vm: *Vm, clip: *MovieClip) f64 {
+    return bytesTotal(vm, clip);
+}
+
+// --- bounds ------------------------------------------------------------------
+
+/// Two different "no bounds" markers, and the corpus tells them apart.
+///
+/// `Rectangle::INVALID` — 0x7ffffff twips, 6710886.35 px — is what ruffle
+/// stores for an object with no geometry, and it is returned VERBATIM when
+/// the measurement is in the object's own space. Push it through a
+/// coordinate change and, once `use_new_invalid_bounds_value` has latched,
+/// the answer becomes 0x8000000 (6710886.4) instead. `movieclip_default_
+/// state` prints both, one line apart, so neither can be collapsed into
+/// zeroes.
+const INVALID_TWIPS: i32 = 0x7ffffff;
+const NEW_INVALID_TWIPS: i32 = 0x8000000;
+
+const INVALID_RECT: swf.reader.Rectangle = .{
+    .xmin = INVALID_TWIPS,
+    .xmax = INVALID_TWIPS,
+    .ymin = INVALID_TWIPS,
+    .ymax = INVALID_TWIPS,
+};
+
+/// Latch ruffle's `use_new_invalid_bounds_value`. It flips the first time
+/// getBounds/getRect runs with a SWF8+ activation OR under a SWF8+ root
+/// movie, and never flips back.
+fn latchInvalidBounds(vm: *Vm) void {
+    if (vm.use_new_invalid_bounds) return;
+    if (vm.swf_version >= 8 or vm.root_swf_version >= 8) vm.use_new_invalid_bounds = true;
+}
+
+/// `getBounds(target)` as a plain object with xMin/xMax/yMin/yMax in
+/// pixels. `getRect` shares this: it is documented to exclude stroke
+/// widths, but ruffle defers to getBounds and so does the recorded Flash
+/// output for movieclip_default_state, so a separate edge-bounds path
+/// would be inventing a difference nothing measures.
+///
+/// The transform is deliberately AABB-of-AABB — ruffle notes Flash
+/// transforms the already-axis-aligned box into the target's space rather
+/// than re-fitting the geometry, so a rotated clip reports a looser box
+/// than a direct `bounds_with_transform` would give.
+pub fn boundsObject(vm: *Vm, t: Target, target: ?Target) !Value {
+    latchInvalidBounds(vm);
+    const same_space = if (target) |o| o.obj == t.obj else true;
+    var box: swf.reader.Rectangle = bounds_mod.ownBounds(t.obj) orelse INVALID_RECT;
+    if (!same_space) {
+        const to_global = localToGlobalMatrix(t);
+        const to_target = globalToLocalMatrix(target.?) orelse swf.reader.Matrix.identity;
+        // Transforming an invalid box yields an invalid box (ruffle's
+        // `Matrix * Rectangle` short-circuits on `!is_valid()`).
+        const transformed = if (isInvalid(box)) INVALID_RECT else to_target.mul(to_global).transformRect(box);
+        if (vm.use_new_invalid_bounds and isInvalid(box) and isInvalid(transformed)) {
+            box = .{
+                .xmin = NEW_INVALID_TWIPS,
+                .xmax = NEW_INVALID_TWIPS,
+                .ymin = NEW_INVALID_TWIPS,
+                .ymax = NEW_INVALID_TWIPS,
+            };
+        } else {
+            box = transformed;
+        }
+    }
+    const h = try vm.newObject();
+    try vm.objects.put(h, S("xMin"), .{ .number = pixelsFromTwips(box.xmin) }, vm.case_sensitive);
+    try vm.objects.put(h, S("xMax"), .{ .number = pixelsFromTwips(box.xmax) }, vm.case_sensitive);
+    try vm.objects.put(h, S("yMin"), .{ .number = pixelsFromTwips(box.ymin) }, vm.case_sensitive);
+    try vm.objects.put(h, S("yMax"), .{ .number = pixelsFromTwips(box.ymax) }, vm.case_sensitive);
+    return .{ .object = h };
+}
+
+/// Ruffle's `is_valid` tests only `x_min` against the sentinel.
+fn isInvalid(r: swf.reader.Rectangle) bool {
+    return r.xmin == INVALID_TWIPS;
+}
+
+// --- hit testing --------------------------------------------------------------
+
+/// `hitTest(x, y[, shapeFlag])`. Despite the docs, x/y are in the AVM1
+/// ROOT's space, not the stage's — a script that moved `_root._x` moves the
+/// coordinate system with it (ruffle hit_test's comment).
+pub fn hitTestPoint(vm: *Vm, t: Target, x_px: f64, y_px: f64, shape_flag: bool) bool {
+    var gx = twipsFromPixels(x_px);
+    var gy = twipsFromPixels(y_px);
+    if (targetOfValue(vm, vm.root_object)) |root| {
+        const p = localToGlobalMatrix(root).transformPoint(gx, gy);
+        gx = p[0];
+        gy = p[1];
+    }
+    const parent_to_global = parentToGlobalMatrix(t);
+    if (shape_flag) return bounds_mod.hitTestShape(t.obj, .{ gx, gy }, parent_to_global);
+    return bounds_mod.hitTestBounds(t.obj, .{ gx, gy }, parent_to_global);
+}
+
+/// `hitTest(otherClip)` — bounding boxes overlapping in stage space.
+pub fn hitTestObject(a: Target, b: Target) bool {
+    const ba = bounds_mod.boundsWithTransform(a.obj, localToGlobalMatrix(a)) orelse return false;
+    const bb = bounds_mod.boundsWithTransform(b.obj, localToGlobalMatrix(b)) orelse return false;
+    return bounds_mod.intersects(ba, bb);
+}
+
+/// The object's PARENT space → stage space (its own matrix excluded).
+pub fn parentToGlobalMatrix(t: Target) swf.reader.Matrix {
+    var m: swf.reader.Matrix = .identity;
+    var parent = t.parent();
+    while (parent) |p| {
+        const placement = p.placement orelse break;
+        m = placement.matrix.mul(m);
+        parent = p.parent;
+    }
+    return m;
+}
+
+// --- dragging ------------------------------------------------------------------
+
+/// `startDrag(lockCenter, l, t, r, b)`. The constraint rectangle arrives in
+/// the PARENT's coordinate space, in pixels, and is stored in twips.
+pub fn startDrag(vm: *Vm, t: Target, lock_center: bool, rect: ?[4]f64) void {
+    var d: runtime.Drag = .{
+        .target = t.obj.avm_object,
+        .lock_center = lock_center,
+    };
+    if (t.clip) |c| d.target = c.avm_object;
+    if (rect) |r| d.bounds = .{
+        .xmin = twipsFromPixels(@min(r[0], r[2])),
+        .ymin = twipsFromPixels(@min(r[1], r[3])),
+        .xmax = twipsFromPixels(@max(r[0], r[2])),
+        .ymax = twipsFromPixels(@max(r[1], r[3])),
+    };
+    if (!lock_center) {
+        // Keep the grab offset: where the pointer sits relative to the
+        // object's origin, both expressed in the parent's space.
+        const inv = parentToGlobalMatrix(t).invert() orelse swf.reader.Matrix.identity;
+        const p = inv.transformPoint(twipsFromPixels(vm.mouse_x), twipsFromPixels(vm.mouse_y));
+        d.offset_x = t.obj.matrix.tx - p[0];
+        d.offset_y = t.obj.matrix.ty - p[1];
+    }
+    vm.drag = d;
+    applyDrag(vm);
+}
+
+pub fn stopDrag(vm: *Vm) void {
+    vm.drag = null;
+}
+
+/// Move the dragged object to follow the pointer. Called by the Player on
+/// every mouse move and once at startDrag, so a drag started with the
+/// pointer already elsewhere snaps immediately.
+pub fn applyDrag(vm: *Vm) void {
+    const d = vm.drag orelse return;
+    const t = targetOf(vm, d.target) orelse {
+        // The dragged clip went away; Flash drops the drag with it.
+        vm.drag = null;
+        return;
+    };
+    const inv = parentToGlobalMatrix(t).invert() orelse return;
+    const p = inv.transformPoint(twipsFromPixels(vm.mouse_x), twipsFromPixels(vm.mouse_y));
+    var x = p[0] + d.offset_x;
+    var y = p[1] + d.offset_y;
+    if (d.bounds) |b| {
+        x = std.math.clamp(x, b.xmin, b.xmax);
+        y = std.math.clamp(y, b.ymin, b.ymax);
+    }
+    t.obj.setX(x);
+    t.obj.setY(y);
+}
+
+/// Is `obj` the object currently being dragged (or inside it)? `_droptarget`
+/// must not report the thing in your hand.
+fn insideDrag(vm: *Vm, obj: *DisplayObject) bool {
+    const d = vm.drag orelse return false;
+    const t = targetOf(vm, d.target) orelse return false;
+    if (t.obj == obj) return true;
+    var p = obj.parent;
+    while (p) |parent| {
+        if (parent.placement == t.obj) return true;
+        p = parent.parent;
+    }
+    return false;
+}
+
+/// The slash path of the top-most clip under the pointer, excluding the
+/// dragged object itself — what `_droptarget` reports while a drag is
+/// active. Empty string when nothing is under it.
+pub fn dropTargetPath(vm: *Vm) ![]const u16 {
+    if (vm.drag == null) return S("");
+    const root = targetOfValue(vm, vm.root_object) orelse return S("");
+    const rc = root.clip orelse return S("");
+    const gx = twipsFromPixels(vm.mouse_x);
+    const gy = twipsFromPixels(vm.mouse_y);
+    const found = topmostUnder(vm, rc, .{ gx, gy }, localToGlobalMatrix(root)) orelse return S("");
+    return slashPath(vm, found);
+}
+
+/// Depth-first, back to front, so the LAST match wins — that is the one
+/// drawn on top.
+fn topmostUnder(vm: *Vm, container: *MovieClip, point: [2]i32, to_global: swf.reader.Matrix) ?Target {
+    var best: ?Target = null;
+    for (container.children.items) |child| {
+        if (insideDrag(vm, child)) continue;
+        if (child.kind == .clip) {
+            const child_to_global = to_global.mul(child.matrix);
+            if (topmostUnder(vm, child.kind.clip, point, child_to_global)) |inner| best = inner;
+            if (bounds_mod.hitTestShape(child, point, to_global)) {
+                best = .{ .obj = child, .clip = child.kind.clip };
+            }
+        } else if (bounds_mod.hitTestShape(child, point, to_global)) {
+            // Only CLIPS can be drop targets; a bare shape reports its
+            // container instead (ruffle drop_target is a MovieClip).
+            best = .{ .obj = container.placement orelse continue, .clip = container };
+        }
+    }
+    return best;
 }
 
 /// A frame LABEL on a clip, case-insensitively (labels are ASCII in

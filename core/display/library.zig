@@ -13,6 +13,9 @@ pub const Sprite = struct {
     id: u16,
     frame_count: u16,
     frames: []Frame,
+    /// Bytes of DefineSprite payload after the id/frame-count header —
+    /// what `getBytesTotal()` reports for a clip that is not the root.
+    tag_stream_len: usize = 0,
 };
 
 /// One timeline frame: the control tags to execute, in stream order.

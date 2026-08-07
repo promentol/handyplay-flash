@@ -166,6 +166,28 @@ pub fn install(vm: *Vm) !void {
         try @import("movie_clip.zig").install(vm);
     }
 
+    // --- Button / TextField -------------------------------------------------
+    // The other two scriptable display kinds. Their real surfaces are M4-C
+    // and M4-D; what they need NOW is to exist and to carry `getDepth`,
+    // which ruffle serves to all three from one `globals::get_depth`.
+    // Button's members carry NO attribute flags at all in ruffle's table —
+    // they enumerate and delete like ordinary properties.
+    {
+        const btn_proto = try vm.objects.create();
+        vm.objects.get(btn_proto).proto = .{ .object = vm.object_proto };
+        vm.button_proto = btn_proto;
+        try decl.value(vm, btn_proto, "useHandCursor", .{ .boolean = true }, .{});
+        try decl.value(vm, btn_proto, "enabled", .{ .boolean = true }, .{});
+        try decl.method(vm, btn_proto, "getDepth", @import("movie_clip.zig").getDepth, ver(.{}, decl.V6));
+        _ = try decl.class(vm, "Button", ctorMovieClip, btn_proto, attrs);
+
+        const tf_proto = try vm.objects.create();
+        vm.objects.get(tf_proto).proto = .{ .object = vm.object_proto };
+        vm.textfield_proto = tf_proto;
+        try decl.method(vm, tf_proto, "getDepth", @import("movie_clip.zig").getDepth, ver(frozen, decl.V6));
+        _ = try decl.class(vm, "TextField", ctorMovieClip, tf_proto, attrs);
+    }
+
     // --- Error ------------------------------------------------------------
     {
         const error_proto = try vm.objects.create();

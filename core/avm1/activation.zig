@@ -83,6 +83,9 @@ pub const Activation = struct {
     }
 
     pub fn run(self: *Activation) anyerror!Flow {
+        const outer = self.vm.current_activation;
+        self.vm.current_activation = @ptrCast(self);
+        defer self.vm.current_activation = outer;
         while (true) {
             if (self.vm.halted) return .next;
             if (self.vm.budget == 0) {
@@ -653,25 +656,30 @@ pub const Activation = struct {
                 // _root; corpus tell_target_invalid.
                 const clip = self.clipOrRoot();
                 const v = self.pop();
-                // The operand is 1-BASED here (unlike GotoFrame 0x81), and
-                // only an INTEGER number is a direct index — anything else
-                // is coerced to a string and looked up as a label, which is
-                // how `gotoAndPlay("3")` and `gotoAndPlay("intro")` both
-                // work. ruffle globals/movie_clip.rs goto_frame:1109-1157.
-                var target: ?i32 = null;
-                var label: ?strings.AvmString = null;
-                if (v == .number and std.math.isFinite(v.number) and @rem(v.number, 1) == 0) {
-                    target = value_mod.toInt32(v.number);
-                } else {
-                    const s = try self.vm.toStringValue(v);
-                    if (strictFrameNumber(s)) |n| target = n else label = s;
-                }
-                if (label) |s| {
-                    self.hostGotoLabelOn(clip, s, g.set_playing);
-                } else if (target) |n| {
-                    const f = n +% @as(i32, g.scene_offset);
-                    // Gotoing <= 0 has no effect; past the end clamps.
-                    if (f > 0) self.hostGoto(clip, @intCast(@min(f, 65535)), g.set_playing);
+                // The operand is 1-BASED here (unlike GotoFrame 0x81).
+                // The number-vs-label split and the wrap arithmetic are
+                // shared with MovieClip.gotoAndPlay/gotoAndStop; a STRING
+                // operand is a full variable path and may redirect the goto
+                // to another clip entirely (corpus goto_frame_number's
+                // `GotoFrame2 "/:3"`).
+                switch (try stage.frameArg(self.vm, v)) {
+                    .number => |n| if (clip) |c| stage.gotoFrameNumber(
+                        self.vm,
+                        @ptrCast(@alignCast(c)),
+                        n,
+                        g.scene_offset,
+                        g.set_playing,
+                    ),
+                    .label => |s| {
+                        const start = self.targetClipOrRoot();
+                        if (try self.resolveFramePath(start, s)) |hit| {
+                            if (hit.target.clip) |mc| {
+                                if (hit.frame) |f| {
+                                    stage.gotoFrameNumber(self.vm, mc, @intCast(f), g.scene_offset, g.set_playing);
+                                }
+                            }
+                        }
+                    },
                 }
             },
             .goto_label => |label| self.hostGotoLabel(try self.swfStr(label), null),
@@ -1248,7 +1256,7 @@ pub const Activation = struct {
                     frame = if (n <= 65535) @intCast(n) else null;
                 } else {
                     const path = try self.vm.toStringValue(v);
-                    if (try self.resolveFramePath(path)) |hit| {
+                    if (try self.resolveFramePath(self.targetClipOrRoot(), path)) |hit| {
                         target = hit.target;
                         frame = hit.frame;
                     }
@@ -1505,9 +1513,8 @@ pub const Activation = struct {
     /// `"/clip:label"` — split at the rightmost separator exactly as
     /// getVariable does, resolve the head as a target path, then read the
     /// tail as a frame number first and a label second.
-    fn resolveFramePath(self: *Activation, path: strings.AvmString) !?FrameHit {
+    fn resolveFramePath(self: *Activation, start: ObjectHandle, path: strings.AvmString) !?FrameHit {
         const root = self.rootHandle();
-        const start = self.targetClipOrRoot();
         var head: strings.AvmString = path;
         var tail: strings.AvmString = path;
         if (self.variableSeparator(path)) |sep| {
@@ -1519,7 +1526,7 @@ pub const Activation = struct {
         const h = try self.resolveTargetPath(root, start, head, true, true) orelse return null;
         const t = stage.targetOf(self.vm, h) orelse return null;
         const clip = t.clip orelse return null;
-        if (strictFrameNumber(tail)) |n| {
+        if (stage.strictFrameNumber(tail)) |n| {
             const u = value_mod.toUint32(@floatFromInt(n));
             return .{ .target = t, .frame = if (u <= 65535) @intCast(u) else null };
         }
@@ -1609,24 +1616,51 @@ pub const Activation = struct {
     }
 };
 
-/// A frame operand that is a STRING is a frame number only when the whole
-/// string parses; otherwise it is a label. Ruffle uses Rust's strict
-/// `parse()` here, so "3x" is a label, not frame 3.
+/// A frame reference resolved from a STRING, for callers that have no
+/// Activation of their own — `MovieClip.gotoAndPlay/gotoAndStop`, whose
+/// argument is a full variable path and can therefore redirect the goto to
+/// a completely different clip (`clip.gotoAndStop("/:5")` moves _root).
+/// `start` is the clip the method was called on, which is where a relative
+/// path is anchored.
+///
+/// Null when no Activation is running (pure-VM tests) or the path does not
+/// resolve; the caller then falls back to a plain label lookup.
+pub fn framePathFromNative(
+    vm: *Vm,
+    start: ObjectHandle,
+    path: strings.AvmString,
+) !?struct { clip: *movie_clip_mod.MovieClip, frame: ?u16 } {
+    const p = vm.current_activation orelse return null;
+    const act: *Activation = @ptrCast(@alignCast(p));
+    const hit = try act.resolveFramePath(start, path) orelse return null;
+    return .{ .clip = hit.target.clip orelse return null, .frame = hit.frame };
+}
+
+/// Resolve a method ARGUMENT that names a display object — either the
+/// object itself or a target path string (`getBounds('/clip')`,
+/// `hitTest('../upper')`). Ports ruffle's `resolve_target_display_object`
+/// with `allow_empty = false`, which is what makes `hitTest('')` false
+/// rather than a clip testing against itself. Needs the running Activation
+/// for the same reason `framePathFromNative` does.
+///
+/// Note the flags: `first_element = true`, `handle_this = false` — a target
+/// argument may start with `_root`/`_levelN` but `this` is not a keyword
+/// here, unlike in a variable path.
+pub fn targetFromNative(vm: *Vm, start: ObjectHandle, v: Value) !?stage.Target {
+    if (stage.targetOfValue(vm, v)) |t| return t;
+    const s = try vm.toStringValue(v);
+    if (s.len == 0) return null;
+    const p = vm.current_activation orelse return null;
+    const act: *Activation = @ptrCast(@alignCast(p));
+    const h = try act.resolveTargetPath(act.rootHandle(), start, s, true, false) orelse return null;
+    return stage.targetOf(vm, h);
+}
+
 /// Is this value a `super` view rather than an ordinary object?
 fn isSuper(vm: *Vm, v: Value) bool {
     return v == .object and vm.objects.get(v.object).native == .super_obj;
 }
 
-fn strictFrameNumber(s: strings.AvmString) ?i32 {
-    if (s.len == 0 or s.len > 32) return null;
-    var buf: [32]u8 = undefined;
-    for (s, 0..) |c, i| {
-        if (c > 0x7F) return null;
-        buf[i] = @intCast(c);
-    }
-    const n = std.fmt.parseFloat(f64, buf[0..s.len]) catch return null;
-    return value_mod.toInt32(n);
-}
 
 /// GetProperty/SetProperty's index operand. Non-finite or <= -1 is not a
 /// property at all; everything else truncates toward zero, so -0.8 is
@@ -1650,13 +1684,13 @@ const testing = std.testing;
 test "frame operands: strict number-vs-label split" {
     const S_ = strings.ascii;
     // A fully-parsing string is a frame NUMBER...
-    try testing.expectEqual(@as(?i32, 3), strictFrameNumber(S_("3")));
-    try testing.expectEqual(@as(?i32, -2), strictFrameNumber(S_("-2")));
-    try testing.expectEqual(@as(?i32, 3), strictFrameNumber(S_("3.7"))); // truncated
+    try testing.expectEqual(@as(?i32, 3), stage.strictFrameNumber(S_("3")));
+    try testing.expectEqual(@as(?i32, -2), stage.strictFrameNumber(S_("-2")));
+    try testing.expectEqual(@as(?i32, 3), stage.strictFrameNumber(S_("3.7"))); // truncated
     // ...anything with trailing junk is a LABEL, not frame 3.
-    try testing.expectEqual(@as(?i32, null), strictFrameNumber(S_("3x")));
-    try testing.expectEqual(@as(?i32, null), strictFrameNumber(S_("intro")));
-    try testing.expectEqual(@as(?i32, null), strictFrameNumber(S_("")));
+    try testing.expectEqual(@as(?i32, null), stage.strictFrameNumber(S_("3x")));
+    try testing.expectEqual(@as(?i32, null), stage.strictFrameNumber(S_("intro")));
+    try testing.expectEqual(@as(?i32, null), stage.strictFrameNumber(S_("")));
 }
 
 test "GetProperty index operand" {

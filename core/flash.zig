@@ -65,7 +65,20 @@ pub const Player = struct {
     /// Safety valve: max timeline frames advanced per tick call.
     const MAX_FRAMES_PER_TICK = 5;
 
+    /// Host facts the movie can observe but `core/` cannot discover for
+    /// itself. Everything defaults to the deterministic value the
+    /// conformance runner wants, so `create` stays a two-argument call.
+    pub const Options = struct {
+        /// What `_url` reports. Flash uses the path the movie was loaded
+        /// from; the corpus expects the local form "/test.swf".
+        url: []const u8 = "",
+    };
+
     pub fn create(gpa: std.mem.Allocator, file_bytes: []const u8) LoadError!*Player {
+        return createWith(gpa, file_bytes, .{});
+    }
+
+    pub fn createWith(gpa: std.mem.Allocator, file_bytes: []const u8, opts: Options) LoadError!*Player {
         const self = try gpa.create(Player);
         errdefer gpa.destroy(self);
         var movie = try swf.movie.load(gpa, file_bytes);
@@ -100,6 +113,11 @@ pub const Player = struct {
         // and why `_root._name` is "" — corpus default_names.
         self.instance_counter = 1;
         self.installHost();
+        // Host facts the VM needs BEFORE frame 1: a frame-1 script can read
+        // `_url` or call `getBounds` (whose invalid-value latch consults the
+        // root movie's version).
+        self.vm.root_swf_version = self.movie.swf_version;
+        self.vm.movie_url = avm1.strings.fromSwf(self.vm.arena(), opts.url, 8) catch &.{};
         // Bind `_root` BEFORE frame 1. Lazily creating it in the action
         // drain was a trap: a root frame that places a child before its own
         // DoAction drains the CHILD first, so every `_root`-anchored path

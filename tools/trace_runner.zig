@@ -39,7 +39,11 @@ pub fn main(init: std.process.Init) !u8 {
 
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64 << 20));
     defer gpa.free(bytes);
-    const player = flash.Player.create(gpa, bytes) catch {
+    // `_url` is the path Flash loaded from. Ruffle's test harness serves
+    // each corpus SWF from the root of a virtual filesystem, so the
+    // expected output says "/test.swf" — mirror that with the basename.
+    const url = try std.fmt.allocPrint(arena, "/{s}", .{std.fs.path.basename(path)});
+    const player = flash.Player.createWith(gpa, bytes, .{ .url = url }) catch {
         // A movie we can't run produces no trace output (several corpus
         // dirs are AVM2/image-comparison tests whose expected stdout is
         // empty). Diagnostics go to stderr, never stdout.

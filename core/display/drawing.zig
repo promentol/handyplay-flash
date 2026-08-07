@@ -20,6 +20,7 @@ const shape_utils = @import("../render/shape_utils.zig");
 const DrawCommand = shape_utils.DrawCommand;
 const DrawPath = shape_utils.DrawPath;
 const Rectangle = swf.reader.Rectangle;
+const Matrix = swf.reader.Matrix;
 const FillStyle = swf.shape.FillStyle;
 const LineStyle = swf.shape.LineStyle;
 
@@ -161,8 +162,18 @@ pub const Drawing = struct {
     }
 
     pub fn draw(self: *Drawing, cmd: DrawCommand) Error!void {
-        // A fill records MoveTo as a subpath break; a stroke can't span one,
-        // so it commits and restarts (ruffle drawing.rs draw_command).
+        // A MoveTo ends the current subpath: the open fill is closed back to
+        // where THAT subpath began, and the new position becomes the close
+        // point for the next one (ruffle drawing.rs draw_command:194-202).
+        // Getting this wrong is invisible in most drawings and glaring in
+        // the ones that rely on the implicit closing edge — `beginFill;
+        // moveTo(a); lineTo(b); lineTo(c); endFill` closed back to the
+        // beginFill cursor instead of to `a`, which left a wrong edge on
+        // screen and made shape hit-testing miss the interior.
+        if (cmd == .move_to) {
+            try self.closePath();
+            self.fill_start = .{ .x = cmd.move_to.x, .y = cmd.move_to.y };
+        }
         if (self.fill) |*f| try f.commands.append(self.gpa, cmd);
         if (cmd == .move_to) {
             if (self.line != null) {
@@ -210,16 +221,22 @@ pub const Drawing = struct {
         } else box;
     }
 
+    /// Close the open fill subpath back to its start. The closing edge goes
+    /// into the stroke too, so a `lineStyle`d shape draws the same closing
+    /// segment it fills (ruffle Drawing::close_path).
+    fn closePath(self: *Drawing) Error!void {
+        if (self.fill == null) return;
+        if (self.cursor.x == self.fill_start.x and self.cursor.y == self.fill_start.y) return;
+        const close: DrawCommand = .{ .line_to = .{ .x = self.fill_start.x, .y = self.fill_start.y } };
+        try self.fill.?.commands.append(self.gpa, close);
+        if (self.line) |*l| try l.commands.append(self.gpa, close);
+    }
+
     fn commitFill(self: *Drawing) Error!void {
+        try self.closePath();
         var f = self.fill orelse return;
         self.fill = null;
-        // A fill is implicitly closed back to where it started.
         if (f.commands.items.len > 1) {
-            if (self.cursor.x != self.fill_start.x or self.cursor.y != self.fill_start.y) {
-                try f.commands.append(self.gpa, .{
-                    .line_to = .{ .x = self.fill_start.x, .y = self.fill_start.y },
-                });
-            }
             try self.paths.append(self.gpa, .{ .fill = .{
                 .style = f.style,
                 .commands = try f.commands.toOwnedSlice(self.gpa),
@@ -271,6 +288,35 @@ pub const Drawing = struct {
             }
         }
     }
+
+    /// Shape-exact hit test in the drawing's own (twips) space. Covers the
+    /// open subpaths too, for the same reason `render` does: geometry is
+    /// visible — and therefore hittable — before `endFill`.
+    /// `local_matrix` only sizes the stroke minimum, as in shape_utils.
+    pub fn hitTest(self: *const Drawing, p: shape_utils.Point2, local_matrix: Matrix) bool {
+        if (shape_utils.pathsHitTest(self.paths.items, p, local_matrix)) return true;
+        if (self.fill) |f| {
+            if (f.commands.items.len > 1) {
+                const open = [_]DrawPath{.{ .fill = .{
+                    .style = f.style,
+                    .commands = f.commands.items,
+                    .winding = .even_odd,
+                } }};
+                if (shape_utils.pathsHitTest(&open, p, local_matrix)) return true;
+            }
+        }
+        if (self.line) |l| {
+            if (l.commands.items.len > 1) {
+                const open = [_]DrawPath{.{ .stroke = .{
+                    .style = l.style,
+                    .is_closed = false,
+                    .commands = l.commands.items,
+                } }};
+                if (shape_utils.pathsHitTest(&open, p, local_matrix)) return true;
+            }
+        }
+        return false;
+    }
 };
 
 fn pointEql(a: Point, b: Point) bool {
@@ -313,4 +359,33 @@ test "bounds follow draw commands only, and survive a clone" {
     try testing.expectEqual(@as(i32, 8000), c.bounds.?.width());
     // ...without disturbing the original.
     try testing.expectEqual(@as(i32, 2000), d.bounds.?.width());
+}
+
+test "script-drawn square hit-tests inside, not outside" {
+    var d = Drawing.init(testing.allocator);
+    defer d.deinit();
+    // beginFill; moveTo(-50,-50); lineTo(-50,50); lineTo(50,50); lineTo(50,-50);
+    // endFill — three explicit edges, the fourth implied. In twips.
+    try d.setFillStyle(.{ .solid = 0xFF0000FF });
+    try d.draw(.{ .move_to = .{ .x = -1000, .y = -1000 } });
+    try d.draw(.{ .line_to = .{ .x = -1000, .y = 1000 } });
+    try d.draw(.{ .line_to = .{ .x = 1000, .y = 1000 } });
+    try d.draw(.{ .line_to = .{ .x = 1000, .y = -1000 } });
+    try d.setFillStyle(null);
+
+    try testing.expect(d.hitTest(.{ .x = 0, .y = 0 }, .identity));
+    try testing.expect(d.hitTest(.{ .x = -900, .y = 900 }, .identity));
+    try testing.expect(!d.hitTest(.{ .x = 1100, .y = 0 }, .identity));
+    try testing.expect(!d.hitTest(.{ .x = 0, .y = -1100 }, .identity));
+
+    // The same geometry while the fill is still OPEN must hit too — the
+    // renderer shows it, so hit testing has to see it.
+    var e = Drawing.init(testing.allocator);
+    defer e.deinit();
+    try e.setFillStyle(.{ .solid = 0xFF0000FF });
+    try e.draw(.{ .move_to = .{ .x = -1000, .y = -1000 } });
+    try e.draw(.{ .line_to = .{ .x = -1000, .y = 1000 } });
+    try e.draw(.{ .line_to = .{ .x = 1000, .y = 1000 } });
+    try e.draw(.{ .line_to = .{ .x = 1000, .y = -1000 } });
+    try testing.expect(e.hitTest(.{ .x = 0, .y = 0 }, .identity));
 }

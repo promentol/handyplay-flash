@@ -105,6 +105,13 @@ pub const MovieClip = struct {
     /// Script drawing-API geometry, created on the first draw call. Most
     /// clips never draw, so this stays null and costs a pointer.
     drawing: ?drawing_mod.Drawing = null,
+    /// Bytes in this clip's own DefineSprite tag stream — `getBytesTotal`
+    /// for anything that is not the root. 0 for the root (which reports the
+    /// movie's file length instead) and for an empty scripted clip.
+    tag_stream_len: usize = 0,
+    /// `_lockroot`: when set, `_root` inside this clip resolves to the clip
+    /// itself rather than the main timeline.
+    lock_root: bool = false,
 
     pub fn init(frames: []const library.Frame) MovieClip {
         return .{ .frames = frames };
@@ -125,8 +132,12 @@ pub const MovieClip = struct {
         return &self.drawing.?;
     }
 
+    /// A clip with no timeline at all still reports ONE frame: ruffle
+    /// builds `createEmptyMovieClip`'s shared data with `header_frames = 1`
+    /// (movie_clip.rs MovieClipShared::empty), so `_totalframes` and
+    /// `_framesloaded` read 1 while `_currentframe` stays 0.
     pub fn totalFrames(self: *const MovieClip) u16 {
-        return @intCast(self.frames.len);
+        return @intCast(@max(self.frames.len, 1));
     }
 
     pub fn labelToNumber(self: *const MovieClip, name: []const u8) ?u16 {
@@ -147,7 +158,9 @@ pub const MovieClip = struct {
         } else {
             try self.dispatchClipEvent(ctx, swf.place.ClipEvent.ENTER_FRAME, "onEnterFrame");
         }
-        if (self.playing or self.current_frame == 0) {
+        // A frameless clip (createEmptyMovieClip) has nothing to advance
+        // to and stays on frame 0 forever.
+        if (self.frames.len > 0 and (self.playing or self.current_frame == 0)) {
             const next = self.determineNextFrame();
             if (next < self.current_frame) {
                 // Looping past the last frame is a GOTO, not a bare replay
@@ -379,6 +392,7 @@ pub const MovieClip = struct {
                 .sprite => |sprite| .{ .clip = c: {
                     const mc = try ctx.gpa.create(MovieClip);
                     mc.* = MovieClip.init(sprite.frames);
+                    mc.tag_stream_len = sprite.tag_stream_len;
                     break :c mc;
                 } },
                 .sound, .font => return null, // not placeable

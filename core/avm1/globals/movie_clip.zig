@@ -14,6 +14,8 @@ const runtime = @import("../runtime.zig");
 const object_mod = @import("../object.zig");
 const stage = @import("../stage_object.zig");
 const decl = @import("decl.zig");
+const display_object = @import("../../display/display_object.zig");
+const activation = @import("../activation.zig");
 
 const Value = value_mod.Value;
 const Vm = runtime.Vm;
@@ -46,6 +48,337 @@ pub fn install(vm: *Vm) !void {
     try method(vm, proto, "clear", clearDrawing, ver(hidden, decl.V6));
     try method(vm, proto, "getDepth", getDepth, ver(frozen, decl.V6));
     try method(vm, proto, "getNextHighestDepth", getNextHighestDepth, ver(hidden, decl.V7));
+
+    // --- timeline control ---------------------------------------------------
+    try method(vm, proto, "play", play, hidden);
+    try method(vm, proto, "stop", stop, hidden);
+    try method(vm, proto, "nextFrame", nextFrame, hidden);
+    try method(vm, proto, "prevFrame", prevFrame, hidden);
+    try method(vm, proto, "gotoAndPlay", gotoAndPlay, hidden);
+    try method(vm, proto, "gotoAndStop", gotoAndStop, hidden);
+
+    // --- queries ------------------------------------------------------------
+    try method(vm, proto, "getBytesLoaded", getBytesLoaded, hidden);
+    try method(vm, proto, "getBytesTotal", getBytesTotal, hidden);
+    try method(vm, proto, "getSWFVersion", getSwfVersion, hidden);
+    try method(vm, proto, "getInstanceAtDepth", getInstanceAtDepth, ver(hidden, decl.V7));
+    try method(vm, proto, "getBounds", getBounds, hidden);
+    try method(vm, proto, "getRect", getBounds, ver(hidden, decl.V8));
+    try method(vm, proto, "localToGlobal", localToGlobal, hidden);
+    try method(vm, proto, "globalToLocal", globalToLocal, hidden);
+    try method(vm, proto, "hitTest", hitTest, hidden);
+    try method(vm, proto, "setMask", setMask, ver(hidden, decl.V6));
+    try method(vm, proto, "startDrag", startDrag, hidden);
+    try method(vm, proto, "stopDrag", stopDrag, hidden);
+
+    // --- the property block --------------------------------------------------
+    // Ruffle declares each of these with a getter/setter pair, but the
+    // engine has nothing behind most of them: the getter returns a fixed
+    // default and the setter stores a value nothing reads. A prototype DATA
+    // property is observationally identical there — reads find it on the
+    // chain, and a write creates an own property on the clip exactly as a
+    // no-op setter would. Only the ones with real state below get accessors.
+    try decl.value(vm, proto, "enabled", .{ .boolean = true }, hidden);
+    try decl.value(vm, proto, "useHandCursor", .{ .boolean = true }, hidden);
+    try decl.value(vm, proto, "focusEnabled", .undefined_value, ver(hidden, decl.V6));
+    try decl.value(vm, proto, "tabEnabled", .undefined_value, ver(hidden, decl.V6));
+    try decl.value(vm, proto, "tabIndex", .undefined_value, ver(hidden, decl.V6));
+    try decl.value(vm, proto, "tabChildren", .undefined_value, ver(hidden, decl.V6));
+    try decl.value(vm, proto, "trackAsMenu", .undefined_value, ver(hidden, decl.V6));
+    try decl.value(vm, proto, "menu", .undefined_value, ver(hidden, decl.V7));
+    try decl.value(vm, proto, "hitArea", .undefined_value, ver(hidden, decl.V6));
+    try decl.value(vm, proto, "_accProps", .undefined_value, ver(hidden, decl.V6));
+    try decl.value(vm, proto, "forceSmoothing", .undefined_value, ver(hidden, decl.V8));
+    try decl.value(vm, proto, "cacheAsBitmap", .{ .boolean = false }, ver(hidden, decl.V8));
+    try decl.value(vm, proto, "opaqueBackground", .undefined_value, ver(hidden, decl.V8));
+    try decl.value(vm, proto, "scrollRect", .undefined_value, ver(hidden, decl.V8));
+    try decl.value(vm, proto, "scale9Grid", .undefined_value, ver(hidden, decl.V8));
+    try decl.property(vm, proto, "_lockroot", getLockRoot, setLockRoot, hidden);
+    try decl.property(vm, proto, "blendMode", getBlendMode, setBlendMode, ver(hidden, decl.V8));
+    try decl.property(vm, proto, "filters", getFilters, setFilters, ver(hidden, decl.V8));
+}
+
+// --- timeline control ---------------------------------------------------------
+
+/// The clip a method acts on, or null when `this` is not (or is no longer)
+/// a live display object — in which case Flash silently does nothing.
+fn clipOf(vm: *Vm, this: Value) ?*@import("../../display/movie_clip.zig").MovieClip {
+    const t = stage.targetOfValue(vm, this) orelse return null;
+    return t.clip;
+}
+
+fn play(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    if (clipOf(vm, this)) |c| stage.hostSetPlaying(vm, c, true);
+    return .undefined_value;
+}
+
+fn stop(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    if (clipOf(vm, this)) |c| stage.hostSetPlaying(vm, c, false);
+    return .undefined_value;
+}
+
+fn nextFrame(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    if (clipOf(vm, this)) |c| stage.hostNextPrev(vm, c, 1);
+    return .undefined_value;
+}
+
+fn prevFrame(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    if (clipOf(vm, this)) |c| stage.hostNextPrev(vm, c, -1);
+    return .undefined_value;
+}
+
+fn gotoAndPlay(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    return gotoAnd(p, this, args, true);
+}
+
+fn gotoAndStop(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    return gotoAnd(p, this, args, false);
+}
+
+/// The scene argument (`gotoAndPlay(scene, frame)`) is only meaningful for
+/// AVM2 timelines; ruffle ignores it and takes the SECOND argument as the
+/// frame when two are given.
+fn gotoAnd(p: *anyopaque, this: Value, args: []const Value, playing: bool) anyerror!Value {
+    const vm = vmOf(p);
+    if (args.len == 0) return .undefined_value;
+    const frame = if (args.len > 1) args[1] else args[0];
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    const c = t.clip orelse return .undefined_value;
+    switch (try stage.frameArg(vm, frame)) {
+        .number => |n| stage.gotoFrameNumber(vm, c, n, 0, playing),
+        .label => |s| {
+            // A string operand is a full VARIABLE PATH, not just a label —
+            // `clip.gotoAndStop("/:5")` sends _root to frame 5 and leaves
+            // `clip` alone (ruffle goto_frame's resolve_variable_path).
+            if (try activation.framePathFromNative(vm, this.object, s)) |hit| {
+                if (hit.frame) |f| stage.hostGoto(vm, hit.clip, f, playing);
+            } else {
+                _ = stage.hostGotoLabel(vm, c, s, playing);
+            }
+        },
+    }
+    return .undefined_value;
+}
+
+// --- queries -------------------------------------------------------------------
+
+fn getBytesLoaded(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    const c = clipOf(vm, this) orelse return .undefined_value;
+    return .{ .number = stage.bytesLoaded(vm, c) };
+}
+
+fn getBytesTotal(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    const c = clipOf(vm, this) orelse return .undefined_value;
+    return .{ .number = stage.bytesTotal(vm, c) };
+}
+
+/// -1 when the clip has no movie of its own; every clip here shares the
+/// root movie, so that only happens if the VM has no display context.
+fn getSwfVersion(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    _ = this;
+    const vm = vmOf(p);
+    if (vm.root_swf_version == 0) return .{ .number = -1 };
+    return .{ .number = @floatFromInt(vm.root_swf_version) };
+}
+
+fn getInstanceAtDepth(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const c = clipOf(vm, this) orelse return .undefined_value;
+    const depth = stage.biasDepth(try depthArg(vm, arg(args, 0)));
+    const child = c.childAtDepth(depth) orelse return .undefined_value;
+    return stage.childValue(vm, c, child);
+}
+
+/// The target argument may be the object itself OR a target path string —
+/// `clip.getBounds('/')` measures against the root.
+fn getBounds(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    const target: ?stage.Target = if (args.len > 0)
+        (try activation.targetFromNative(vm, this.object, args[0]) orelse return .undefined_value)
+    else
+        null;
+    return stage.boundsObject(vm, t, target);
+}
+
+/// Both mutate the passed object's `x`/`y` IN PLACE and return nothing —
+/// the classic AVM1 out-parameter shape.
+fn localToGlobal(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    return convertPoint(p, this, args, true);
+}
+
+fn globalToLocal(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    return convertPoint(p, this, args, false);
+}
+
+fn convertPoint(p: *anyopaque, this: Value, args: []const Value, to_global: bool) anyerror!Value {
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    const pt = arg(args, 0);
+    if (pt != .object) return .undefined_value;
+    // NO coercion here, deliberately: ruffle's comment is "it fails if the
+    // properties are not numbers. It does not search the prototype chain
+    // and ignores virtual properties." So `{x: "10", y: 0}` is left
+    // completely untouched, and so is `{x: 10}` with no y — corpus
+    // local_to_global checks exactly those.
+    const xv = vm.objects.getOwn(pt.object, S("x"), vm.case_sensitive) orelse return .undefined_value;
+    const yv = vm.objects.getOwn(pt.object, S("y"), vm.case_sensitive) orelse return .undefined_value;
+    if (xv != .number or yv != .number) return .undefined_value;
+    const x_px = xv.number;
+    const y_px = yv.number;
+    const m = if (to_global)
+        stage.localToGlobalMatrix(t)
+    else
+        (stage.globalToLocalMatrix(t) orelse return .undefined_value);
+    const out = m.transformPoint(display_object.twipsFromPixels(x_px), display_object.twipsFromPixels(y_px));
+    try vm.setProperty(pt.object, S("x"), .{ .number = display_object.pixelsFromTwips(out[0]) }, pt);
+    try vm.setProperty(pt.object, S("y"), .{ .number = display_object.pixelsFromTwips(out[1]) }, pt);
+    return .undefined_value;
+}
+
+/// `hitTest(x, y[, shapeFlag])` or `hitTest(target)`. A non-finite
+/// coordinate is not an error, it is simply a miss.
+fn hitTest(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .{ .boolean = false };
+    if (args.len > 1) {
+        const x = try vm.toNumber(args[0]);
+        const y = try vm.toNumber(args[1]);
+        const shape_flag = if (args.len > 2) value_mod.toBoolean(args[2], vm.swf_version) else false;
+        if (!std.math.isFinite(x) or !std.math.isFinite(y)) return .{ .boolean = false };
+        return .{ .boolean = stage.hitTestPoint(vm, t, x, y, shape_flag) };
+    }
+    if (args.len == 1) {
+        // Like getBounds, the single-argument form accepts a path string.
+        const other = try activation.targetFromNative(vm, this.object, args[0]) orelse
+            return .{ .boolean = false };
+        return .{ .boolean = stage.hitTestObject(t, other) };
+    }
+    return .{ .boolean = false };
+}
+
+/// Masking is rendered in M7; the link itself is script-visible now, and
+/// `setMask(null)` clears it.
+fn setMask(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    if (stage.targetOfValue(vm, arg(args, 0))) |m| {
+        t.obj.mask = m.obj;
+    } else {
+        t.obj.mask = null;
+    }
+    return .undefined_value;
+}
+
+fn startDrag(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    const lock_center = value_mod.toBoolean(arg(args, 0), vm.swf_version);
+    var rect: ?[4]f64 = null;
+    if (args.len >= 5) {
+        rect = .{
+            try vm.toNumber(args[1]),
+            try vm.toNumber(args[2]),
+            try vm.toNumber(args[3]),
+            try vm.toNumber(args[4]),
+        };
+    }
+    stage.startDrag(vm, t, lock_center, rect);
+    return .undefined_value;
+}
+
+/// Ruffle's `stop_drag` ends whatever drag is running, even one started by
+/// a different clip — there is only ever one.
+fn stopDrag(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    _ = args;
+    stage.stopDrag(vmOf(p));
+    return .undefined_value;
+}
+
+// --- properties with real state -------------------------------------------------
+
+fn getLockRoot(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    const c = clipOf(vm, this) orelse return .undefined_value;
+    return .{ .boolean = c.lock_root };
+}
+
+fn setLockRoot(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const c = clipOf(vm, this) orelse return .undefined_value;
+    c.lock_root = value_mod.toBoolean(arg(args, 0), vm.swf_version);
+    return .undefined_value;
+}
+
+/// PlaceObject3's blend byte as its ActionScript name. Index IS the byte:
+/// 0 and 1 both mean "normal", so slot 0 is a duplicate on purpose.
+const BLEND_NAMES = [_][]const u16{
+    S("normal"),  S("normal"), S("layer"),      S("multiply"), S("screen"),
+    S("lighten"), S("darken"), S("difference"), S("add"),      S("subtract"),
+    S("invert"),  S("alpha"),  S("erase"),      S("overlay"),  S("hardlight"),
+};
+
+fn getBlendMode(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    const i = t.obj.blend_mode;
+    if (i >= BLEND_NAMES.len) return .{ .string = S("normal") };
+    return .{ .string = BLEND_NAMES[i] };
+}
+
+/// Accepts either the name or the numeric index; anything unrecognised
+/// leaves the current mode alone (ruffle set_blend_mode logs and returns).
+fn setBlendMode(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    const v = arg(args, 0);
+    if (v == .number) {
+        const n = value_mod.toInt32(v.number);
+        if (n >= 0 and n < BLEND_NAMES.len) t.obj.blend_mode = @intCast(n);
+        return .undefined_value;
+    }
+    const s = try vm.toStringValue(v);
+    for (BLEND_NAMES, 0..) |name, i| {
+        if (i == 0) continue; // "normal" is canonically 1
+        if (strings.eqlIgnoreCase(s, name)) {
+            t.obj.blend_mode = @intCast(i);
+            return .undefined_value;
+        }
+    }
+    return .undefined_value;
+}
+
+/// PlaceObject3 filters are parsed but not applied (M7). Reading yields a
+/// fresh empty Array every time, which is what ruffle does — the returned
+/// array is a COPY, so mutating it does not change the object.
+fn getFilters(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    _ = args;
+    const vm = vmOf(p);
+    return .{ .object = try vm.newArray() };
+}
+
+fn setFilters(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = p;
+    _ = this;
+    _ = args;
+    return .undefined_value;
 }
 
 /// The AS depth operand. Ruffle coerces to i32 (wrapping), so a fractional
@@ -269,7 +602,9 @@ fn clearDrawing(p: *anyopaque, this: Value, args: []const Value) anyerror!Value 
     return .undefined_value;
 }
 
-fn getDepth(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+/// Shared with Button.prototype and TextField.prototype — ruffle serves
+/// all three from one `globals::get_depth`.
+pub fn getDepth(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     const t = stage.targetOfValue(vm, this) orelse return .undefined_value;

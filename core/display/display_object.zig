@@ -56,6 +56,9 @@ pub const DisplayObject = struct {
     /// Lazily-created AVM1 object (0 = none). Clips keep theirs on the
     /// MovieClip; buttons and text fields keep theirs here.
     avm_object: u32 = 0,
+    /// `setMask` link. Stored now so scripts can read it back; the
+    /// renderer starts honouring it with clipDepth masks in M7.
+    mask: ?*DisplayObject = null,
     /// Off the display list but possibly still script-referenced. Clips
     /// carry the same flag on their MovieClip; buttons and text fields
     /// need it here or a removed one keeps reading as a live object.
@@ -167,8 +170,8 @@ pub const DisplayObject = struct {
         self.scale_x = percent;
         const v = if (std.math.isNan(percent)) 0 else percent / 100.0;
         const rot = self.rotationRadiansForMatrix();
-        self.matrix.a = @cos(rot) * v;
-        self.matrix.b = @sin(rot) * v;
+        self.matrix.a = @floatCast(@cos(rot) * v);
+        self.matrix.b = @floatCast(@sin(rot) * v);
     }
 
     pub fn setScaleY(self: *DisplayObject, percent: f64) void {
@@ -177,8 +180,8 @@ pub const DisplayObject = struct {
         self.scale_y = percent;
         const v = if (std.math.isNan(percent)) 0 else percent / 100.0;
         const rot = self.rotationRadiansForMatrix() + self.skew_rad;
-        self.matrix.c = -@sin(rot) * v;
-        self.matrix.d = @cos(rot) * v;
+        self.matrix.c = @floatCast(-@sin(rot) * v);
+        self.matrix.d = @floatCast(@cos(rot) * v);
     }
 
     /// `degrees` is stored verbatim (so a NaN reads back as NaN), but a NaN
@@ -191,10 +194,10 @@ pub const DisplayObject = struct {
         const rad = std.math.degreesToRadians(degrees);
         const sx = if (std.math.isNan(self.scale_x)) 0 else self.scale_x / 100.0;
         const sy = if (std.math.isNan(self.scale_y)) 0 else self.scale_y / 100.0;
-        self.matrix.a = sx * @cos(rad);
-        self.matrix.b = sx * @sin(rad);
-        self.matrix.c = sy * -@sin(rad + self.skew_rad);
-        self.matrix.d = sy * @cos(rad + self.skew_rad);
+        self.matrix.a = @floatCast(sx * @cos(rad));
+        self.matrix.b = @floatCast(sx * @sin(rad));
+        self.matrix.c = @floatCast(sy * -@sin(rad + self.skew_rad));
+        self.matrix.d = @floatCast(sy * @cos(rad + self.skew_rad));
     }
 
     fn rotationRadiansForMatrix(self: *const DisplayObject) f64 {

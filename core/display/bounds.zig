@@ -13,6 +13,7 @@
 const std = @import("std");
 const swf = @import("../swf/swf.zig");
 const display_object = @import("display_object.zig");
+const shape_utils = @import("../render/shape_utils.zig");
 
 const DisplayObject = display_object.DisplayObject;
 const Rectangle = swf.reader.Rectangle;
@@ -64,6 +65,57 @@ pub fn unionRect(a: Rectangle, b: Rectangle) Rectangle {
         .ymin = @min(a.ymin, b.ymin),
         .ymax = @max(a.ymax, b.ymax),
     };
+}
+
+pub fn contains(r: Rectangle, x: i32, y: i32) bool {
+    return x >= r.xmin and x <= r.xmax and y >= r.ymin and y <= r.ymax;
+}
+
+pub fn intersects(a: Rectangle, b: Rectangle) bool {
+    return a.xmin <= b.xmax and b.xmin <= a.xmax and a.ymin <= b.ymax and b.ymin <= a.ymax;
+}
+
+// --- hit testing -------------------------------------------------------------
+
+/// Does `point` (STAGE space, twips) land inside `obj`'s bounding box?
+/// `parent_to_global` is the matrix taking the object's PARENT space to
+/// stage space, so the object's own matrix is applied here.
+pub fn hitTestBounds(obj: *const DisplayObject, point: [2]i32, parent_to_global: Matrix) bool {
+    const box = boundsWithTransform(obj, parent_to_global.mul(obj.matrix)) orelse return false;
+    return contains(box, point[0], point[1]);
+}
+
+/// Shape-exact hit test: the point must land on actual drawn geometry, not
+/// merely inside the bounding box. Invisible objects never hit — Flash's
+/// AVM_HIT_TEST options skip them (ruffle `HitTestOptions::AVM_HIT_TEST`
+/// sets SKIP_INVISIBLE).
+///
+/// Characters we cannot rasterise yet (buttons, bitmaps, morph shapes)
+/// fall back to their bounding box, which is `null` for those kinds today
+/// and so reports a miss — the same answer the renderer gives.
+pub fn hitTestShape(obj: *const DisplayObject, point: [2]i32, parent_to_global: Matrix) bool {
+    if (!obj.visible) return false;
+    const to_global = parent_to_global.mul(obj.matrix);
+    const inv = to_global.invert() orelse return false;
+    const local = inv.transformPoint(point[0], point[1]);
+    switch (obj.kind) {
+        .shape => |s| return shape_utils.shapeHitTest(s, .{ .x = local[0], .y = local[1] }, to_global),
+        .clip => |mc| {
+            if (mc.drawing) |*d| {
+                if (d.hitTest(.{ .x = local[0], .y = local[1] }, to_global)) return true;
+            }
+            for (mc.children.items) |child| {
+                if (hitTestShape(child, point, to_global)) return true;
+            }
+            return false;
+        },
+        // Text renders in M4-D, buttons in M4-C, bitmaps in M4-E; until
+        // then their box IS their geometry.
+        .text, .edit_text, .button, .bitmap, .morph_shape => {
+            const box = selfBounds(obj) orelse return false;
+            return contains(box, local[0], local[1]);
+        },
+    }
 }
 
 // --- Tests -----------------------------------------------------------------

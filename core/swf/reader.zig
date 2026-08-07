@@ -32,12 +32,19 @@ pub const Rectangle = struct {
     }
 };
 
-/// 2×3 affine. a/b/c/d are 16.16 fixed converted to f64; tx/ty are twips.
+/// 2×3 affine. a/b/c/d are 16.16 fixed converted to **f32**; tx/ty are twips.
+///
+/// f32 is not a shortcut, it is the observable precision: ruffle's
+/// `render/src/matrix.rs` stores these as f32 and does every product in
+/// f32, so `localToGlobal`, `getBounds` and `_width` land on a specific
+/// twip that f64 arithmetic misses by one about a quarter of the time.
+/// The decomposed scale/rotation cache on DisplayObject stays f64 —
+/// ActionScript reads back exactly what it wrote there.
 pub const Matrix = struct {
-    a: f64 = 1.0,
-    b: f64 = 0.0,
-    c: f64 = 0.0,
-    d: f64 = 1.0,
+    a: f32 = 1.0,
+    b: f32 = 0.0,
+    c: f32 = 0.0,
+    d: f32 = 1.0,
     tx: i32 = 0,
     ty: i32 = 0,
 
@@ -46,8 +53,9 @@ pub const Matrix = struct {
     /// `p ∘ c` — apply `c` first, then `p`. Same convention as
     /// renderer.Transform.concat, which this mirrors in twips space.
     pub fn mul(p: Matrix, c: Matrix) Matrix {
-        const cx: f64 = @floatFromInt(c.tx);
-        const cy: f64 = @floatFromInt(c.ty);
+        // The translation half IS a point transform (ruffle matrix.rs:185).
+        const cx: f32 = @floatFromInt(c.tx);
+        const cy: f32 = @floatFromInt(c.ty);
         return .{
             .a = p.a * c.a + p.c * c.b,
             .b = p.b * c.a + p.d * c.b,
@@ -59,8 +67,8 @@ pub const Matrix = struct {
     }
 
     pub fn transformPoint(m: Matrix, x: i32, y: i32) [2]i32 {
-        const fx: f64 = @floatFromInt(x);
-        const fy: f64 = @floatFromInt(y);
+        const fx: f32 = @floatFromInt(x);
+        const fy: f32 = @floatFromInt(y);
         return .{
             roundToI32(m.a * fx + m.c * fy) +% m.tx,
             roundToI32(m.b * fx + m.d * fy) +% m.ty,
@@ -82,31 +90,28 @@ pub const Matrix = struct {
         };
     }
 
-    /// null when singular (determinant 0) — a fully-collapsed clip.
+    /// null when singular. Ruffle's threshold is `|det| > f32::EPSILON`,
+    /// not `det != 0` — a nearly-collapsed clip maps nowhere too.
     pub fn invert(m: Matrix) ?Matrix {
         const det = m.a * m.d - m.b * m.c;
-        if (det == 0 or !std.math.isFinite(det)) return null;
-        const inv = 1.0 / det;
-        const ia = m.d * inv;
-        const ib = -m.b * inv;
-        const ic = -m.c * inv;
-        const id = m.a * inv;
-        const tx: f64 = @floatFromInt(m.tx);
-        const ty: f64 = @floatFromInt(m.ty);
+        if (!std.math.isFinite(det) or @abs(det) <= std.math.floatEps(f32)) return null;
+        const tx: f32 = @floatFromInt(m.tx);
+        const ty: f32 = @floatFromInt(m.ty);
         return .{
-            .a = ia,
-            .b = ib,
-            .c = ic,
-            .d = id,
-            .tx = roundToI32(-(ia * tx + ic * ty)),
-            .ty = roundToI32(-(ib * tx + id * ty)),
+            .a = m.d / det,
+            .b = m.b / -det,
+            .c = m.c / -det,
+            .d = m.a / det,
+            .tx = roundToI32((m.d * tx - m.c * ty) / -det),
+            .ty = roundToI32((m.b * tx - m.a * ty) / det),
         };
     }
 };
 
 /// ruffle render/src/matrix.rs `round_to_i32`: ties-to-even, NaN/inf → 0,
 /// out-of-range → i32 MIN. Also the guard against `@intFromFloat` UB.
-pub fn roundToI32(f: f64) i32 {
+pub fn roundToI32(f_in: anytype) i32 {
+    const f: f64 = f_in;
     if (!std.math.isFinite(f)) return 0;
     if (f >= 2147483648.0 or f < -2147483648.0) return std.math.minInt(i32);
     var r = @round(f); // @round is ties-AWAY-from-zero; nudge the ties back.
@@ -306,13 +311,13 @@ pub const Reader = struct {
         var m: Matrix = .identity;
         if (try self.readBit()) {
             const n: u6 = @intCast(try self.readUb(5));
-            m.a = try self.readFb(n);
-            m.d = try self.readFb(n);
+            m.a = @floatCast(try self.readFb(n));
+            m.d = @floatCast(try self.readFb(n));
         }
         if (try self.readBit()) {
             const n: u6 = @intCast(try self.readUb(5));
-            m.b = try self.readFb(n);
-            m.c = try self.readFb(n);
+            m.b = @floatCast(try self.readFb(n));
+            m.c = @floatCast(try self.readFb(n));
         }
         const n: u6 = @intCast(try self.readUb(5));
         m.tx = try self.readSb(n);

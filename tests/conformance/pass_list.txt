@@ -38,6 +38,7 @@ catch_references_registers
 closure_scope
 conflicting_instance_names
 create_empty_movie_clip
+custom_clip_methods
 default_names
 define_font_glyph_table_order
 define_font_glyph_table_overlap
@@ -62,6 +63,7 @@ focusrect_mouse_swf8
 focusrect_mouse_swf9
 focusrect_swf5
 function_base_clip
+get_bytes_total
 getproperty
 getproperty_swf4
 getproperty_swf5
@@ -71,10 +73,15 @@ goto_both_ways1
 goto_both_ways2
 goto_execution_order
 goto_execution_order2
+goto_frame_number
+goto_label
+goto_methods
 goto_rewind1
 goto_rewind2
 greaterthan_swf5
 greaterthan_swf8
+hittest_lockroot
+hittest_winding_rule
 is_finite
 is_prototype_of
 issue_1086
@@ -88,6 +95,7 @@ issue_768
 lessthan
 lessthan_swf4_alt
 lessthan_swf5
+local_to_global
 looping
 looping_real_1_declared_1
 looping_real_1_declared_2
@@ -96,6 +104,9 @@ looping_real_2_declared_2
 mask_reapply
 mask_with_drawing
 movieclip_begin_gradient_fill
+movieclip_get_instance_at_depth
+movieclip_getbounds
+movieclip_hittest
 movieclip_line_gradient_style
 movieclip_name_from_timeline
 movieclip_prototype_extension
@@ -154,5 +165,6 @@ typeof_globals
 uncaught_exception
 uncaught_exception_bubbled
 undefined_to_string_swf6
+use_hand_cursor
 variable_args
 with_return

@@ -40,6 +40,22 @@ pub const Host = struct {
 /// Stage render quality — `_quality` / `_highquality` read and write it.
 pub const Quality = enum { low, medium, high, best };
 
+/// An in-progress `startDrag`. The dragged object follows the mouse until
+/// `stopDrag`; the Player re-applies it on every pointer move.
+pub const Drag = struct {
+    /// The dragged display object's AVM1 handle (so a removed clip simply
+    /// stops resolving instead of dangling).
+    target: ObjectHandle,
+    /// `lockCenter`: the object centres on the pointer rather than keeping
+    /// the grab offset.
+    lock_center: bool,
+    /// Optional constraint rectangle, in twips, in the PARENT's space.
+    bounds: ?rdr.Rectangle = null,
+    /// Grab offset in twips (pointer → object origin), in the parent's space.
+    offset_x: i32 = 0,
+    offset_y: i32 = 0,
+};
+
 pub const Vm = struct {
     gpa: std.mem.Allocator,
     arena_state: *std.heap.ArenaAllocator,
@@ -64,6 +80,11 @@ pub const Vm = struct {
     /// MovieClip.prototype — clip objects chain to it, so script can hang
     /// methods there and every clip inherits them.
     movieclip_proto: ObjectHandle = 0,
+    /// Button.prototype / TextField.prototype. The other two scriptable
+    /// display kinds; their full surfaces land in M4-C and M4-D, but the
+    /// prototypes must exist now so `getDepth` and friends resolve.
+    button_proto: ObjectHandle = 0,
+    textfield_proto: ObjectHandle = 0,
     /// Bottom scope for timeline code (the current target clip's variable
     /// object; a plain object in pure-VM tests).
     root_scope: ObjectHandle = 0,
@@ -83,9 +104,30 @@ pub const Vm = struct {
     quality: Quality = .high,
     sound_buf_time: i32 = 5,
     stage_focus_rect: bool = true,
-    /// Mouse position in stage pixels; the frontend writes it (M4-C).
+    /// Mouse position in stage pixels; the frontend writes it via
+    /// `Player.mouseMove`.
     mouse_x: f64 = 0,
     mouse_y: f64 = 0,
+    /// The active `startDrag`, if any.
+    drag: ?Drag = null,
+    /// Latched by `getBounds`/`getRect` the first time either runs in a
+    /// SWF8+ context. Once on, an empty box in an identical coordinate
+    /// space reports the 0x8000000-twip "invalid" sentinel instead of
+    /// zeroes (ruffle Avm1::get_use_new_invalid_bounds_value). It is a
+    /// PLAYER-wide latch, not per-call, which is why it lives here.
+    use_new_invalid_bounds: bool = false,
+    /// SWF version of the ROOT movie — `getBounds`'s latch consults it even
+    /// when the running code is older. Set by the Player.
+    root_swf_version: u8 = 0,
+    /// What `_url` reports. The Player sets it from the path it loaded;
+    /// `core/` does no I/O and never derives it itself.
+    movie_url: strings.AvmString = &.{},
+    /// The innermost running `Activation`, or null outside interpretation.
+    /// Native methods need it for the ONE thing they cannot do themselves:
+    /// resolve a target path, which depends on the caller's `this` and
+    /// scope (`MovieClip.gotoAndStop("/other:5")` really does redirect the
+    /// goto to another clip). activation.zig owns the cast back.
+    current_activation: ?*anyopaque = null,
     /// The tick's `movie_clip.Context`, valid only while the Player is
     /// inside runOneFrame. Scripts that create or destroy clips need it;
     /// stage_object.zig is the one file allowed to cast it back. Null in
@@ -295,9 +337,10 @@ pub const Vm = struct {
                 // Display objects are special-cased to their DOT path, and
                 // it wins over any user toString (ruffle value.rs:325
                 // checks as_display_object before dispatching toString).
-                if (self.objects.get(h).native == .clip) {
-                    const stage = @import("stage_object.zig");
-                    return stage.dotPathOf(self, self.objects.get(h).native.clip);
+                switch (self.objects.get(h).native) {
+                    .clip => |c| return @import("stage_object.zig").dotPathOf(self, c),
+                    .display => |d| return @import("stage_object.zig").dotPathOfDisplay(self, d),
+                    else => {},
                 }
                 // toString via the chain, else type-tagged default.
                 const p = try self.toPrimitive(v, .string);

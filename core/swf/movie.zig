@@ -35,6 +35,10 @@ pub const Movie = struct {
     compression: decompress.Compression,
     /// Decompressed payload — all tag/action/bitmap slices point into it.
     body: []const u8,
+    /// The `file_length` field from the container header: the whole file's
+    /// UNCOMPRESSED size, the 8 signature bytes included. This — not
+    /// `body.len` — is what `_root.getBytesTotal()` reports.
+    file_length: u32,
     header: header.Header,
 
     lib: library.Library = .{},
@@ -83,6 +87,7 @@ pub fn load(gpa: std.mem.Allocator, file_bytes: []const u8) Error!Movie {
         .swf_version = dec.version,
         .compression = dec.compression,
         .body = dec.body,
+        .file_length = dec.declared_length,
         .header = h,
     };
     movie.frames = try preloadTimeline(&movie, dec.body[h.tags_offset..], true);
@@ -173,6 +178,9 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
                     .id = id,
                     .frame_count = frame_count,
                     .frames = sprite_frames,
+                    // A sprite's getBytesTotal is the length of its OWN tag
+                    // stream (ruffle MovieClip::tag_stream_len).
+                    .tag_stream_len = tag.body.len -| 4,
                 } });
             },
             .define_font => {
