@@ -128,6 +128,7 @@ strictly_equals
 string_paths_hidden
 string_paths_keyevents
 string_paths_timer
+super_edge_cases
 swf4_bool
 swf5_encoding
 swf6_string_as_bool

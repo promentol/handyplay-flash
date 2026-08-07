@@ -179,9 +179,19 @@ pub const Objects = struct {
             }
             const proto = self.get(current).proto;
             if (proto != .object) return null;
+            if (isDisplay(self.get(proto.object).native)) return null;
             current = proto.object;
         }
         return null;
+    }
+
+    /// A display object reached AS someone's prototype contributes nothing:
+    /// the chain ends there. Inferred from corpus super_edge_cases, whose
+    /// recorded Flash output cannot see `_root.__proto__` or
+    /// `_root.__constructor__` through `obj.__proto__ = _root`. It does not
+    /// affect a clip's OWN lookups, which start at the clip itself.
+    fn isDisplay(n: NativeInfo) bool {
+        return n == .clip or n == .display;
     }
 
     /// How many prototype hops from `h` to the object that owns `name`

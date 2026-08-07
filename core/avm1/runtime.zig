@@ -420,7 +420,14 @@ pub const Vm = struct {
     /// nothing it stores (ruffle script_object.rs:724-727).
     pub fn protoValue(self: *Vm, h: ObjectHandle) Value {
         if (self.objects.get(h).native == .super_obj) return self.superProto(h);
-        return self.objects.get(h).proto;
+        const p = self.objects.get(h).proto;
+        // A display object reached AS a prototype ends the chain — see
+        // Objects.findChained.
+        if (p == .object) {
+            const n = self.objects.get(p.object).native;
+            if (n == .clip or n == .display) return .undefined_value;
+        }
+        return p;
     }
 
     /// Property write honoring addProperty setters (proto-chain aware:
