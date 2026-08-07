@@ -13,41 +13,39 @@ const value_mod = @import("../value.zig");
 const runtime = @import("../runtime.zig");
 const object_mod = @import("../object.zig");
 const stage = @import("../stage_object.zig");
+const decl = @import("decl.zig");
 
 const Value = value_mod.Value;
 const Vm = runtime.Vm;
 const ObjectHandle = runtime.ObjectHandle;
 const S = strings.ascii;
 
-fn vmOf(p: *anyopaque) *Vm {
-    return @ptrCast(@alignCast(p));
-}
+const vmOf = decl.vmOf;
+const arg = decl.arg;
+const method = decl.method;
+const hidden = decl.hidden;
+const frozen = decl.frozen;
+const ver = decl.ver;
 
-fn arg(args: []const Value, i: usize) Value {
-    return if (i < args.len) args[i] else .undefined_value;
-}
-
+/// Flags and version gates are ruffle's, from
+/// globals/movie_clip.rs's `declare_properties!` table — the gate is why
+/// `getNextHighestDepth` does not exist for a SWF6 movie.
 pub fn install(vm: *Vm) !void {
     const proto = vm.movieclip_proto;
-    try method(vm, proto, "duplicateMovieClip", duplicateMovieClip);
-    try method(vm, proto, "attachMovie", attachMovie);
-    try method(vm, proto, "createEmptyMovieClip", createEmptyMovieClip);
-    try method(vm, proto, "removeMovieClip", removeMovieClip);
-    try method(vm, proto, "swapDepths", swapDepths);
-    try method(vm, proto, "beginFill", beginFill);
-    try method(vm, proto, "endFill", endFill);
-    try method(vm, proto, "lineStyle", lineStyle);
-    try method(vm, proto, "moveTo", moveTo);
-    try method(vm, proto, "lineTo", lineTo);
-    try method(vm, proto, "curveTo", curveTo);
-    try method(vm, proto, "clear", clearDrawing);
-    try method(vm, proto, "getDepth", getDepth);
-    try method(vm, proto, "getNextHighestDepth", getNextHighestDepth);
-}
-
-fn method(vm: *Vm, target: ObjectHandle, comptime name: []const u8, f: object_mod.NativeFn) !void {
-    const h = try vm.newNativeFn(f);
-    try vm.objects.putWithAttrs(target, S(name), .{ .object = h }, .{ .dont_enum = true }, false);
+    try method(vm, proto, "duplicateMovieClip", duplicateMovieClip, hidden);
+    try method(vm, proto, "attachMovie", attachMovie, hidden);
+    try method(vm, proto, "createEmptyMovieClip", createEmptyMovieClip, ver(hidden, decl.V6));
+    try method(vm, proto, "removeMovieClip", removeMovieClip, hidden);
+    try method(vm, proto, "swapDepths", swapDepths, hidden);
+    try method(vm, proto, "beginFill", beginFill, ver(hidden, decl.V6));
+    try method(vm, proto, "endFill", endFill, ver(hidden, decl.V6));
+    try method(vm, proto, "lineStyle", lineStyle, ver(hidden, decl.V6));
+    try method(vm, proto, "moveTo", moveTo, ver(hidden, decl.V6));
+    try method(vm, proto, "lineTo", lineTo, ver(hidden, decl.V6));
+    try method(vm, proto, "curveTo", curveTo, ver(hidden, decl.V6));
+    try method(vm, proto, "clear", clearDrawing, ver(hidden, decl.V6));
+    try method(vm, proto, "getDepth", getDepth, ver(frozen, decl.V6));
+    try method(vm, proto, "getNextHighestDepth", getNextHighestDepth, ver(hidden, decl.V7));
 }
 
 /// The AS depth operand. Ruffle coerces to i32 (wrapping), so a fractional

@@ -11,19 +11,21 @@ const strings = @import("../string.zig");
 const value_mod = @import("../value.zig");
 const object_mod = @import("../object.zig");
 const runtime = @import("../runtime.zig");
+const decl = @import("decl.zig");
 
 const Value = runtime.Value;
 const Vm = runtime.Vm;
 const ObjectHandle = runtime.ObjectHandle;
 const S = strings.ascii;
 
-fn vmOf(p: *anyopaque) *Vm {
-    return @ptrCast(@alignCast(p));
-}
+const vmOf = decl.vmOf;
+const arg = decl.arg;
 
-fn arg(args: []const Value, i: usize) Value {
-    return if (i < args.len) args[i] else .undefined_value;
-}
+/// Ruffle's flag set for a built-in member (`DONT_ENUM | DONT_DELETE`) and
+/// its read-only variant, plus the version gates — see globals/decl.zig.
+const hidden = decl.hidden;
+const frozen = decl.frozen;
+const ver = decl.ver;
 
 pub fn install(vm: *Vm) !void {
     const cs = false; // built-ins install case-preserving; lookup handles case
@@ -42,78 +44,75 @@ pub fn install(vm: *Vm) !void {
     vm.boolean_proto = try vm.objects.create();
     vm.objects.get(vm.boolean_proto).proto = .{ .object = vm.object_proto };
 
+    // `_global` itself and the class bindings on it are DONT_ENUM only —
+    // ruffle globals.rs's top-level table deliberately leaves them
+    // deletable (`delete Object` is legal ActionScript).
     const attrs: object_mod.Attributes = .{ .dont_enum = true };
 
     // --- Object.prototype -------------------------------------------------
-    try method(vm, vm.object_proto, "hasOwnProperty", objHasOwnProperty);
-    try method(vm, vm.object_proto, "toString", objToString);
-    try method(vm, vm.object_proto, "valueOf", objValueOf);
-    try method(vm, vm.object_proto, "isPropertyEnumerable", objIsPropEnum);
-    try method(vm, vm.object_proto, "addProperty", objAddProperty);
+    try method(vm, vm.object_proto, "hasOwnProperty", objHasOwnProperty, ver(hidden, decl.V6));
+    try method(vm, vm.object_proto, "toString", objToString, hidden);
+    try method(vm, vm.object_proto, "toLocaleString", objToString, hidden);
+    try method(vm, vm.object_proto, "valueOf", objValueOf, hidden);
+    try method(vm, vm.object_proto, "isPropertyEnumerable", objIsPropEnum, ver(hidden, decl.V6));
+    try method(vm, vm.object_proto, "isPrototypeOf", objIsPrototypeOf, ver(hidden, decl.V6));
+    try method(vm, vm.object_proto, "addProperty", objAddProperty, ver(hidden, decl.V6));
 
     // --- Function.prototype ----------------------------------------------
-    try method(vm, vm.function_proto, "call", fnCall);
-    try method(vm, vm.function_proto, "apply", fnApply);
+    try method(vm, vm.function_proto, "call", fnCall, hidden);
+    try method(vm, vm.function_proto, "apply", fnApply, hidden);
 
     // --- Array ------------------------------------------------------------
-    try method(vm, vm.array_proto, "push", arrPush);
-    try method(vm, vm.array_proto, "pop", arrPop);
-    try method(vm, vm.array_proto, "shift", arrShift);
-    try method(vm, vm.array_proto, "join", arrJoin);
-    try method(vm, vm.array_proto, "toString", arrToString);
-    try method(vm, vm.array_proto, "concat", arrConcat);
-    try method(vm, vm.array_proto, "slice", arrSlice);
-    try method(vm, vm.array_proto, "unshift", arrUnshift);
-    try method(vm, vm.array_proto, "reverse", arrReverse);
-    try method(vm, vm.array_proto, "splice", arrSplice);
-    try method(vm, vm.array_proto, "sort", arrSort);
+    try method(vm, vm.array_proto, "push", arrPush, hidden);
+    try method(vm, vm.array_proto, "pop", arrPop, hidden);
+    try method(vm, vm.array_proto, "shift", arrShift, hidden);
+    try method(vm, vm.array_proto, "join", arrJoin, hidden);
+    try method(vm, vm.array_proto, "toString", arrToString, hidden);
+    try method(vm, vm.array_proto, "concat", arrConcat, hidden);
+    try method(vm, vm.array_proto, "slice", arrSlice, hidden);
+    try method(vm, vm.array_proto, "unshift", arrUnshift, hidden);
+    try method(vm, vm.array_proto, "reverse", arrReverse, hidden);
+    try method(vm, vm.array_proto, "splice", arrSplice, hidden);
+    try method(vm, vm.array_proto, "sort", arrSort, hidden);
 
     // --- String.prototype -------------------------------------------------
-    try method(vm, vm.string_proto, "toString", strToString);
-    try method(vm, vm.string_proto, "valueOf", strToString);
-    try method(vm, vm.string_proto, "charAt", strCharAt);
-    try method(vm, vm.string_proto, "charCodeAt", strCharCodeAt);
-    try method(vm, vm.string_proto, "toUpperCase", strToUpper);
-    try method(vm, vm.string_proto, "toLowerCase", strToLower);
-    try method(vm, vm.string_proto, "indexOf", strIndexOf);
-    try method(vm, vm.string_proto, "lastIndexOf", strLastIndexOf);
-    try method(vm, vm.string_proto, "substring", strSubstring);
-    try method(vm, vm.string_proto, "substr", strSubstr);
-    try method(vm, vm.string_proto, "slice", strSlice);
-    try method(vm, vm.string_proto, "split", strSplit);
+    try method(vm, vm.string_proto, "toString", strToString, hidden);
+    try method(vm, vm.string_proto, "valueOf", strToString, hidden);
+    try method(vm, vm.string_proto, "charAt", strCharAt, hidden);
+    try method(vm, vm.string_proto, "charCodeAt", strCharCodeAt, hidden);
+    try method(vm, vm.string_proto, "toUpperCase", strToUpper, hidden);
+    try method(vm, vm.string_proto, "toLowerCase", strToLower, hidden);
+    try method(vm, vm.string_proto, "indexOf", strIndexOf, hidden);
+    try method(vm, vm.string_proto, "lastIndexOf", strLastIndexOf, hidden);
+    try method(vm, vm.string_proto, "substring", strSubstring, hidden);
+    try method(vm, vm.string_proto, "substr", strSubstr, hidden);
+    try method(vm, vm.string_proto, "slice", strSlice, hidden);
+    try method(vm, vm.string_proto, "split", strSplit, hidden);
 
     // --- Number.prototype -------------------------------------------------
-    try method(vm, vm.number_proto, "toString", numToString);
-    try method(vm, vm.number_proto, "valueOf", numValueOf);
+    try method(vm, vm.number_proto, "toString", numToString, hidden);
+    try method(vm, vm.number_proto, "valueOf", numValueOf, hidden);
 
     // --- Boolean.prototype ------------------------------------------------
-    try method(vm, vm.boolean_proto, "toString", boolToString);
-    try method(vm, vm.boolean_proto, "valueOf", boolValueOf);
+    try method(vm, vm.boolean_proto, "toString", boolToString, hidden);
+    try method(vm, vm.boolean_proto, "valueOf", boolValueOf, hidden);
 
     // --- Constructors -----------------------------------------------------
-    try ctor(vm, "Object", ctorObject, vm.object_proto);
-    try ctor(vm, "Function", ctorFunction, vm.function_proto);
-    try ctor(vm, "Array", ctorArray, vm.array_proto);
-    try ctor(vm, "String", ctorString, vm.string_proto);
-    try ctor(vm, "Number", ctorNumber, vm.number_proto);
-    try ctor(vm, "Boolean", ctorBoolean, vm.boolean_proto);
-    // String.fromCharCode static.
-    if (vm.objects.getOwn(vm.globals, S("String"), cs)) |sv| {
-        try method(vm, sv.object, "fromCharCode", strFromCharCode);
-    }
-    // Number statics.
-    if (vm.objects.getOwn(vm.globals, S("Number"), cs)) |nv| {
-        try constNum(vm, nv.object, "MAX_VALUE", std.math.floatMax(f64));
-        try constNum(vm, nv.object, "MIN_VALUE", 5e-324);
-        try constNum(vm, nv.object, "NaN", std.math.nan(f64));
-        try constNum(vm, nv.object, "POSITIVE_INFINITY", std.math.inf(f64));
-        try constNum(vm, nv.object, "NEGATIVE_INFINITY", -std.math.inf(f64));
-    }
+    _ = try decl.class(vm, "Object", ctorObject, vm.object_proto, attrs);
+    _ = try decl.class(vm, "Function", ctorFunction, vm.function_proto, ver(attrs, decl.V6));
+    _ = try decl.class(vm, "Array", ctorArray, vm.array_proto, attrs);
+    const string_class = try decl.class(vm, "String", ctorString, vm.string_proto, attrs);
+    const number_class = try decl.class(vm, "Number", ctorNumber, vm.number_proto, attrs);
+    _ = try decl.class(vm, "Boolean", ctorBoolean, vm.boolean_proto, attrs);
+    try method(vm, string_class, "fromCharCode", strFromCharCode, hidden);
+    try constNum(vm, number_class, "MAX_VALUE", std.math.floatMax(f64));
+    try constNum(vm, number_class, "MIN_VALUE", 5e-324);
+    try constNum(vm, number_class, "NaN", std.math.nan(f64));
+    try constNum(vm, number_class, "POSITIVE_INFINITY", std.math.inf(f64));
+    try constNum(vm, number_class, "NEGATIVE_INFINITY", -std.math.inf(f64));
 
     // --- Math -------------------------------------------------------------
-    const math = try vm.objects.create();
-    vm.objects.get(math).proto = .{ .object = vm.object_proto };
-    try vm.objects.putWithAttrs(vm.globals, S("Math"), .{ .object = math }, attrs, cs);
+    const math = try decl.namespace(vm, "Math", attrs);
     try constNum(vm, math, "PI", std.math.pi);
     try constNum(vm, math, "E", std.math.e);
     try constNum(vm, math, "LN10", @log(10.0));
@@ -122,46 +121,48 @@ pub fn install(vm: *Vm) !void {
     try constNum(vm, math, "LOG2E", 1.0 / @log(2.0));
     try constNum(vm, math, "SQRT1_2", @sqrt(0.5));
     try constNum(vm, math, "SQRT2", @sqrt(2.0));
-    try method(vm, math, "abs", mathAbs);
-    try method(vm, math, "floor", mathFloor);
-    try method(vm, math, "ceil", mathCeil);
-    try method(vm, math, "round", mathRound);
-    try method(vm, math, "sqrt", mathSqrt);
-    try method(vm, math, "pow", mathPow);
-    try method(vm, math, "min", mathMin);
-    try method(vm, math, "max", mathMax);
-    try method(vm, math, "random", mathRandom);
-    try method(vm, math, "sin", mathSin);
-    try method(vm, math, "cos", mathCos);
-    try method(vm, math, "tan", mathTan);
-    try method(vm, math, "atan", mathAtan);
-    try method(vm, math, "atan2", mathAtan2);
-    try method(vm, math, "asin", mathAsin);
-    try method(vm, math, "acos", mathAcos);
-    try method(vm, math, "exp", mathExp);
-    try method(vm, math, "log", mathLog);
+    // Every Math method is READ_ONLY in ruffle math.rs.
+    try method(vm, math, "abs", mathAbs, frozen);
+    try method(vm, math, "floor", mathFloor, frozen);
+    try method(vm, math, "ceil", mathCeil, frozen);
+    try method(vm, math, "round", mathRound, frozen);
+    try method(vm, math, "sqrt", mathSqrt, frozen);
+    try method(vm, math, "pow", mathPow, frozen);
+    try method(vm, math, "min", mathMin, frozen);
+    try method(vm, math, "max", mathMax, frozen);
+    try method(vm, math, "random", mathRandom, frozen);
+    try method(vm, math, "sin", mathSin, frozen);
+    try method(vm, math, "cos", mathCos, frozen);
+    try method(vm, math, "tan", mathTan, frozen);
+    try method(vm, math, "atan", mathAtan, frozen);
+    try method(vm, math, "atan2", mathAtan2, frozen);
+    try method(vm, math, "asin", mathAsin, frozen);
+    try method(vm, math, "acos", mathAcos, frozen);
+    try method(vm, math, "exp", mathExp, frozen);
+    try method(vm, math, "log", mathLog, frozen);
 
     // --- global functions + constants -------------------------------------
-    try method(vm, vm.globals, "isNaN", globalIsNan);
-    try method(vm, vm.globals, "isFinite", globalIsFinite);
-    try method(vm, vm.globals, "parseInt", globalParseInt);
-    try method(vm, vm.globals, "parseFloat", globalParseFloat);
-    try method(vm, vm.globals, "getTimer", globalGetTimer);
-    try method(vm, vm.globals, "ASSetPropFlags", globalAsSetPropFlags);
-    try method(vm, vm.globals, "ASnative", globalAsNative);
-    try method(vm, vm.globals, "escape", globalEscape);
-    try method(vm, vm.globals, "unescape", globalUnescape);
+    try method(vm, vm.globals, "isNaN", globalIsNan, attrs);
+    try method(vm, vm.globals, "isFinite", globalIsFinite, attrs);
+    try method(vm, vm.globals, "parseInt", globalParseInt, attrs);
+    try method(vm, vm.globals, "parseFloat", globalParseFloat, attrs);
+    try method(vm, vm.globals, "getTimer", globalGetTimer, attrs);
+    try method(vm, vm.globals, "ASSetPropFlags", globalAsSetPropFlags, attrs);
+    try method(vm, vm.globals, "ASnative", globalAsNative, attrs);
+    try method(vm, vm.globals, "escape", globalEscape, attrs);
+    try method(vm, vm.globals, "unescape", globalUnescape, attrs);
+    try method(vm, vm.globals, "updateAfterEvent", globalNoop, attrs);
 
     // --- MovieClip ---------------------------------------------------------
-    // No methods yet (workstream B); the prototype has to EXIST regardless,
-    // because clip objects chain to it and content routinely does
+    // The prototype has to exist before anything else touches it: clip
+    // objects chain to it and content routinely does
     // `MovieClip.prototype.foo = function(){}` expecting every clip to
     // inherit it.
     {
         const mc_proto = try vm.objects.create();
         vm.objects.get(mc_proto).proto = .{ .object = vm.object_proto };
         vm.movieclip_proto = mc_proto;
-        try ctor(vm, "MovieClip", ctorMovieClip, mc_proto);
+        _ = try decl.class(vm, "MovieClip", ctorMovieClip, mc_proto, attrs);
         try @import("movie_clip.zig").install(vm);
     }
 
@@ -169,14 +170,20 @@ pub fn install(vm: *Vm) !void {
     {
         const error_proto = try vm.objects.create();
         vm.objects.get(error_proto).proto = .{ .object = vm.object_proto };
-        try method(vm, error_proto, "toString", errorToString);
-        try vm.objects.putWithAttrs(error_proto, S("name"), .{ .string = S("Error") }, .{ .dont_enum = true }, cs);
-        try vm.objects.putWithAttrs(error_proto, S("message"), .{ .string = S("Error") }, .{ .dont_enum = true }, cs);
-        try ctor(vm, "Error", ctorError, error_proto);
+        // ruffle error.rs declares all three with NO flags at all — they
+        // enumerate and delete like ordinary properties.
+        try method(vm, error_proto, "toString", errorToString, .{});
+        try vm.objects.putWithAttrs(error_proto, S("name"), .{ .string = S("Error") }, .{}, cs);
+        try vm.objects.putWithAttrs(error_proto, S("message"), .{ .string = S("Error") }, .{}, cs);
+        _ = try decl.class(vm, "Error", ctorError, error_proto, attrs);
     }
     try vm.objects.putWithAttrs(vm.globals, S("Infinity"), .{ .number = std.math.inf(f64) }, attrs, cs);
     try vm.objects.putWithAttrs(vm.globals, S("NaN"), .{ .number = std.math.nan(f64) }, attrs, cs);
     try vm.objects.putWithAttrs(vm.globals, S("_global"), .{ .object = vm.globals }, attrs, cs);
+    // Flash's own globals.as uses `o` as a scratch alias while building the
+    // table and, at the end, sets it to null instead of deleting it. So in
+    // EVERY movie `o` exists and is null (ruffle globals.rs, corpus `o`).
+    try vm.objects.putWithAttrs(vm.globals, S("o"), .null_value, .{}, cs);
 }
 
 fn ctorMovieClip(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -185,20 +192,16 @@ fn ctorMovieClip(p: *anyopaque, this: Value, args: []const Value) anyerror!Value
     return this;
 }
 
-fn method(vm: *Vm, target: ObjectHandle, comptime name: []const u8, f: object_mod.NativeFn) !void {
-    const h = try vm.newNativeFn(f);
-    try vm.objects.putWithAttrs(target, S(name), .{ .object = h }, .{ .dont_enum = true }, false);
-}
+const method = decl.method;
+const constNum = decl.constNum;
 
-fn ctor(vm: *Vm, comptime name: []const u8, f: object_mod.NativeFn, proto: ObjectHandle) !void {
-    const h = try vm.newNativeFn(f);
-    try vm.objects.putWithAttrs(h, S("prototype"), .{ .object = proto }, .{ .dont_enum = true }, false);
-    try vm.objects.putWithAttrs(proto, S("constructor"), .{ .object = h }, .{ .dont_enum = true }, false);
-    try vm.objects.putWithAttrs(vm.globals, S(name), .{ .object = h }, .{ .dont_enum = true }, false);
-}
-
-fn constNum(vm: *Vm, target: ObjectHandle, comptime name: []const u8, n: f64) !void {
-    try vm.objects.putWithAttrs(target, S(name), .{ .number = n }, .{ .dont_enum = true, .read_only = true, .dont_delete = true }, false);
+/// A built-in that exists so scripts can call it, and does nothing
+/// (`updateAfterEvent` — meaningful only for a real display refresh).
+fn globalNoop(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = p;
+    _ = this;
+    _ = args;
+    return .undefined_value;
 }
 
 // --- Object ------------------------------------------------------------------
@@ -248,6 +251,23 @@ fn objValueOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = p;
     _ = args;
     return this;
+}
+
+/// `a.isPrototypeOf(b)` — is `a` anywhere on `b`'s prototype chain? Uses
+/// `Vm.protoValue` so it obeys the same chain rules as everything else
+/// (a `super` contributes its base proto; a display object ends the chain).
+fn objIsPrototypeOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .{ .boolean = false };
+    const subject = arg(args, 0);
+    if (subject != .object) return .{ .boolean = false };
+    var cur = vm.protoValue(subject.object);
+    var depth: u32 = 0;
+    while (cur == .object and depth < 256) : (depth += 1) {
+        if (cur.object == this.object) return .{ .boolean = true };
+        cur = vm.protoValue(cur.object);
+    }
+    return .{ .boolean = false };
 }
 
 // --- Function ----------------------------------------------------------------
