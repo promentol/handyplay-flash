@@ -872,6 +872,22 @@ pub fn cloneSprite(vm: *Vm, source: Target, name: []const u16, depth: i32) !?*Di
     return createAt(vm, parent, source.obj.character_id, depth, name, source.obj);
 }
 
+/// ruffle `swap_depths` (globals/movie_clip.rs:1343-1394). The one way a
+/// script moves a timeline-placed object into the AS depth range, which is
+/// how content makes such an object removable at all. `depth` is the FINAL
+/// display-list depth; the caller applies the bias only for the numeric
+/// form, since the object form takes the target's depth verbatim.
+pub fn swapDepths(vm: *Vm, t: Target, depth: i32) bool {
+    _ = displayCtx(vm) orelse return false;
+    if (t.obj.removed) return false;
+    if (depth < 0 or depth > AVM_MAX_DEPTH) return false;
+    const parent = t.parent() orelse return false;
+    if (depth == t.obj.depth) return false;
+    parent.swapAtDepth(t.obj, depth);
+    t.obj.transformed_by_script = true;
+    return true;
+}
+
 /// ruffle `remove_display_object` (globals.rs:886-897). Only depths in the
 /// script range can be removed, which is what stops a script deleting a
 /// clip the timeline placed.

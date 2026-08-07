@@ -277,6 +277,29 @@ pub const MovieClip = struct {
         return null;
     }
 
+    /// Move `child` to `depth`, exchanging with whoever already sits there.
+    /// Both halves of the exchange lose their clip depth and count as
+    /// script-transformed, so the timeline stops re-placing them
+    /// (ruffle container.rs:1023-1075). Our child list IS the render list,
+    /// kept depth-ordered, so re-sorting reproduces both of ruffle's
+    /// branches: a swap when the slot was taken, a slide when it was free.
+    pub fn swapAtDepth(self: *MovieClip, child: *DisplayObject, depth: i32) void {
+        const prev_depth = child.depth;
+        if (self.childAtDepth(depth)) |prev| {
+            if (prev == child) return;
+            prev.depth = prev_depth;
+            prev.clip_depth = 0;
+            prev.transformed_by_script = true;
+        }
+        child.depth = depth;
+        child.clip_depth = 0;
+        std.sort.insertion(*DisplayObject, self.children.items, {}, byDepth);
+    }
+
+    fn byDepth(_: void, a: *DisplayObject, b: *DisplayObject) bool {
+        return a.depth < b.depth;
+    }
+
     pub fn removeAtDepth(self: *MovieClip, ctx: *Context, depth: i32) Error!void {
         for (self.children.items, 0..) |child, i| {
             if (child.depth == depth) {

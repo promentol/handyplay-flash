@@ -32,6 +32,7 @@ pub fn install(vm: *Vm) !void {
     try method(vm, proto, "attachMovie", attachMovie);
     try method(vm, proto, "createEmptyMovieClip", createEmptyMovieClip);
     try method(vm, proto, "removeMovieClip", removeMovieClip);
+    try method(vm, proto, "swapDepths", swapDepths);
     try method(vm, proto, "getDepth", getDepth);
     try method(vm, proto, "getNextHighestDepth", getNextHighestDepth);
 }
@@ -108,6 +109,32 @@ fn removeMovieClip(p: *anyopaque, this: Value, args: []const Value) anyerror!Val
     const vm = vmOf(p);
     const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
     _ = try stage.removeDisplayObject(vm, t);
+    return .undefined_value;
+}
+
+/// `swapDepths(n)` takes an AS depth; `swapDepths(clip)` takes that clip's
+/// depth verbatim — and only when it shares our parent and is still alive
+/// (ruffle globals/movie_clip.rs:1343-1394). Content uses the object form
+/// to hoist a timeline-placed object into the script depth range, which is
+/// the only way `removeMovieClip` will ever touch it.
+///
+/// A string argument would resolve as a target path rooted at THIS clip,
+/// which a native fn has no activation to do; since such a path can only
+/// name a descendant, it fails ruffle's same-parent test anyway.
+fn swapDepths(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    const a = arg(args, 0);
+    const depth: i32 = switch (a) {
+        .number => |n| stage.biasDepth(value_mod.toInt32(n)),
+        else => blk: {
+            const other = stage.targetOfValue(vm, a) orelse return .undefined_value;
+            if (other.obj.removed) return .undefined_value;
+            if (other.parent() != t.parent()) return .undefined_value;
+            break :blk other.obj.depth;
+        },
+    };
+    _ = stage.swapDepths(vm, t, depth);
     return .undefined_value;
 }
 

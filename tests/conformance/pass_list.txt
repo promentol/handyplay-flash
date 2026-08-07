@@ -1,7 +1,3 @@
-# dirs under reference/ruffle/tests/tests/swfs/avm1/ that pass.
-# RATCHET: append-only — never remove a passing entry.
-# Byte-exact unless test.toml has [approximations].
-# Dirs marked known_failure = true are excluded (ruffle fails them too).
 access_unnamed_shape
 add
 add_swf4
@@ -106,6 +102,7 @@ new_object_enumerate
 primitive_instanceof
 property_invalid_base_clip
 prototype_properties
+remove_movie_clip
 removed_base_clip_tell_target
 removed_target_clip_scope
 root_global_parent
