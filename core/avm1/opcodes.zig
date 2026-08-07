@@ -324,6 +324,11 @@ pub fn readAction(r: *rdr.Reader) Error!?Action {
                 .scene_offset = if (has_bias) try br.readU16() else 0,
             } };
         },
+        // Call (0x9E) carries a length field like every other >= 0x80
+        // opcode, but its body is EMPTY — the frame reference comes off
+        // the stack. Without this it fell through to `.unknown` and its
+        // dispatch arm was unreachable.
+        .call => .{ .simple = .call },
         else => .{ .unknown = .{ .opcode = raw_op, .payload = body } },
     };
 }

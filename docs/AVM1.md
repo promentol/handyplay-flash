@@ -13,7 +13,7 @@ Status: `todo` → `decode` (opcodes.zig) → `exec` (interpreter) → `done`
 **M3 CLOSED**: every opcode 0x00–0x9F decodes and executes. All ops are
 `exec` except the stubs listed below (they pop their operands correctly
 but have no effect yet) — promotion is workstream A of docs/M4-SPEC.md.
-Corpus: 136/680 (tests/conformance/pass_list.txt).
+Corpus: 137/680 (tests/conformance/pass_list.txt).
 
 **M4-A1 landed**: GetProperty/SetProperty (0x22/23) are real, sharing one
 22-entry table in `core/avm1/stage_object.zig` with the named form

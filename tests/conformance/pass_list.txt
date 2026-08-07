@@ -32,6 +32,7 @@ bitmapdata_applyfilter_colormatrix
 bitor
 biturshift
 bitxor
+call
 call_method_empty_name
 catch_references_registers
 closure_scope

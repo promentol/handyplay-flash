@@ -16,6 +16,7 @@ const object_mod = @import("object.zig");
 const opcodes = @import("opcodes.zig");
 const runtime = @import("runtime.zig");
 const stage = @import("stage_object.zig");
+const movie_clip_mod = @import("../display/movie_clip.zig");
 
 const Value = runtime.Value;
 const Vm = runtime.Vm;
@@ -1152,7 +1153,36 @@ pub const Activation = struct {
             .next_frame => self.hostNextPrev(1),
             .previous_frame => self.hostNextPrev(-1),
             .toggle_quality, .stop_sounds => {},
-            .call => _ = self.pop(), // frame call: M4
+            .call => {
+                // Runs a frame's DoActions INLINE, without moving the
+                // playhead (ruffle action_call:755-794). A Number is a
+                // frame on the current target; anything else is coerced to
+                // a string and resolved as a variable path, whose tail is
+                // tried as a frame NUMBER before falling back to a label.
+                const v = self.pop();
+                var target: ?stage.Target = null;
+                var frame: ?u16 = null;
+                if (v == .number) {
+                    target = stage.targetOf(self.vm, self.targetClipOrRoot());
+                    const n = value_mod.toUint32(v.number);
+                    frame = if (n <= 65535) @intCast(n) else null;
+                } else {
+                    const path = try self.vm.toStringValue(v);
+                    if (try self.resolveFramePath(path)) |hit| {
+                        target = hit.target;
+                        frame = hit.frame;
+                    }
+                }
+                if (target) |t| {
+                    if (t.clip) |clip| {
+                        if (frame) |f| try self.runFrameActions(clip, f);
+                    }
+                }
+                // The called frame may have removed us.
+                if (self.base_clip != 0 and stage.targetOf(self.vm, self.base_clip) == null) {
+                    return .{ .return_value = .undefined_value };
+                }
+            },
             .fs_command2 => {
                 const n = try self.popNumber();
                 const count: usize = if (std.math.isNan(n) or n < 0) 0 else @intFromFloat(n);
@@ -1377,6 +1407,49 @@ pub const Activation = struct {
         if (node != self.timeline_scope or self.timeline_scope == 0) return node;
         const t = self.targetClipOrRoot();
         return if (t != 0) t else node;
+    }
+
+    const FrameHit = struct { target: stage.Target, frame: ?u16 };
+
+    /// `"/clip:label"` — split at the rightmost separator exactly as
+    /// getVariable does, resolve the head as a target path, then read the
+    /// tail as a frame number first and a label second.
+    fn resolveFramePath(self: *Activation, path: strings.AvmString) !?FrameHit {
+        const root = self.rootHandle();
+        const start = self.targetClipOrRoot();
+        var head: strings.AvmString = path;
+        var tail: strings.AvmString = path;
+        if (self.variableSeparator(path)) |sep| {
+            head = path[0..sep];
+            tail = path[sep + 1 ..];
+        } else {
+            head = path[0..0];
+        }
+        const h = try self.resolveTargetPath(root, start, head, true, true) orelse return null;
+        const t = stage.targetOf(self.vm, h) orelse return null;
+        const clip = t.clip orelse return null;
+        if (strictFrameNumber(tail)) |n| {
+            const u = value_mod.toUint32(@floatFromInt(n));
+            return .{ .target = t, .frame = if (u <= 65535) @intCast(u) else null };
+        }
+        return .{ .target = t, .frame = stage.frameLabel(self.vm, clip, tail) };
+    }
+
+    /// Execute every DoAction on `frame` right now, with `clip` as the
+    /// base clip — the same activation shape Player.runOneFrame builds.
+    fn runFrameActions(self: *Activation, clip: *movie_clip_mod.MovieClip, frame: u16) !void {
+        if (self.vm.call_depth >= self.vm.max_call_depth) return;
+        var codes: std.ArrayList([]const u8) = .empty;
+        defer codes.deinit(self.vm.arena());
+        try stage.frameActions(clip, frame, &codes, self.vm.arena());
+        if (codes.items.len == 0) return;
+        const clip_obj = try stage.clipObject(self.vm, clip);
+        self.vm.call_depth += 1;
+        defer self.vm.call_depth -= 1;
+        for (codes.items) |code| {
+            var act = Activation.init(self.vm, code, .{ .object = clip_obj }, clip_obj, self.constant_pool);
+            _ = try act.run();
+        }
     }
 
     /// GetProperty/SetProperty's target operand. An empty path means "the

@@ -883,3 +883,26 @@ pub fn exportedCharacter(vm: *Vm, name: []const u16) !?u16 {
     const utf8 = strings.toUtf8(vm.arena(), name) catch return null;
     return ctx.movie.lib.exports.get(utf8);
 }
+
+/// The DoAction bytecodes on a clip's 1-based frame. `Call` runs these
+/// INLINE, where the timeline queues them (movie_clip.zig executeFrame).
+pub fn frameActions(clip: *MovieClip, frame: u16, out: *std.ArrayList([]const u8), a: std.mem.Allocator) !void {
+    if (frame == 0 or frame > clip.frames.len) return;
+    for (clip.frames[frame - 1].controls) |control| {
+        if (control == .do_action) try out.append(a, control.do_action);
+    }
+}
+
+/// A frame LABEL on a clip, case-insensitively (labels are ASCII in
+/// practice; `labelToNumber` already folds case).
+pub fn frameLabel(vm: *Vm, clip: *MovieClip, label: []const u16) ?u16 {
+    var buf: [128]u8 = undefined;
+    var n: usize = 0;
+    for (label) |c| {
+        if (n >= buf.len or c > 0x7F) return null;
+        buf[n] = @intCast(c);
+        n += 1;
+    }
+    _ = vm;
+    return clip.labelToNumber(buf[0..n]);
+}
