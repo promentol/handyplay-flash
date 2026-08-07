@@ -30,23 +30,73 @@ const S = strings.ascii;
 const twipsFromPixels = display_object.twipsFromPixels;
 const pixelsFromTwips = display_object.pixelsFromTwips;
 
-/// A clip plus the placement that carries its transform. The root's
-/// placement is owned by the Player; every other clip's by its parent.
+/// A scriptable display object: always its placement, plus the timeline
+/// when it happens to be a clip. Buttons and text fields are scriptable
+/// too (ruffle gives object1 to MovieClip, Avm1Button and EditText) but
+/// have no timeline, so `clip` is null and the frame properties read
+/// undefined.
 pub const Target = struct {
-    clip: *MovieClip,
     obj: *DisplayObject,
+    clip: ?*MovieClip,
+
+    /// The timeline this object sits in — its `_parent`.
+    pub fn parent(self: Target) ?*MovieClip {
+        if (self.clip) |c| return c.parent;
+        return self.obj.parent;
+    }
 };
 
 /// Unwrap an AVM1 object handle to a display target. Null when the handle
-/// is not a clip, or when the clip has been removed from the display list
-/// (ruffle avm1_removed — a retained reference reads as undefined).
+/// is not a display object, or when it has been removed from the display
+/// list (ruffle avm1_removed — a retained reference reads as undefined).
 pub fn targetOf(vm: *Vm, handle: ObjectHandle) ?Target {
     if (handle == 0) return null;
-    const native = vm.objects.get(handle).native;
-    if (native != .clip) return null;
-    const mc: *MovieClip = @ptrCast(@alignCast(native.clip));
-    if (mc.removed) return null;
-    return .{ .clip = mc, .obj = mc.placement orelse return null };
+    switch (vm.objects.get(handle).native) {
+        .clip => |ptr| {
+            const mc: *MovieClip = @ptrCast(@alignCast(ptr));
+            if (mc.removed) return null;
+            return .{ .clip = mc, .obj = mc.placement orelse return null };
+        },
+        .display => |ptr| {
+            const obj: *DisplayObject = @ptrCast(@alignCast(ptr));
+            return .{ .clip = null, .obj = obj };
+        },
+        else => return null,
+    }
+}
+
+/// Buttons and text fields are scriptable; graphics, static text, morph
+/// shapes and bitmaps are not (ruffle: object1 returns None for those).
+pub fn isScriptable(kind: DisplayObject.Kind) bool {
+    return switch (kind) {
+        .clip, .button, .edit_text => true,
+        .shape, .morph_shape, .text, .bitmap => false,
+    };
+}
+
+/// Lazily create the AVM1 object for a NON-clip display object.
+pub fn displayObject(vm: *Vm, obj: *DisplayObject) !ObjectHandle {
+    if (obj.avm_object != 0) return obj.avm_object;
+    const h = try vm.objects.create();
+    vm.objects.get(h).proto = .{ .object = vm.object_proto };
+    vm.objects.get(h).native = .{ .display = @ptrCast(obj) };
+    obj.avm_object = h;
+    return h;
+}
+
+/// The AVM1 object for any scriptable display object, ignoring the SWF4
+/// value gate — for INTERNAL resolution (target paths), which works at
+/// every version even though the result is not a usable script value.
+pub fn handleOf(vm: *Vm, obj: *DisplayObject) !ObjectHandle {
+    if (obj.kind == .clip) return clipObject(vm, obj.kind.clip);
+    return displayObject(vm, obj);
+}
+
+/// A display object AS A SCRIPT VALUE (SWF4 has no object model).
+pub fn displayValue(vm: *Vm, obj: *DisplayObject) !Value {
+    if (vm.swf_version < 5) return .undefined_value;
+    if (obj.kind == .clip) return .{ .object = try clipObject(vm, obj.kind.clip) };
+    return .{ .object = try displayObject(vm, obj) };
 }
 
 pub fn targetOfValue(vm: *Vm, v: Value) ?Target {
@@ -294,12 +344,14 @@ fn setVisible(vm: *Vm, t: Target, v: Value) !void {
 
 fn getCurrentFrame(vm: *Vm, t: Target) !Value {
     _ = vm;
-    return .{ .number = @floatFromInt(t.clip.current_frame) };
+    const c = t.clip orelse return .undefined_value;
+    return .{ .number = @floatFromInt(c.current_frame) };
 }
 
 fn getTotalFrames(vm: *Vm, t: Target) !Value {
     _ = vm;
-    return .{ .number = @floatFromInt(t.clip.totalFrames()) };
+    const c = t.clip orelse return .undefined_value;
+    return .{ .number = @floatFromInt(c.totalFrames()) };
 }
 
 fn getFramesLoaded(vm: *Vm, t: Target) !Value {
@@ -337,11 +389,19 @@ fn clipName(clip: *MovieClip) []const u16 {
     return placement.name orelse S("");
 }
 
+/// Path segment + parent for ANY display object, clip or not.
+fn pathPartsOf(t: Target) struct { name: []const u16, parent: ?*MovieClip } {
+    return .{ .name = t.obj.name orelse S(""), .parent = t.parent() };
+}
+
 /// Flash 4 slash syntax: `""` for _level0, `/mc/child` below it. This is
 /// the `_target` property. ruffle display_object.rs:1840-1867.
-pub fn slashPath(vm: *Vm, clip: *MovieClip) ![]const u16 {
-    if (clip.parent == null) return S("/"); // _target of _level0 is just "/"
-    return buildSlashPath(vm, clip);
+pub fn slashPath(vm: *Vm, t: Target) ![]const u16 {
+    const parts = pathPartsOf(t);
+    const parent = parts.parent orelse return S("/"); // _level0 is just "/"
+    const head = try buildSlashPath(vm, parent);
+    const with_slash = try strings.concat(vm.arena(), head, S("/"));
+    return strings.concat(vm.arena(), with_slash, parts.name);
 }
 
 fn buildSlashPath(vm: *Vm, clip: *MovieClip) anyerror![]const u16 {
@@ -358,12 +418,20 @@ fn buildSlashPath(vm: *Vm, clip: *MovieClip) anyerror![]const u16 {
 /// `slashPath` — this is what `targetPath()` returns, what a MovieClip
 /// coerces to as a string, and what clip equality compares.
 /// ruffle display_object.rs:1824-1835.
-pub fn dotPath(vm: *Vm, clip: *MovieClip) std.mem.Allocator.Error![]const u16 {
-    const parent = clip.parent orelse {
+pub fn dotPath(vm: *Vm, t: Target) std.mem.Allocator.Error![]const u16 {
+    const parts = pathPartsOf(t);
+    const parent = parts.parent orelse {
         // Only level 0 exists; the depth would select the level otherwise.
         return S("_level0");
     };
-    const head = try dotPath(vm, parent);
+    const head = try dotPathOfClip(vm, parent);
+    const with_dot = try strings.concat(vm.arena(), head, S("."));
+    return strings.concat(vm.arena(), with_dot, parts.name);
+}
+
+fn dotPathOfClip(vm: *Vm, clip: *MovieClip) std.mem.Allocator.Error![]const u16 {
+    const parent = clip.parent orelse return S("_level0");
+    const head = try dotPathOfClip(vm, parent);
     const with_dot = try strings.concat(vm.arena(), head, S("."));
     return strings.concat(vm.arena(), with_dot, clipName(clip));
 }
@@ -371,14 +439,14 @@ pub fn dotPath(vm: *Vm, clip: *MovieClip) std.mem.Allocator.Error![]const u16 {
 /// `dotPath` for callers that only hold the opaque `NativeInfo.clip`
 /// pointer — runtime.zig must not name display types.
 pub fn dotPathOf(vm: *Vm, clip: *anyopaque) std.mem.Allocator.Error![]const u16 {
-    return dotPath(vm, @ptrCast(@alignCast(clip)));
+    return dotPathOfClip(vm, @ptrCast(@alignCast(clip)));
 }
 
 /// The `_parent` of an object handle, or undefined. Used by the
 /// DefineFunction2 register preload.
 pub fn parentOf(vm: *Vm, handle: ObjectHandle) !Value {
     const t = targetOf(vm, handle) orelse return .undefined_value;
-    const parent = t.clip.parent orelse return .undefined_value;
+    const parent = t.parent() orelse return .undefined_value;
     return .{ .object = try clipObject(vm, parent) };
 }
 
@@ -410,7 +478,7 @@ fn parseLevelId(digits: []const u16) i32 {
 }
 
 fn getTarget(vm: *Vm, t: Target) !Value {
-    return .{ .string = try slashPath(vm, t.clip) };
+    return .{ .string = try slashPath(vm, t) };
 }
 
 fn getDropTarget(vm: *Vm, t: Target) !Value {
@@ -488,7 +556,7 @@ fn setSoundBufTime(vm: *Vm, t: Target, v: Value) !void {
 /// `_focusrect` on a top-level clip is the STAGE's flag; on a nested clip
 /// it is the clip's own override, which defaults to null (inherit).
 fn refersToStageFocusRect(vm: *Vm, t: Target) bool {
-    return vm.swf_version <= 5 or t.clip.parent == null;
+    return vm.swf_version <= 5 or t.parent() == null;
 }
 
 fn getFocusRect(vm: *Vm, t: Target) !Value {
@@ -525,7 +593,7 @@ fn getYMouse(vm: *Vm, t: Target) !Value {
 /// never-moved pointer would give.
 fn localMouse(vm: *Vm, t: Target) [2]f64 {
     var m = t.obj.matrix;
-    var clip = t.clip;
+    var clip = t.clip orelse return .{ 0, 0 };
     while (clip.parent) |parent| {
         const placement = parent.placement orelse break;
         m = placement.matrix.mul(m);
@@ -567,7 +635,8 @@ pub fn clipValue(vm: *Vm, mc: *MovieClip) !Value {
 /// name still enumerates.
 pub fn enumerateKeys(vm: *Vm, handle: ObjectHandle, out: *std.ArrayList([]const u16)) !void {
     const t = targetOf(vm, handle) orelse return;
-    const kids = t.clip.children.items;
+    const c = t.clip orelse return;
+    const kids = c.children.items;
     var i = kids.len;
     while (i > 0) { // children are depth-ascending, so walk back to front
         i -= 1;
@@ -604,11 +673,13 @@ pub fn resolveMember(vm: *Vm, handle: ObjectHandle, name: []const u16) !?Value {
         if (try resolvePathProperty(vm, t, name)) |v| return v;
     }
 
-    if (childByName(t.clip, name, vm.case_sensitive)) |child| {
-        // Non-scriptable children (shapes, text) resolve to their PARENT
-        // rather than to nothing — ruffle stage_object.rs:32-43.
-        if (child.kind == .clip) return try clipValue(vm, child.kind.clip);
-        return try clipValue(vm, t.clip);
+    const container = t.clip orelse return null;
+    if (childByName(container, name, vm.case_sensitive)) |child| {
+        // A child with no script object of its own (graphic, static text)
+        // resolves to its PARENT rather than to nothing — ruffle
+        // stage_object.rs:32-43.
+        if (!isScriptable(child.kind)) return try clipValue(vm, container);
+        return try displayValue(vm, child);
     }
 
     if (magic) {
@@ -624,7 +695,7 @@ pub fn resolvePathProperty(vm: *Vm, t: Target, name: []const u16) !?Value {
     if (vm.swf_version < 5) return null;
     if (nameEql(vm, name, S("_root"))) return vm.root_object;
     if (nameEql(vm, name, S("_parent"))) {
-        const parent = t.clip.parent orelse return .undefined_value;
+        const parent = t.parent() orelse return .undefined_value;
         return .{ .object = try clipObject(vm, parent) };
     }
     if (vm.swf_version >= 6 and nameEql(vm, name, S("_global"))) {

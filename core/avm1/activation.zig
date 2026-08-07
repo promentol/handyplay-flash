@@ -204,7 +204,7 @@ pub const Activation = struct {
                 if (path.len > 2 and path[2] == '/') is_slash_path = true;
                 path = if (path.len > 3) path[3..] else path[path.len..];
                 const t = stage.targetOf(self.vm, object) orelse return null;
-                const parent = t.clip.parent orelse return null; // parent of root
+                const parent = t.parent() orelse return null; // parent of root
                 val = .{ .object = try stage.clipObject(self.vm, parent) };
             } else {
                 // Step to the next delimiter. `:` and `.` are SWF5+, and
@@ -234,11 +234,15 @@ pub const Activation = struct {
                     // object resolves to its parent instead of nothing.
                     val = blk: {
                         if (stage.targetOf(self.vm, object)) |t| {
-                            if (stage.childByName(t.clip, name, self.vm.case_sensitive)) |child| {
-                                if (child.kind == .clip) {
-                                    break :blk .{ .object = try stage.clipObject(self.vm, child.kind.clip) };
+                            if (t.clip) |container| {
+                                if (stage.childByName(container, name, self.vm.case_sensitive)) |child| {
+                                    // RAW handles here, not `displayValue`:
+                                    // path resolution is internal and must
+                                    // work at SWF4, where a display object
+                                    // has no value representation.
+                                    if (!stage.isScriptable(child.kind)) break :blk .{ .object = object };
+                                    break :blk .{ .object = try stage.handleOf(self.vm, child) };
                                 }
-                                break :blk .{ .object = object };
                             }
                         }
                         break :blk try self.memberGet(.{ .object = object }, name);
@@ -1048,7 +1052,7 @@ pub const Activation = struct {
                 // string path included, gives undefined.
                 const v = self.pop();
                 if (stage.targetOfValue(self.vm, v)) |t| {
-                    try self.push(.{ .string = try stage.dotPath(self.vm, t.clip) });
+                    try self.push(.{ .string = try stage.dotPath(self.vm, t) });
                 } else {
                     try self.push(.undefined_value);
                 }

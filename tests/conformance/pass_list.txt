@@ -109,6 +109,7 @@ swf4_bool
 swf5_encoding
 swf6_string_as_bool
 swf7_case_sensitive
+target_path
 target_paths/swf4
 tell_target
 tell_target_invalid
@@ -117,6 +118,7 @@ this_swf7
 timeline_function_def
 timeout
 try_finally_simple
+typeof
 typeof_globals
 undefined_to_string_swf6
 variable_args

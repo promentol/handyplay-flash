@@ -181,6 +181,10 @@ pub const Player = struct {
     }
 
     fn severClipObjects(self: *Player, obj: *display.display_object.DisplayObject) void {
+        // Buttons and text fields carry their handle on the DisplayObject
+        // itself; clips carry theirs on the MovieClip. Both must be cut
+        // loose or a retained script reference outlives the memory.
+        if (obj.avm_object != 0) self.vm.objects.get(obj.avm_object).native = .none;
         if (obj.kind != .clip) return;
         const mc = obj.kind.clip;
         if (mc.avm_object != 0) self.vm.objects.get(mc.avm_object).native = .none;

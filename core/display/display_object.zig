@@ -43,6 +43,12 @@ pub const DisplayObject = struct {
     /// `kind` was heap-allocated by us and must be freed. False for the
     /// synthetic root placement, whose clip the Player owns.
     owns_kind: bool = true,
+    /// The timeline this instance sits in. Set for EVERY kind, unlike
+    /// `MovieClip.parent`, so a button or text field can build its path.
+    parent: ?*movie_clip.MovieClip = null,
+    /// Lazily-created AVM1 object (0 = none). Clips keep theirs on the
+    /// MovieClip; buttons and text fields keep theirs here.
+    avm_object: u32 = 0,
 
     // Decomposed transform cache — valid only while `sr_cached`.
     // Scales are PERCENT (100 = 1.0), stored exactly as ActionScript set

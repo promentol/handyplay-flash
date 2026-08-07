@@ -91,6 +91,10 @@ pub const NativeInfo = union(enum) {
     boxed_string: strings.AvmString,
     /// Display glue: an on-stage MovieClip (pointer into the display tree).
     clip: *anyopaque,
+    /// A non-clip display object that is still scriptable — buttons and
+    /// text fields. Ruffle gives object1 to those two and to MovieClip,
+    /// but NOT to graphics or static text.
+    display: *anyopaque,
 };
 
 pub const ScriptObject = struct {

@@ -289,6 +289,7 @@ pub const MovieClip = struct {
             .place_frame = frame_num,
             .kind = kind,
         };
+        obj.parent = self;
         if (kind == .clip) {
             kind.clip.placement = obj;
             kind.clip.parent = self;
