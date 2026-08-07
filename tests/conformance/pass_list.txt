@@ -3,6 +3,9 @@
 # Byte-exact unless test.toml has [approximations].
 # Dirs marked known_failure = true are excluded (ruffle fails them too).
 access_unnamed_shape
+add
+add_swf4
+add_swf5
 array_call_method
 array_concat
 array_enumerate
@@ -68,6 +71,9 @@ issue_3169
 issue_3446
 issue_4377
 issue_768
+lessthan
+lessthan_swf4_alt
+lessthan_swf5
 looping
 looping_real_1_declared_1
 looping_real_1_declared_2

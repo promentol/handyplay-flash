@@ -647,9 +647,16 @@ pub const Activation = struct {
     fn execSimple(self: *Activation, op: opcodes.OpCode) anyerror!Flow {
         switch (op) {
             // --- SWF4 arithmetic (numeric semantics) -----------------------
+            // Add/Multiply/Less pop BOTH operands and only then coerce,
+            // LEFT first — whereas Subtract/Divide/Equals coerce as they
+            // pop, i.e. right first. Ruffle mirrors that inconsistency
+            // faithfully (action_add:619 vs action_subtract:2128) and it
+            // is observable through valueOf side effects.
             .add => {
-                const b = try self.popNumber();
-                const a = try self.popNumber();
+                const rhs = self.pop();
+                const lhs = self.pop();
+                const a = try self.vm.toNumber(lhs);
+                const b = try self.vm.toNumber(rhs);
                 try self.push(.{ .number = a + b });
             },
             .subtract => {
@@ -658,8 +665,10 @@ pub const Activation = struct {
                 try self.push(.{ .number = a - b });
             },
             .multiply => {
-                const b = try self.popNumber();
-                const a = try self.popNumber();
+                const rhs = self.pop();
+                const lhs = self.pop();
+                const a = try self.vm.toNumber(lhs);
+                const b = try self.vm.toNumber(rhs);
                 try self.push(.{ .number = a * b });
             },
             .divide => {
@@ -682,8 +691,10 @@ pub const Activation = struct {
                 try self.push(self.boolResult(a == b));
             },
             .less => {
-                const b = try self.popNumber();
-                const a = try self.popNumber();
+                const rhs = self.pop();
+                const lhs = self.pop();
+                const a = try self.vm.toNumber(lhs);
+                const b = try self.vm.toNumber(rhs);
                 try self.push(self.boolResult(a < b));
             },
             .and_op => {
