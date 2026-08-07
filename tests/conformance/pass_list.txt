@@ -11,6 +11,7 @@ array_slice
 array_trivial
 as1_constructor_v7
 as2_oop
+as2_super_via_manual_prototype
 as_broadcaster_initialize
 as_set_prop_flags_version_swf5
 as_set_prop_flags_version_swf6

@@ -421,11 +421,23 @@ pub const Activation = struct {
     fn memberGet(self: *Activation, target: Value, name: strings.AvmString) !Value {
         switch (target) {
             .object => |h| {
+                // `super` owns nothing. Every read starts at the object
+                // ruffle's chain walk starts at — `SuperObject::proto()`,
+                // one layer ABOVE where super's methods live — with the
+                // original `this` (script_object.rs:724-730). That is why
+                // `super.__proto__` lands two layers up: `__proto__` is a
+                // stored property found on that start object, not on super.
+                if (self.vm.objects.get(h).native == .super_obj) {
+                    const start = self.vm.superProto(h);
+                    if (start != .object) return .undefined_value;
+                    if (strings.eqlIgnoreCase(name, S("__proto__"))) {
+                        return self.vm.objects.get(start.object).proto;
+                    }
+                    const this: Value = .{ .object = self.vm.objects.get(h).native.super_obj.this };
+                    return self.vm.getProperty(start.object, name, this);
+                }
                 // `__proto__` is a live accessor, not a stored property.
                 if (strings.eqlIgnoreCase(name, S("__proto__"))) {
-                    if (self.vm.objects.get(h).native == .super_obj) {
-                        return self.vm.superProto(h);
-                    }
                     return self.vm.objects.get(h).proto;
                 }
                 // OWN properties win, then the display fallback, then the
@@ -1070,9 +1082,14 @@ pub const Activation = struct {
                 else blk: {
                     const m = try self.memberGet(target, name);
                     // The callee's `super` starts at the prototype level
-                    // that actually owns this method.
+                    // that actually owns this method — but never at the
+                    // object itself: a method stored directly on `this`
+                    // still gets a `super` one layer up, or `super` would
+                    // find that same method and recurse (ruffle
+                    // object.rs:299 `depth.max(1)`).
                     if (target == .object) {
-                        self.vm.super_depth = self.vm.objects.protoDepth(target.object, name, self.vm.case_sensitive) orelse 0;
+                        const d = self.vm.objects.protoDepth(target.object, name, self.vm.case_sensitive) orelse 0;
+                        self.vm.super_depth = @max(d, 1);
                     }
                     break :blk try self.vm.callFunction(m, target, args);
                 };
