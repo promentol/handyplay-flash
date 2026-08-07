@@ -58,6 +58,7 @@ is_finite
 issue_1086
 issue_1671
 issue_2166
+issue_3169
 issue_3446
 issue_4377
 issue_768
@@ -76,15 +77,18 @@ netstream_play_flv_screen
 new_object_enumerate
 primitive_instanceof
 prototype_properties
+root_global_parent
 set_target_2_swf5
 shared_object_serialize_typed_objects
 single_frame
 slash_syntax
 sound_start_load
+stage_object_enumerate
 stage_object_properties
 stage_object_properties_get_var
 stage_object_properties_swf6
 stage_property_representation
+strictequals_swf6
 strictly_equals
 string_paths_hidden
 string_paths_keyevents
@@ -97,6 +101,7 @@ target_paths/swf4
 tell_target
 tell_target_invalid
 tell_target_invalid_swf6
+this_swf7
 timeline_function_def
 timeout
 try_finally_simple

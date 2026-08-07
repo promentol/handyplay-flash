@@ -358,6 +358,23 @@ pub const Activation = struct {
     /// code says bare `_x` and bare `myClip`, not `this._x`.
     fn scopeLookup(self: *Activation, name: strings.AvmString) !?Value {
         const cs = self.vm.case_sensitive;
+        // `this` is resolved BEFORE the scope chain from SWF5 on
+        // (ruffle Activation::resolve:2925-2936). Timeline code has no
+        // `this` binding to find otherwise — only function locals do —
+        // so `this._name` reads undefined without this.
+        if (self.swf_version >= 5) {
+            // Below SWF6 the match is case-sensitive only inside a
+            // function's local scope; timeline code is insensitive.
+            const this_cs = if (self.swf_version <= 5)
+                self.scope != self.timeline_scope
+            else
+                cs;
+            const hit = if (this_cs)
+                strings.eql(name, S("this"))
+            else
+                strings.eqlIgnoreCase(name, S("this"));
+            if (hit) return self.this;
+        }
         var cur = self.scope;
         while (cur != 0) {
             const node = self.scopeObject(cur);
@@ -1152,6 +1169,20 @@ pub const Activation = struct {
     fn pushEnumKeys(self: *Activation, h: ObjectHandle) !void {
         var seen: std.ArrayList(strings.AvmString) = .empty;
         defer seen.deinit(self.vm.arena());
+
+        // Display children come LAST in the enumeration, so they are pushed
+        // FIRST — the SWF pops these, making trace order the reverse of push
+        // order. `enumerateKeys` already yields highest-depth-first, and
+        // pushing in that order pops them back the same way.
+        var kids: std.ArrayList([]const u16) = .empty;
+        defer kids.deinit(self.vm.arena());
+        try stage.enumerateKeys(self.vm, h, &kids);
+        var ki = kids.items.len;
+        while (ki > 0) {
+            ki -= 1;
+            try self.push(.{ .string = kids.items[ki] });
+        }
+
         var current: Value = .{ .object = h };
         var depth: u32 = 0;
         while (current == .object and depth < 64) : (depth += 1) {

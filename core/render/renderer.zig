@@ -337,7 +337,8 @@ test "render a placed square shape through the full pipeline" {
     var movie = try swf.movie.load(gpa, file.items);
     defer movie.deinit();
 
-    var ctx_: movie_clip.Context = .{ .gpa = gpa, .movie = &movie };
+    var counter: u32 = 0;
+    var ctx_: movie_clip.Context = .{ .gpa = gpa, .movie = &movie, .instance_counter = &counter };
     defer ctx_.deinit(gpa);
     var root = movie_clip.MovieClip.init(movie.frames);
     defer root.deinit(gpa);

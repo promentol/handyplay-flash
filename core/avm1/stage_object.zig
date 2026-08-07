@@ -560,6 +560,22 @@ pub fn clipValue(vm: *Vm, mc: *MovieClip) !Value {
     return .{ .object = try clipObject(vm, mc) };
 }
 
+/// The clip's children as `for..in` keys. Ruffle appends these AFTER the
+/// object's own keys and yields them HIGHEST DEPTH FIRST
+/// (stage_object.rs:127-141). Every NAMED child counts, including kinds
+/// AVM1 cannot otherwise reach — a MorphShape has no script object but its
+/// name still enumerates.
+pub fn enumerateKeys(vm: *Vm, handle: ObjectHandle, out: *std.ArrayList([]const u16)) !void {
+    const t = targetOf(vm, handle) orelse return;
+    const kids = t.clip.children.items;
+    var i = kids.len;
+    while (i > 0) { // children are depth-ascending, so walk back to front
+        i -= 1;
+        const name = kids[i].name orelse continue;
+        try out.append(vm.arena(), name);
+    }
+}
+
 pub fn childByName(mc: *MovieClip, name: []const u16, case_sensitive: bool) ?*DisplayObject {
     for (mc.children.items) |child| {
         const n = child.name orelse continue;
@@ -681,4 +697,37 @@ test "SetProperty coerces by index even when the write is dropped" {
     ));
     // Everything else is left alone (_target, _droptarget, _url, _focusrect).
     try testing.expect(try actionPropertyCoerce(vm, 11, .{ .number = 5 }) == .number);
+}
+
+test "for..in keys: named children, highest depth first" {
+    const vm = try Vm.create(testing.allocator, 8);
+    defer vm.destroy();
+
+    var parent = movie_clip.MovieClip.init(&.{});
+    // Children here are stack objects, so free only the list itself.
+    defer parent.children.deinit(testing.allocator);
+    var placement: DisplayObject = .{
+        .character_id = 0,
+        .depth = 0,
+        .kind = .{ .clip = &parent },
+        .owns_kind = false,
+    };
+    parent.placement = &placement;
+
+    var lo: DisplayObject = .{ .character_id = 1, .depth = 1, .name = S("lo"), .kind = .{ .morph_shape = 0 }, .owns_kind = false };
+    var anon: DisplayObject = .{ .character_id = 2, .depth = 3, .kind = .{ .morph_shape = 0 }, .owns_kind = false };
+    var hi: DisplayObject = .{ .character_id = 3, .depth = 5, .name = S("hi"), .kind = .{ .morph_shape = 0 }, .owns_kind = false };
+    try parent.children.append(testing.allocator, &lo);
+    try parent.children.append(testing.allocator, &anon);
+    try parent.children.append(testing.allocator, &hi);
+
+    const h = try clipObject(vm, &parent);
+    var keys: std.ArrayList([]const u16) = .empty;
+    defer keys.deinit(vm.arena());
+    try enumerateKeys(vm, h, &keys);
+
+    // Highest depth first, and the unnamed child contributes nothing.
+    try testing.expectEqual(@as(usize, 2), keys.items.len);
+    try testing.expect(strings.eql(keys.items[0], S("hi")));
+    try testing.expect(strings.eql(keys.items[1], S("lo")));
 }

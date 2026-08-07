@@ -171,7 +171,17 @@ Three corrections to the sketch below, found while implementing:
   `target_path()`; check ruffle `action_target_path` — it returns the
   SLASH path only for clips, undefined otherwise).
 
-### A3. Clip member resolution (THE big one for the corpus)
+### A3. Clip member resolution — ✅ DONE
+The resolution order below landed EARLY, inside A1 (the table) and A2
+(path properties), so A3 itself was only the two loose ends: children in
+`for..in` (highest depth first, appended after own keys) and Flash's
+automatic `instanceN` names. Two notes for later work:
+  • `hasOwnProperty` deliberately does NOT see display properties or
+    children — ruffle wires has_display_object_property as the fallback
+    for has_property, not has_own_property.
+  • `default_names` is NOT a gate for this section: it calls attachMovie,
+    so it needs workstream B.
+
 `Activation.memberGet`/`memberSet` and `scopeGet` must learn the
 MovieClip name-resolution order (ruffle stage_object.rs:24-57):
 1. Path properties: `_root`, `_parent`, `_global`, `_levelN`.

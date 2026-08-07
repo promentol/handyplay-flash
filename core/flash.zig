@@ -50,6 +50,9 @@ pub const Player = struct {
     renderer: render.renderer.Renderer,
     background: swf.reader.Color,
     vm: *Vm,
+    /// Flash's `instanceN` counter. Monotonic for the life of the movie;
+    /// ruffle resets it only when the root movie is replaced.
+    instance_counter: u32 = 0,
     /// Fixed timestep (ms/frame) from the SWF header, clamped 0.01–120 fps.
     frame_ms: f64,
     acc_ms: f64 = 0,
@@ -85,6 +88,12 @@ pub const Player = struct {
             .owns_kind = false,
         };
         self.root.placement = &self.root_placement;
+        // The ROOT consumes instance0 without keeping it: ruffle runs
+        // post_instantiation (which names it) and only then
+        // set_default_root_name, which blanks the name again for AVM1
+        // (context.rs:404-405). That is why children start at instance1
+        // and why `_root._name` is "" — corpus default_names.
+        self.instance_counter = 1;
         self.installHost();
         // Bind `_root` BEFORE frame 1. Lazily creating it in the action
         // drain was a trap: a root frame that places a child before its own
@@ -126,7 +135,11 @@ pub const Player = struct {
     }
 
     fn runOneFrame(self: *Player) !void {
-        var ctx: display.movie_clip.Context = .{ .gpa = self.gpa, .movie = &self.movie };
+        var ctx: display.movie_clip.Context = .{
+            .gpa = self.gpa,
+            .movie = &self.movie,
+            .instance_counter = &self.instance_counter,
+        };
         defer ctx.deinit(self.gpa);
         try self.root.runFrame(&ctx);
         try self.root.applyPendingGoto(&ctx);

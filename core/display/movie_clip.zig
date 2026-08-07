@@ -40,6 +40,10 @@ pub const Context = struct {
     /// then see undefined, as in ruffle's avm1_removed) and defers the
     /// free to the end of the tick.
     graveyard: std.ArrayList(*DisplayObject) = .empty,
+    /// Flash's `instanceN` counter, owned by the Player so it survives
+    /// across ticks (ruffle's UpdateContext.instance_counter). Every
+    /// unnamed display object consumes one at placement.
+    instance_counter: *u32,
 
     pub fn deinit(self: *Context, gpa: std.mem.Allocator) void {
         self.drainGraveyard(gpa);
@@ -290,6 +294,12 @@ pub const MovieClip = struct {
             kind.clip.parent = self;
         }
         try applyPlacement(ctx, obj, po, true);
+        // Flash names every unnamed instance `instanceN` from one global
+        // counter (ruffle set_default_instance_name). This happens BEFORE
+        // the child runs its own first frame below, so nested placements
+        // number pre-order — the same order ruffle gets by naming in
+        // post_instantiation ahead of construct_as_avm1_object.
+        if (obj.name == null) try assignInstanceName(ctx, obj);
         // Insert keeping depth order (render walks the list directly).
         var insert_at: usize = self.children.items.len;
         for (self.children.items, 0..) |child, i| {
@@ -307,6 +317,15 @@ pub const MovieClip = struct {
         }
     }
 };
+
+fn assignInstanceName(ctx: *Context, obj: *DisplayObject) Error!void {
+    var buf: [24]u8 = undefined;
+    const ascii = std.fmt.bufPrint(&buf, "instance{d}", .{ctx.instance_counter.*}) catch return;
+    ctx.instance_counter.* +%= 1;
+    const name = try ctx.gpa.alloc(u16, ascii.len);
+    for (ascii, name) |c, *w| w.* = c;
+    obj.name = name;
+}
 
 /// ruffle `apply_place_object` (display_object.rs). The whole transform
 /// block is skipped once a script has moved the object, otherwise a
@@ -390,7 +409,8 @@ test "timeline: place, sprite instantiation, remove, implicit stop, goto replay"
     const gpa = testing.allocator;
     var movie = try makeMovie(gpa);
     defer movie.deinit();
-    var ctx: Context = .{ .gpa = gpa, .movie = &movie };
+    var counter: u32 = 0;
+    var ctx: Context = .{ .gpa = gpa, .movie = &movie, .instance_counter = &counter };
     defer ctx.deinit(gpa);
 
     var root = MovieClip.init(movie.frames);
@@ -438,7 +458,8 @@ test "single-frame clip implicitly stops; multi-frame loops" {
     const gpa = testing.allocator;
     var movie = try makeMovie(gpa);
     defer movie.deinit();
-    var ctx: Context = .{ .gpa = gpa, .movie = &movie };
+    var counter: u32 = 0;
+    var ctx: Context = .{ .gpa = gpa, .movie = &movie, .instance_counter = &counter };
     defer ctx.deinit(gpa);
     var root = MovieClip.init(movie.frames);
     defer root.deinit(gpa);
