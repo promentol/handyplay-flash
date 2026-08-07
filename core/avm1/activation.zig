@@ -423,6 +423,9 @@ pub const Activation = struct {
             .object => |h| {
                 // `__proto__` is a live accessor, not a stored property.
                 if (strings.eqlIgnoreCase(name, S("__proto__"))) {
+                    if (self.vm.objects.get(h).native == .super_obj) {
+                        return self.vm.superProto(h);
+                    }
                     return self.vm.objects.get(h).proto;
                 }
                 // OWN properties win, then the display fallback, then the

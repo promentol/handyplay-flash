@@ -513,6 +513,14 @@ pub const Vm = struct {
         return cur.object;
     }
 
+    /// `super.__proto__` is the base prototype's OWN prototype — one more
+    /// layer up than `this.__proto__` (ruffle SuperObject::proto:68-73).
+    pub fn superProto(self: *Vm, h: ObjectHandle) Value {
+        const s = self.objects.get(h).native.super_obj;
+        const base = self.superBaseProto(s) orelse return .undefined_value;
+        return self.objects.get(base).proto;
+    }
+
     /// Calling `super(...)` runs the base prototype's `__constructor__`
     /// against the ORIGINAL `this`, one prototype layer deeper
     /// (ruffle super_object.rs:77-105).
