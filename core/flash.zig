@@ -1,5 +1,15 @@
-//! Umbrella host seam (mirrors handyplay-oss exen.zig). Frontend-agnostic, no I/O.
-//! Contract (docs/ARCHITECTURE.md): init(allocator), loadSwf(bytes)->MovieInfo
-//! (error.Avm2Unsupported on FileAttributes.ActionScript3), tick(elapsed_ms),
-//! framebuffer() []const u32 (XRGB8888), setMouse/keyEvent, stateSize/saveState/
-//! loadState, trace_sink. Wired up in M2 when display/render exist.
+//! Umbrella module root (mirrors handyplay-oss exen.zig). Frontend-
+//! agnostic, no I/O. The host seam (init/loadSwf/tick/framebuffer/input/
+//! state — see docs/ARCHITECTURE.md) lands in M2 when display/render are
+//! wired; until then this re-exports the parsing layers.
+
+pub const swf = @import("swf/swf.zig");
+
+pub const display = struct {
+    pub const library = @import("display/library.zig");
+    // M2: display_object.zig, movie_clip.zig; M4: button.zig, text.zig.
+};
+
+test {
+    @import("std").testing.refAllDecls(@This());
+}

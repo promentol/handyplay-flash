@@ -3,11 +3,18 @@
 
 pub const decompress = @import("decompress.zig");
 pub const header = @import("header.zig");
+pub const reader = @import("reader.zig");
+pub const tags = @import("tags.zig");
+pub const shape = @import("shape.zig");
+pub const font_text = @import("font_text.zig");
+pub const filters = @import("filters.zig");
+pub const button = @import("button.zig");
+pub const bitmap_tags = @import("bitmap_tags.zig");
+pub const sound_tags = @import("sound_tags.zig");
+pub const place = @import("place.zig");
+pub const movie = @import("movie.zig");
 
-// M1: reader.zig (bit/byte reader: UB/SB/FB, RECT, MATRIX, CXFORM, strings,
-//     LE32_FLOAT64), tags.zig (scanner + TagCode), shape.zig, place.zig,
-//     font_text.zig, button.zig, bitmap_tags.zig, sound_tags.zig, movie.zig.
-// M7: morph.zig.
+// M7: morph.zig (DefineMorphShape decoding; raw bodies captured by movie).
 
 test {
     @import("std").testing.refAllDecls(@This());

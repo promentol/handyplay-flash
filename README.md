@@ -15,14 +15,14 @@ possible future direction, not a goal.
 
 ## Status
 
-Early — M0 (skeleton, specs, header parsing). See the living coverage
+Early — M1 (full AVM1-scope tag parser; ruffle corpus scans clean). See the living coverage
 matrices: [docs/TAGS.md](docs/TAGS.md), [docs/AVM1.md](docs/AVM1.md), and the
 conformance ratchet `tests/conformance/pass_list.txt`.
 
 | Milestone | Deliverable | State |
 |---|---|---|
 | M0 | repo + specs + `swfinfo` (header/decompression) | ✅ |
-| M1 | full tag parser + `swfdump` (56-SWF corpus clean) | — |
+| M1 | full tag parser + `swfdump` (56-SWF corpus clean) | ✅ |
 | M2 | display list + timeline + rasterizer v1 + SDL3 pixels | — |
 | M3 | AVM1 interpreter (SWF4/5) + trace conformance ≥80/697 | — |
 | M4 | objects/globals/buttons/text/bitmaps, ≥300/697 | — |

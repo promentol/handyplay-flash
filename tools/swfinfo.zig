@@ -2,7 +2,7 @@
 //! Usage: swfinfo <file.swf> [more.swf ...]
 
 const std = @import("std");
-const swf = @import("swf");
+const swf = @import("flash").swf;
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
