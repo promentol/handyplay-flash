@@ -1,6 +1,6 @@
 # handyflash — Project State & Handover
 
-**Authoritative snapshot. Last updated: 2026-08-07 (M3 close).**
+**Authoritative snapshot. Last updated: 2026-08-08 (M4 workstream B close).**
 Read this first if you are picking up the project with no prior context.
 For executing the next milestone, then read `docs/M4-SPEC.md`.
 
@@ -30,20 +30,20 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstream A complete + drawing API (**156/680**); B–F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A and B complete (**205/680**); C–F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
 
 **Visually working today**: `squares.swf` and `homestuck-beta.swf` render
 correctly (shapes, curves, strokes, gradients, layering, timeline).
-**Scripting today**: every AVM1 opcode executes, the display-property table
-is live (`_x`, `_alpha`, `_rotation`, … via both `getProperty` and `mc._x`),
-and target paths resolve for real (`tellTarget`, `/slash/paths:var`, `..`,
-`_levelN`). Clips are created, cloned, removed and re-depthed at
-runtime, and the script drawing API (`beginFill`/`lineTo`/…) renders and
-feeds `_width`/`_height`; 156 of Ruffle's 680 scorable conformance dirs
-pass.
+**Scripting today**: every AVM1 opcode executes and the whole
+`MovieClip` class surface is live — timeline control, hit tests
+(shape-exact), bounds, coordinate conversion, drag. `Date`, `flash.geom`,
+`Object.registerClass`, `watch`, `setInterval`, `AsBroadcaster` and the
+Key/Mouse/Stage/System/Color singletons all exist, and the frontend feeds
+real mouse and keyboard input. 205 of Ruffle's 680 scorable conformance
+dirs pass.
 
 ---
 
@@ -371,6 +371,21 @@ Load-bearing details that are easy to undo:
 - a display object reached AS a prototype ends the chain (corpus
   `super_edge_cases`; ruffle walks through it, real Flash does not).
 
+**M4 workstream B** — the rest of the `MovieClip` class, `flash.geom`,
+`Object.registerClass`, `watch`/`unwatch`, timers, `Date`, the
+AsBroadcaster family, and the input seam. Load-bearing details that are
+easy to undo, beyond the five in §8:
+- `Matrix` is f32 because ruffle's is, and the precision is observable;
+- number→string is Flash's 15-digit algorithm, exponent notation from
+  1e15, with a genuinely broken rounding carry ("-e+16");
+- a clip's Construct is queued BEFORE its first frame runs;
+- the initObject's keys go on in insertion order when a constructor is
+  involved and in reverse otherwise;
+- `unload` handlers run for an already-removed clip (`on_removed` on the
+  queue entry); everything else queued for a removed clip is dropped;
+- a freed display object keeps a `removed_display` native marker so a
+  retained reference stops receiving broadcasts and timer callbacks.
+
 **M4 drawing API** — `core/display/drawing.zig` holds one open fill subpath
 and one open stroke subpath per clip and emits the same `DrawPath` IR the
 SWF shape distiller does, so script paths render through the existing
@@ -387,8 +402,13 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697**.
 
-**Workstream A is CLOSED at 156/680.** Pick up B or C next. Three things
-to know before you start:
+**Workstreams A and B are CLOSED at 205/680.** Pick up C (events and
+buttons) next — it is the largest remaining cluster and several
+already-close dirs are waiting on button hit-testing alone. `docs/M4-SPEC.md`
+§4 lists, by name and cause, the 43 workstream-B dirs that could not be
+reached; do not re-derive them.
+
+Five things to know before you start:
 
 1. **§A4/§A5 record diagnoses that turned out to be WRONG** and the real
    causes next to them. In particular: `default_names` was NOT
@@ -410,6 +430,16 @@ to know before you start:
    essentially all of §D (~30 TextField properties,
    `TextField.StyleSheet`, `flash.filters.*`, `getNewTextFormat`,
    `htmlText` `<TEXTFORMAT>` serialisation).
+4. **The action queue is now three FIFO buckets** (Initialize, Construct,
+   Normal) drained highest-first on every pop, and `#initclip` runs at
+   PRELOAD rather than on the timeline. Both were needed for
+   `Object.registerClass` to apply at the right moment; workstream C's
+   event ordering builds directly on them
+   (`Context.queue`/`popAction`, `Player.runInitActions`).
+5. **`swf.reader.Matrix` is f32 and number→string is Flash's own
+   algorithm, not ES3.** Both look like sloppiness and are not — the
+   corpus fails either one if it is "corrected". See the workstream-B
+   notes at the end of `docs/AVM1.md`.
 
 Then: **M5** libretro core + HFS0 save-states (byte-identical
 serialize→restore→re-run gate; copy the ABI from

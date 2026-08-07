@@ -4,6 +4,9 @@
 handyflash (Flash Player in Zig 0.16, AVM1 only). Written at the close of
 M3 (full interpreter). Read this top to bottom before writing code.
 
+**Status: workstreams A and B closed, 205/680.** C (events/buttons),
+D (text), E (bitmaps) and F (blend modes) remain.
+
 **Exit gate: ≥300/697 ruffle AVM1 conformance dirs pass** (see §9), plus:
 buttons respond to mouse in the SDL frontend, a JPEG-bearing SWF shows the
 image, static text renders glyphs, and
@@ -316,48 +319,54 @@ playhead. Frames come from `MovieClip.frames[n].controls` (filter
 
 ---
 
-## 4. MovieClip AVM methods & globals (workstream B)
+## 4. MovieClip AVM methods & globals (workstream B) — ✅ CLOSED (205/680)
 
-New file suggestion: `core/avm1/globals/movie_clip.zig`, installed on a
-`movieclip_proto` (add handle to Vm; clip objects' proto = it, chaining
-to object_proto). Methods dispatch on `this.native == .clip`. From ruffle
-`core/src/avm1/globals/movie_clip.rs`:
+Everything below shipped. The plan lives in the git log (`B0`..`B8`); the
+non-obvious semantics are recorded in `docs/AVM1.md`'s "Workstream B notes"
+and in the code. What follows is what shipped, then what could NOT be
+reached and exactly why.
 
-**A4 absorbed the instantiation half of this list** — do not re-specify
-it. `duplicateMovieClip`, `attachMovie`, `createEmptyMovieClip`,
-`removeMovieClip`, `swapDepths`, `getDepth` and `getNextHighestDepth` all
-ship in `core/avm1/globals/movie_clip.zig`, sharing `stage.createAt` with
-the CloneSprite/RemoveSprite opcodes. The script drawing API
-(`beginFill`/`endFill`/`lineStyle`/`moveTo`/`lineTo`/`curveTo`/`clear`,
-backed by `core/display/drawing.zig`) shipped with them, because the
-corpus measures it through `_width`.
+**Shipped.** `core/avm1/globals/` gained `decl.zig` (one declaration helper
+carrying ruffle's real DONT_DELETE / READ_ONLY / VERSION_N flags — both
+old helpers only ever set dont_enum), `geom.zig`, `date.zig`,
+`singletons.zig`, and `core/avm1/timers.zig`.
 
-Required (corpus-driven, in priority order):
-- `gotoAndPlay(frame|label)`, `gotoAndStop`, `play`, `stop`,
-  `nextFrame`, `prevFrame` — via the existing Host hooks.
-- `getBytesLoaded`/`getBytesTotal` → movie byte length (equal).
-- `hitTest(x, y, shapeFlag)` / `hitTest(target)` — bounds test in M4
-  (shape-exact via shape_utils winding later).
-- `localToGlobal(pt)`, `globalToLocal(pt)` — via the concat matrix.
-- `startDrag`/`stopDrag` — with D (mouse) wired.
-Properties like `_x` route through A3 automatically.
+- **MovieClip.prototype**: play/stop/next/prevFrame/gotoAndPlay/gotoAndStop,
+  getBytes*/getSWFVersion/getInstanceAtDepth, getBounds/getRect,
+  localToGlobal/globalToLocal, hitTest (shape-exact included, via a new
+  `shape_utils.shapeHitTest`), setMask, startDrag/stopDrag, and the SWF8
+  property block. StartDrag/EndDrag as OPCODES too.
+- **flash.geom**: Point, Rectangle, Matrix, ColorTransform, and a Transform
+  that is a live view of the display object.
+- **Object.registerClass** with the three ordering rules it exposed, and
+  the action queue rebuilt as ruffle's three FIFO buckets.
+- **watch/unwatch**, including the per-property recursion cap.
+- **setInterval/setTimeout/clearInterval**, ticked after each frame's drain.
+- **Date**, exact across all 6336 lines of the `date` corpus dir — which
+  required replacing ES3 number formatting with Flash's own algorithm.
+- **AsBroadcaster** and Key / Mouse / Stage / System / Color on top of it,
+  plus MovieClipLoader as a broadcaster with honest stubs.
+- **The input seam**: `Player.mouseMove`/`setMousePosition`/`mouseButton`/
+  `keyDown`/`keyUp`, clip-event propagation (children first, highest depth
+  first), `--input input.json` in trace_runner, and real SDL events. This
+  is what finally lit up `_xmouse`/`_ymouse` and `_droptarget`.
+- `unload` dispatch on removal (listed under §C, but it is one flag on the
+  queue entry and two corpus dirs wanted it).
 
-Other globals the corpus leans on (check failures first, add as needed):
-- `Date` — full class; ruffle globals/date.rs. Use a FIXED epoch from
-  `vm.now_ms` for determinism (corpus date tests mostly construct
-  explicit dates — those are deterministic anyway).
-- `Key` (`Key.isDown`, constants), `Mouse` — with D.
-- `String()`/`Number()`/`Boolean()` called as FUNCTIONS (coerce) — the
-  ctors already handle this via `this == .object` check; verify.
-- `Object.registerClass`, `ASSetPropFlags` (sets Attributes bits — the
-  undocumented flags: bit0 dont_enum? Actually: 1=hidden(dont_enum),
-  2=dont_delete, 4=read_only; second arg props list or null=all).
-- `watch`/`unwatch`. (`addProperty` is DONE: `Property.getter/setter` and
-  the get/put routing, including through `super`.)
-- `setInterval`/`setTimeout` — timer table on Vm ticked by Player
-  (fire before the frame's queued actions; ruffle timer.rs).
+**Not reached, and why.** Named concretely so nobody re-derives them; the
+list is the 43 still-failing dirs that touch only workstream-B API.
 
----
+| Blocker | Dirs |
+|---|---|
+| The LOADER — an external SWF or variables file, which `core/` cannot fetch (M5) | `movieclip_lockroot`, `movieclip_methods_with_loaded_image`, `movieclip_state_values`, `loadmovie_registerclass`, `loadmovie_replace_root`, `loadmovienum_cross_version_prototype`, `register_class_swf6`, `looping_child_swf5/9/32`, `form_loader_encoding_3` |
+| BUTTON hit-testing and press/release/rollOver dispatch (§C) | `unload_nested_child`, `mouse_events_visible_enabled`, `mouse_hover_events_while_dragging`, `drag_over_without_startdrag` |
+| EditText (§D) | `edittext_place_caret`, `edittext_drag_select` |
+| Morph shapes (M7) and glyph-accurate text hit tests (§D) | `hittest_morph`, `hittest_morph_input`, `movieclip_hittest_shapeflag` |
+| AMF0 serialisation + a network sink | `amf_serialize_typed_objects`, `amf_swf6_serialize_typed_objects`, `amf_swf6_case_insensitive_typed_objects`, `amf_swf8_case_sensitive_typed_objects` |
+| `ASnative` / `ASSetNative` — the numbered native-method tables | `asnew`, `assetnative_ids` |
+| Classes outside B's list: NetStream, ContextMenu | `netstream_play_flv`, `netstream_seek_flv`, `context_menu` |
+| The runner has no `viewport_dimensions` player option, so the screen and a noScale stage report the movie's own size | `capabilities_resolution`, `stage_scale_mode` |
+| Genuinely open in B, small and unfinished | `goto_frame` and `goto_frame2` (out-of-range and scene-offset goto), `rewind_depth` (goto rewind vs script depths), `as_broadcaster_undef` (undefined listeners), `object_prototypes` (a watcher on `__proto__` — our `__proto__` write bypasses the watcher path), `object_string_coerce_swf5/6` (one string coercion happens twice somewhere in Add), `watch_recursion_swf7` and `watch_recursion_double_swf7` (the exact nesting depth), `issue_2084`, `this_scoping` (`with(mc)` scoping), `removed_clip_halts_script` (a script must stop when its own base clip is removed) |
 
 ## 5. Events: ClipActions + buttons (workstream C)
 

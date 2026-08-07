@@ -21,7 +21,7 @@ is rejected (`error.Avm2Unsupported`).
 | 28 | RemoveObject2 | 3 | M1/M2 | parse | depth only |
 | 9 | SetBackgroundColor | 1 | M1/M2 | parse | |
 | 12 | DoAction | 3 | M1/M3 | parse | queued, not inline |
-| 59 | DoInitAction | 6 | M1/M4 | parse | once, Initialize priority |
+| 59 | DoInitAction | 6 | M1/M4 | exec | runs ONCE at PRELOAD, before frame 1 — not on the timeline (ruffle handles it in `preload`), which is what lets an `#initclip` register a class for PlaceObject tags EARLIER in the same frame |
 | 43 | FrameLabel | 3 | M1 | parse | v6+ anchor byte |
 | 15 | StartSound | 1 | M1/M6 | parse | |
 | 89 | StartSound2 | 9 | — | oos | class-name sounds (AVM2-era) |
@@ -33,7 +33,7 @@ is rejected (`error.Avm2Unsupported`).
 | 71 | ImportAssets2 | 8 | — | oos | |
 | 24 | Protect | 2 | M1 | parse | skip (2 undocumented bytes before MD5) |
 | 65 | ScriptLimits | 7 | M1/M3 | parse | recursion + timeout |
-| 69 | FileAttributes | 8 | M1 | parse | **AS3 bit ⇒ reject** |
+| 69 | FileAttributes | 8 | M1/M4 | exec | **AS3 bit ⇒ reject**; UseNetwork picks `System.security.sandboxType` |
 | 77 | Metadata | 8 | M1 | parse | skip |
 | 86 | DefineSceneAndFrameLabelData | 9 | — | oos | AVM2 |
 | 40/41/63 | NameCharacter/ProductInfo/DebugId | — | M1 | parse | undocumented; skip by length |

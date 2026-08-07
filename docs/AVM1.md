@@ -10,21 +10,30 @@ length + payload.
 Status: `todo` → `decode` (opcodes.zig) → `exec` (interpreter) → `done`
 (corpus-verified). Milestones: M3 = SWF3/4/5 core, M4 = objects/classes/v6-7.
 
-**M3 CLOSED**: every opcode 0x00–0x9F decodes and executes. All ops are
-`exec` except the stubs listed below (they pop their operands correctly
-but have no effect yet) — promotion is workstream A of docs/M4-SPEC.md.
-Corpus: 156/680 (tests/conformance/pass_list.txt).
+**M3 CLOSED**: every opcode 0x00–0x9F decodes and executes.
+**M4 workstreams A and B CLOSED.** Corpus: 205/680
+(tests/conformance/pass_list.txt).
 
 **Workstream A complete (A1-A6)**: display properties, target paths, clip
 member resolution, runtime clip creation, `Call`, throw propagation and
-`super` all land. `_xmouse`/`_ymouse` still read the (zero) `Vm.mouse_*`
-and `_droptarget` awaits StartDrag — both workstream C.
+`super` all land.
+
+**Workstream B complete**: the rest of `MovieClip.prototype`, flash.geom,
+`Object.registerClass`, `watch`/`unwatch`, the timers, `Date`, and the
+AsBroadcaster family (Key, Mouse, Stage, System, Color). See the notes at
+the end of this file; `docs/M4-SPEC.md` §4 records what shipped and what is
+still out of reach.
+
+The last two action stubs, StartDrag/EndDrag, are real now that the input
+seam exists: `Player.mouseMove`/`mouseButton`/`keyDown`/`keyUp` write the
+VM's input state, so `_xmouse`/`_ymouse`, `Key.isDown` and `_droptarget`
+all report something.
 
 **M4-A1 landed**: GetProperty/SetProperty (0x22/23) are real, sharing one
 22-entry table in `core/avm1/stage_object.zig` with the named form
 (`mc._x`) reached through GetMember/SetMember/GetVariable/SetVariable.
-`_xmouse`/`_ymouse` read the (still-zero) `Vm.mouse_*` until workstream C
-wires the frontend; `_droptarget` awaits StartDrag; `_url` is always "".
+`_url` comes from the Player (`Options.url`); `_xmouse`/`_ymouse` and
+`_droptarget` went live with workstream B's input seam.
 
 **M4-A2 landed**: real target-path resolution. SetTarget/SetTarget2 keep a
 tri-state target (base / retargeted / FAILED), a failed `tellTarget` sends
@@ -53,8 +62,7 @@ prototype ends the chain (`super_edge_cases`).
 
 | Stub | Why | Milestone |
 |---|---|---|
-| StartDrag / EndDrag (0x27/28) | needs mouse state | M4 |
-| GetURL / GetURL2 (0x83/0x9A) | network/loadMovie | out of scope (M4 partial for loadMovie tests) |
+| GetURL / GetURL2 (0x83/0x9A) | network/loadMovie | M5 (the loader; `core/` does no I/O) |
 | ToggleQuality (0x08) | quality is a no-op for us | never |
 | StopSounds (0x09) | audio | M6 |
 | StrictMode (0x89), FsCommand2 (0x2D) | no-ops in Ruffle too | done-as-is |
@@ -104,8 +112,8 @@ prototype ends the chain (`super_edge_cases`).
 | 0x24 | CloneSprite | exec | |
 | 0x25 | RemoveSprite | exec | |
 | 0x26 | Trace | exec | → trace_sink |
-| 0x27 | StartDrag | exec | |
-| 0x28 | EndDrag | exec | |
+| 0x27 | StartDrag | done | operands pop in a fixed order whether or not the target resolves; a bare `startDrag()` drags the current target clip |
+| 0x28 | EndDrag | done | ends whatever drag is running — there is only ever one |
 | 0x29 | StringLess | exec | |
 | 0x2D | FsCommand2 | exec | Flash Lite; undocumented |
 | 0x30 | RandomNumber | exec | deterministic rng for states |
@@ -122,7 +130,7 @@ prototype ends the chain (`super_edge_cases`).
 | 0x9A | GetUrl2 | exec | **flag order reversed vs Adobe** (errata) |
 | 0x9D | If | exec | pops condition |
 | 0x9E | Call | exec | executes a frame's actions |
-| 0x9F | GotoFrame2 | exec | scene bias + play flag |
+| 0x9F | GotoFrame2 | exec | scene bias + play flag; shares the operand rule and the wrap arithmetic with `gotoAndPlay` (stage_object.gotoFrameNumber) |
 
 ## SWF 5 — objects & functions (M3/M4)
 
@@ -191,6 +199,40 @@ prototype ends the chain (`super_edge_cases`).
 | 0x69 | Extends | exec | |
 | 0x8E | DefineFunction2 | exec | registers + preload order this/arguments/super/_root/_parent/_global; `_parent`/`_global` register-swap quirk on root timelines (errata) |
 | 0x8F | Try | exec | |
+
+## Workstream B notes (the non-obvious half)
+
+Things the corpus pins that no document states, kept here so they are not
+re-derived:
+
+- **Matrices are f32.** `swf.reader.Matrix` stores a/b/c/d as f32 and does
+  every product in f32, because ruffle does and the precision is
+  observable: f64 lands one twip off in `localToGlobal`/`getBounds` often
+  enough to fail both tests. The scale/rotation cache on DisplayObject
+  stays f64 — ActionScript reads back exactly what it wrote.
+- **Number→string is not ES3.** Flash's own algorithm: 15 significant
+  digits, exponent notation from 1e15 (not 1e21), and a rounding carry that
+  is broken — `-9999999999999996` prints as `-e+16`, with no digit.
+  `clamp_to_i32` sends NaN *and* +infinity to i32::MIN.
+- **`#initclip` runs at PRELOAD**, not on the timeline, so a class it
+  registers applies to clips whose PlaceObject tag appears earlier in the
+  same frame.
+- **A clip's Construct is queued before its first frame runs**, so a parent
+  constructs ahead of the children that frame places.
+- **The action queue is three FIFO buckets** (Initialize, Construct,
+  Normal) drained highest-first on every pop — not one sorted list.
+- **`unload` handlers run for an already-removed clip**; every other queued
+  action is dropped when its clip goes away.
+- **A removed display object stays distinguishable from a plain one** after
+  its instance is freed (`NativeInfo.removed_display`), because a retained
+  reference must stop receiving broadcasts and timer callbacks.
+- **A cyclic prototype chain is a hard stack overflow** that aborts the
+  whole action mid-statement.
+- **Getters, setters and the watcher for one property share a budget** of
+  65 nested calls; over it the call is skipped silently.
+- **The clock is a seam.** `Vm.epoch_ms`/`tz_offset_min` default to
+  ruffle's deterministic mock (2001-02-03 04:05:06 at +05:45) so the
+  conformance runner needs no flag; frontends pass the real values.
 
 All other codes in 0x00–0x9F are INVALID (open-flash `_index.md`); on decode we
 skip by length (>=0x80) or treat as End-adjacent no-op, matching Flash's
