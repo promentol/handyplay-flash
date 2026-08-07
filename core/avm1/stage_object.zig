@@ -840,6 +840,7 @@ pub fn createAt(
     char_id: u16,
     depth: i32,
     name: []const u16,
+    copy_from: ?*const DisplayObject,
 ) !?*DisplayObject {
     const ctx = displayCtx(vm) orelse return null;
     // Occupying a depth replaces whatever is there (ruffle
@@ -847,6 +848,14 @@ pub fn createAt(
     try parent.removeAtDepth(ctx, depth);
     const obj = try parent.instantiateAt(ctx, char_id, depth, 1) orelse return null;
     try obj.setName(ctx.gpa, name);
+    // Everything a clone inherits must be in place BEFORE the first frame
+    // runs — that frame dispatches `load`, and the handler it dispatches
+    // is one of the things being copied.
+    if (copy_from) |src| {
+        obj.matrix = src.matrix;
+        obj.color_transform = src.color_transform;
+        obj.clip_actions = src.clip_actions;
+    }
     try parent.finishInstantiate(ctx, obj);
     return obj;
 }
@@ -858,13 +867,9 @@ pub fn createAt(
 pub fn cloneSprite(vm: *Vm, source: Target, name: []const u16, depth: i32) !?*DisplayObject {
     const parent = source.parent() orelse return null;
     if (!depthPlaceable(depth)) return null;
-    const obj = try createAt(vm, parent, source.obj.character_id, depth, name) orelse return null;
-    obj.matrix = source.obj.matrix;
-    obj.color_transform = source.obj.color_transform;
-    // The clone inherits the source's onClipEvent handlers
-    // (ruffle clone_sprite -> init_clip_event_handlers).
-    obj.clip_actions = source.obj.clip_actions;
-    return obj;
+    // Matrix, colour transform and onClipEvent handlers all come from the
+    // source (ruffle clone_sprite:1004-1013).
+    return createAt(vm, parent, source.obj.character_id, depth, name, source.obj);
 }
 
 /// ruffle `remove_display_object` (globals.rs:886-897). Only depths in the

@@ -85,7 +85,7 @@ fn attachMovie(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const name = try vm.toStringValue(arg(args, 1));
     const depth = stage.biasDepth(try depthArg(vm, arg(args, 2)));
     if (!stage.depthPlaceable(depth)) return .undefined_value;
-    const obj = try stage.createAt(vm, clip, char_id, depth, name) orelse return .undefined_value;
+    const obj = try stage.createAt(vm, clip, char_id, depth, name, null) orelse return .undefined_value;
     const v = try newClipValue(vm, obj);
     try applyInitObject(vm, v, arg(args, 3));
     return v;
@@ -99,7 +99,7 @@ fn createEmptyMovieClip(p: *anyopaque, this: Value, args: []const Value) anyerro
     // No depth validation here — ruffle's create_empty_movie_clip has none.
     const depth = stage.biasDepth(try depthArg(vm, arg(args, 1)));
     // Character 0 means "no character": an empty, frameless timeline.
-    const obj = try stage.createAt(vm, clip, 0, depth, name) orelse return .undefined_value;
+    const obj = try stage.createAt(vm, clip, 0, depth, name, null) orelse return .undefined_value;
     return newClipValue(vm, obj);
 }
 

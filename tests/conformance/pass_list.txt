@@ -49,6 +49,7 @@ delete
 depth_replacement_audio_unloading
 display_object_properties
 do_init_action
+duplicate_movie_clip
 empty_movieclip_can_attach_movies
 enumerate
 equals
