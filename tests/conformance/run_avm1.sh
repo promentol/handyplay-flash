@@ -13,6 +13,12 @@
 # A test.toml may carry an [approximations] table, in which case numeric
 # lines compare with a tolerance instead of byte-exactly (ruffle
 # tests/framework/src/runner/trace.rs + options/approximations.rs).
+#
+# Some corpus entries are GENERATOR dirs holding per-version subdirs
+# (target_paths/swf4, set_property_values/swf5, bitmap_data_thorough/*),
+# so enumeration descends one level. Dirs marked `known_failure = true`
+# are excluded from scoring entirely: that flag means RUFFLE ITSELF does
+# not match Flash there, so output.txt is a target nobody currently hits.
 set -u
 CORPUS="${CORPUS:-reference/ruffle/tests/tests/swfs/avm1}"
 BIN=./zig-out/bin/trace_runner
@@ -75,6 +81,29 @@ approx_cmp() {
     }' "$2" "$1"
 }
 
+is_known_failure() {
+    # Ruffle's own harness flag: this dir diverges from Flash even in
+    # ruffle, so output.txt is not a target any emulator currently meets.
+    grep -q '^known_failure *= *true' "$1" 2>/dev/null
+}
+
+# Every scorable dir, one per line, relative to $CORPUS. Descends one
+# level so generator dirs' per-version tests are reachable, and requires
+# both a test.swf and an output.txt (the generator dirs themselves have
+# neither and must not count as failures).
+scorable_dirs() {
+    (
+        cd "$CORPUS" || exit 1
+        for dir in */ */*/; do
+            d=${dir%/}
+            [ "$d" = "__framework__" ] && continue
+            [ -f "$d/test.swf" ] && [ -f "$d/output.txt" ] || continue
+            is_known_failure "$d/test.toml" && continue
+            echo "$d"
+        done
+    )
+}
+
 run_one() {
     d="$1"
     swf="$CORPUS/$d/test.swf"
@@ -110,20 +139,24 @@ case "${1:-}" in
 --update|"")
     pass=0; total=0
     PASSED=$(mktemp)
-    for dir in "$CORPUS"/*/; do
-        d=$(basename "$dir")
-        [ "$d" = "__framework__" ] && continue
+    for d in $(scorable_dirs); do
         total=$((total+1))
         if run_one "$d"; then
             pass=$((pass+1))
             echo "$d" >> "$PASSED"
         fi
     done
-    echo "conformance: $pass/$total pass"
+    skipped=$(cd "$CORPUS" && for dir in */ */*/; do
+        d=${dir%/}
+        [ -f "$d/test.toml" ] && is_known_failure "$d/test.toml" && echo "$d"
+    done | wc -l)
+    echo "conformance: $pass/$total pass ($(echo $skipped) known_failure dirs excluded)"
     if [ "${1:-}" = "--update" ]; then
         {
-            echo "# dirs under reference/ruffle/tests/tests/swfs/avm1/ that pass exactly."
+            echo "# dirs under reference/ruffle/tests/tests/swfs/avm1/ that pass."
             echo "# RATCHET: append-only — never remove a passing entry."
+            echo "# Byte-exact unless test.toml has [approximations]."
+            echo "# Dirs marked known_failure = true are excluded (ruffle fails them too)."
             sort "$PASSED"
         } > "$LIST"
         echo "pass_list.txt updated ($pass entries)"
