@@ -52,12 +52,15 @@ execution_order3
 focusrect_mouse_swf8
 focusrect_mouse_swf9
 focusrect_swf5
+function_base_clip
 getproperty
 getproperty_swf4
 getproperty_swf5
+goto_advance1
 goto_advance2
 goto_both_ways1
 goto_both_ways2
+goto_execution_order
 goto_execution_order2
 goto_rewind1
 goto_rewind2
@@ -90,6 +93,7 @@ netstream_play_flv_screen
 new_object_enumerate
 primitive_instanceof
 prototype_properties
+removed_base_clip_tell_target
 root_global_parent
 set_target_2_swf5
 shared_object_serialize_typed_objects

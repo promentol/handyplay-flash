@@ -50,6 +50,11 @@ pub const Player = struct {
     renderer: render.renderer.Renderer,
     background: swf.reader.Color,
     vm: *Vm,
+    /// The tick's display context, live only while runOneFrame is on the
+    /// stack. Gotos need it to replay IMMEDIATELY, the way ruffle's
+    /// goto_frame does, rather than being deferred to the end of the
+    /// action — a script can observe the removal its own goto caused.
+    cur_ctx: ?*display.movie_clip.Context = null,
     /// Flash's `instanceN` counter. Monotonic for the life of the movie;
     /// ruffle resets it only when the root movie is replaced.
     instance_counter: u32 = 0,
@@ -141,6 +146,8 @@ pub const Player = struct {
             .instance_counter = &self.instance_counter,
         };
         defer ctx.deinit(self.gpa);
+        self.cur_ctx = &ctx;
+        defer self.cur_ctx = null;
         try self.root.runFrame(&ctx);
         try self.root.applyPendingGoto(&ctx);
         // Drain the action queue (actions can queue more via gotos —
@@ -224,10 +231,11 @@ pub const Player = struct {
     }
 
     fn hostGotoFrame(ctx: *anyopaque, clip: *anyopaque, frame: u16, play: bool) void {
-        _ = ctx;
+        const self: *Player = @ptrCast(@alignCast(ctx));
         const mc: *MovieClipT = @ptrCast(@alignCast(clip));
         mc.gotoFrame(frame);
         mc.playing = play;
+        self.applyGotoNow(mc);
     }
 
     fn hostGotoLabel(ctx: *anyopaque, clip: *anyopaque, label: []const u16, play: bool) bool {
@@ -240,11 +248,17 @@ pub const Player = struct {
             buf[n] = @intCast(c);
             n += 1;
         }
-        _ = self;
         const target = mc.labelToNumber(buf[0..n]) orelse return false;
         mc.gotoFrame(target);
         mc.playing = play;
+        self.applyGotoNow(mc);
         return true;
+    }
+
+    /// Replay a pending goto right now, if we are inside a tick.
+    fn applyGotoNow(self: *Player, mc: *MovieClipT) void {
+        const ctx = self.cur_ctx orelse return;
+        mc.applyPendingGoto(ctx) catch {};
     }
 
     fn hostSetPlaying(ctx: *anyopaque, clip: *anyopaque, playing: bool) void {
@@ -254,7 +268,7 @@ pub const Player = struct {
     }
 
     fn hostNextPrev(ctx: *anyopaque, clip: *anyopaque, delta: i2) void {
-        _ = ctx;
+        const self: *Player = @ptrCast(@alignCast(ctx));
         const mc: *MovieClipT = @ptrCast(@alignCast(clip));
         const cur = mc.current_frame;
         if (delta > 0) {
@@ -263,6 +277,7 @@ pub const Player = struct {
             mc.gotoFrame(cur - 1);
         }
         mc.playing = false;
+        self.applyGotoNow(mc);
     }
 
     /// Take accumulated trace() output (UTF-8; caller-owned view valid

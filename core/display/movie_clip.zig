@@ -74,8 +74,11 @@ pub const MovieClip = struct {
     initialized: bool = false,
     /// Depth-sorted children.
     children: std.ArrayList(*DisplayObject) = .empty,
-    /// Deferred goto target (applied by the tree owner after the action
-    /// scan so replay never recurses inside control execution).
+    /// Goto target awaiting replay. Set by gotoFrame and applied by
+    /// applyPendingGoto — which the Player now calls IMMEDIATELY from the
+    /// host hook, so a script observes its own goto's effects (ruffle
+    /// executes goto_frame synchronously). It stays a two-step so replay
+    /// never recurses inside executeFrame's own control loop.
     pending_goto: ?u16 = null,
     /// Lazily-created AVM1 object handle for this clip (0 = none yet).
     avm_object: u32 = 0,
