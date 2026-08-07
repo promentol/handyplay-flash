@@ -7,7 +7,9 @@ pub const swf = @import("swf/swf.zig");
 
 pub const display = struct {
     pub const library = @import("display/library.zig");
-    // M2: display_object.zig, movie_clip.zig; M4: button.zig, text.zig.
+    pub const display_object = @import("display/display_object.zig");
+    pub const movie_clip = @import("display/movie_clip.zig");
+    // M4: button.zig, text.zig.
 };
 
 pub const render = struct {

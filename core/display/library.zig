@@ -72,4 +72,10 @@ pub const Library = struct {
     pub fn getPtr(self: *Library, id: u16) ?*Character {
         return self.characters.getPtr(id);
     }
+
+    /// Const lookup with a stable pointer (the library is frozen after
+    /// preload, so hashmap pointers never move afterwards).
+    pub fn getConstPtr(self: *const Library, id: u16) ?*const Character {
+        return self.characters.getPtr(id);
+    }
 };
