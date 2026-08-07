@@ -203,6 +203,14 @@ run steps 1-3 before the normal `getChained`. Same for writes
 (display props write through; everything else is a normal put).
 
 ### A4. CloneSprite / RemoveSprite (duplicateMovieClip) — ✅ DONE
+`getNextHighestDepth` had to come too: content stacks attached clips with
+it, and without it every attach lands on depth 0 and replaces the last —
+which read as a base-clip bug in property_invalid_base_clip. Export names
+match case-INSENSITIVELY. What still fails around here needs OTHER
+workstreams: duplicate_movie_clip and create_empty_movie_clip want clip
+events (C), default_names wants the action-queue priority order (C),
+remove_movie_clip wants Button/EditText stringification (C/D), and
+duplicate_movie_clip_drawing / clone_sprite_edittext want the drawing API.
 Absorbed the workstream-B instantiation methods (duplicateMovieClip,
 attachMovie, createEmptyMovieClip, removeMovieClip, getDepth) because they
 share the one primitive — §4 below should NOT re-specify them. Two things
@@ -221,6 +229,12 @@ to 16384+depth internally in Flash — ruffle adds `AVM_DEPTH_BIAS = 16384`;
 mirror it (place tags use 0..16383, scripts 16384+).
 
 ### A5. super + cross-function Throw — ✅ DONE
+All five exception dirs pass. A rethrow FROM A CATCH needs the same
+unwind conversion as the try body — easy to implement only on one path.
+ImplementsOp (0x2C) and interface-aware `instanceof` landed here too,
+since that was what the super cluster actually still failed on.
+super_edge_cases (coercion edge cases) and interface_implements_op
+(addProperty getters on prototypes) remain, neither about `super`.
 Throw travels as a Zig error (`error.Avm1Thrown` + `Vm.pending_throw`), so
 no call site needed editing. Two extras the sketch omits: `Try` restores
 the value stack to its pre-try depth, and an uncaught throw traces
