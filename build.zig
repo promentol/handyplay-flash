@@ -63,6 +63,26 @@ pub fn build(b: *std.Build) void {
         ).dependOn(&run.step);
     }
 
+    // --- SDL3 frontend (separate step — needs Homebrew SDL3) --------------
+    {
+        const sdl_mod = b.createModule(.{
+            .root_source_file = b.path("frontends/sdl/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "flash", .module = flash_mod }},
+        });
+        sdl_mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+        sdl_mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+        sdl_mod.linkSystemLibrary("SDL3", .{});
+        const exe = b.addExecutable(.{ .name = "handyflash-sdl", .root_module = sdl_mod });
+        const inst = b.addInstallArtifact(exe, .{});
+        b.step("sdl", "Build the SDL3 frontend").dependOn(&inst.step);
+        const run = b.addRunArtifact(exe);
+        if (b.args) |args| run.addArgs(args);
+        b.step("run-sdl", "Run the SDL3 frontend").dependOn(&run.step);
+    }
+
     // --- tests -------------------------------------------------------------
     const test_step = b.step("test", "Run unit tests");
     const core_tests = b.addTest(.{ .root_module = flash_mod });
