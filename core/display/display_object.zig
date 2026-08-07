@@ -35,6 +35,9 @@ pub const DisplayObject = struct {
     visible: bool = true,
     /// PlaceObject3 blend byte (0/1 = normal).
     blend_mode: u8 = 0,
+    /// `onClipEvent(...)` bodies from the placing tag. Like `name` and
+    /// `clip_depth`, these are taken only at INITIAL placement.
+    clip_actions: []const swf.place.ClipAction = &.{},
     /// Frame number (1-based) this object was placed on — goto rewind uses
     /// it to decide survival.
     place_frame: u16 = 0,

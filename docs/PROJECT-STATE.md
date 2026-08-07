@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstream A complete (**146/680**); B–F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstream A complete (**149/680**); B–F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -40,7 +40,7 @@ correctly (shapes, curves, strokes, gradients, layering, timeline).
 **Scripting today**: every AVM1 opcode executes, the display-property table
 is live (`_x`, `_alpha`, `_rotation`, … via both `getProperty` and `mc._x`),
 and target paths resolve for real (`tellTarget`, `/slash/paths:var`, `..`,
-`_levelN`); 146 of Ruffle's 680 scorable conformance dirs pass.
+`_levelN`); 149 of Ruffle's 680 scorable conformance dirs pass.
 
 ---
 

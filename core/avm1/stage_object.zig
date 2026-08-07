@@ -861,6 +861,9 @@ pub fn cloneSprite(vm: *Vm, source: Target, name: []const u16, depth: i32) !?*Di
     const obj = try createAt(vm, parent, source.obj.character_id, depth, name) orelse return null;
     obj.matrix = source.obj.matrix;
     obj.color_transform = source.obj.color_transform;
+    // The clone inherits the source's onClipEvent handlers
+    // (ruffle clone_sprite -> init_clip_event_handlers).
+    obj.clip_actions = source.obj.clip_actions;
     return obj;
 }
 

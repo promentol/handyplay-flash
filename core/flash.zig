@@ -165,21 +165,39 @@ pub const Player = struct {
             const qa = ctx.actions.items[i];
             if (qa.clip.removed) continue;
             const clip_obj = try self.clipObject(qa.clip);
-            var act = avm1.activation.Activation.init(
-                self.vm,
-                qa.code,
-                .{ .object = clip_obj },
-                clip_obj,
-                self.vm.active_pool,
-            );
-            _ = act.run() catch |e| self.reportUncaught(e);
+            switch (qa.what) {
+                .code => |code| {
+                    var act = avm1.activation.Activation.init(
+                        self.vm,
+                        code,
+                        .{ .object = clip_obj },
+                        clip_obj,
+                        self.vm.active_pool,
+                    );
+                    _ = act.run() catch |e| self.reportUncaught(e);
+                },
+                .method => |name| self.callClipHandler(clip_obj, name),
+            }
             try self.root.applyPendingGoto(&ctx);
         }
+        self.root.clearRanThisTick();
         self.retireDead(&ctx);
         self.vm.now_ms += self.frame_ms;
         self.vm.budget = 5_000_000;
         self.vm.halted = false;
         if (ctx.background_color) |c| self.background = c | 0xFF000000;
+    }
+
+    /// Invoke a script-assigned event handler (`clip.onEnterFrame = f`)
+    /// if one is present. Absent handlers are the common case, so this
+    /// must stay a cheap lookup miss.
+    fn callClipHandler(self: *Player, clip_obj: avm1.runtime.ObjectHandle, name: []const u8) void {
+        var buf: [24]u16 = undefined;
+        for (name, 0..) |c, i| buf[i] = c;
+        const wide = buf[0..name.len];
+        const f = self.vm.objects.getChained(clip_obj, wide, self.vm.case_sensitive) orelse return;
+        if (!self.vm.isCallable(f)) return;
+        _ = self.vm.callFunction(f, .{ .object = clip_obj }, &.{}) catch |e| self.reportUncaught(e);
     }
 
     /// A throw that escapes the outermost action is reported and execution

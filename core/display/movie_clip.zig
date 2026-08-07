@@ -62,7 +62,14 @@ pub const Context = struct {
 
 pub const QueuedAction = struct {
     clip: *MovieClip,
-    code: []const u8,
+    what: union(enum) {
+        /// A DoAction / ClipAction bytecode slice.
+        code: []const u8,
+        /// A handler the SCRIPT installed, e.g. `clip.onEnterFrame = f`.
+        /// Queued AFTER the SWF-defined handlers for the same event
+        /// (ruffle movie_clip.rs:2956-2970).
+        method: []const u8,
+    },
 };
 
 pub const MovieClip = struct {
@@ -121,9 +128,13 @@ pub const MovieClip = struct {
 
     /// One tick: advance this clip (when playing), then tick children.
     pub fn runFrame(self: *MovieClip, ctx: *Context) Error!void {
+        // The FIRST tick fires load instead of enterFrame; every later one
+        // fires enterFrame (ruffle run_frame_avm1:449-459).
         if (!self.initialized) {
             self.initialized = true;
-            // M3: fire onLoad here (instead of EnterFrame, before tags).
+            try self.dispatchClipEvent(ctx, swf.place.ClipEvent.LOAD, "onLoad");
+        } else {
+            try self.dispatchClipEvent(ctx, swf.place.ClipEvent.ENTER_FRAME, "onEnterFrame");
         }
         if (self.playing or self.current_frame == 0) {
             const next = self.determineNextFrame();
@@ -138,15 +149,40 @@ pub const MovieClip = struct {
         for (self.children.items) |child| {
             switch (child.kind) {
                 .clip => |mc| {
-                    if (mc.ran_this_tick) {
-                        mc.ran_this_tick = false;
-                        continue;
-                    }
+                    // Placed this tick: it already ran its first frame.
+                    if (mc.ran_this_tick) continue;
                     try mc.runFrame(ctx);
                 },
                 else => {},
             }
         }
+    }
+
+    /// Clear the "already ticked" marks for the whole subtree. This must
+    /// happen at END of tick: a clip created DURING the action drain sets
+    /// the flag after its parent's child loop has already run, so letting
+    /// the next tick's loop consume it would swallow that clip's first
+    /// enterFrame entirely.
+    pub fn clearRanThisTick(self: *MovieClip) void {
+        self.ran_this_tick = false;
+        for (self.children.items) |child| {
+            if (child.kind == .clip) child.kind.clip.clearRanThisTick();
+        }
+    }
+
+    /// Queue this clip's handlers for one event: the SWF-defined
+    /// `onClipEvent(...)` bodies first, then the script-assigned method.
+    /// Both are QUEUED, never run inline. SWF5+ only.
+    fn dispatchClipEvent(self: *MovieClip, ctx: *Context, flag: u32, comptime method: []const u8) Error!void {
+        if (ctx.movie.swf_version < 5) return;
+        if (self.placement) |p| {
+            for (p.clip_actions) |handler| {
+                if (handler.events & flag != 0) {
+                    try ctx.actions.append(ctx.gpa, .{ .clip = self, .what = .{ .code = handler.actions } });
+                }
+            }
+        }
+        try ctx.actions.append(ctx.gpa, .{ .clip = self, .what = .{ .method = method } });
     }
 
     /// Ruffle determine_next_frame: Same (implicit stop) when there is
@@ -167,11 +203,11 @@ pub const MovieClip = struct {
             .remove => |ro| try self.removeAtDepth(ctx, ro.depth),
             .set_background_color => |c| ctx.background_color = c,
             .do_action => |bytecode| if (run_actions) {
-                try ctx.actions.append(ctx.gpa, .{ .clip = self, .code = bytecode });
+                try ctx.actions.append(ctx.gpa, .{ .clip = self, .what = .{ .code = bytecode } });
             },
             .init_action => |ia| if (run_actions) {
                 // Initialize priority: runs before this frame's DoActions.
-                try ctx.actions.insert(ctx.gpa, ctx.init_count, .{ .clip = self, .code = ia.code });
+                try ctx.actions.insert(ctx.gpa, ctx.init_count, .{ .clip = self, .what = .{ .code = ia.code } });
                 ctx.init_count += 1;
             },
             .start_sound, .sound_stream_block => {}, // M6
@@ -386,6 +422,7 @@ fn applyPlacement(ctx: *Context, obj: *DisplayObject, po: swf.place.PlaceObject,
     if (initial) {
         if (po.name) |n| try obj.setNameFromSwf(ctx.gpa, n, ctx.movie.swf_version);
         if (po.clip_depth) |d| obj.clip_depth = d;
+        obj.clip_actions = po.clip_actions;
     }
 }
 
@@ -474,8 +511,14 @@ test "timeline: place, sprite instantiation, remove, implicit stop, goto replay"
     try testing.expectEqual(@as(u16, 3), root.current_frame);
     try testing.expectEqual(@as(usize, 1), root.children.items.len); // depth 1 removed
     // The Stop DoAction is QUEUED for the interpreter (M3 model), not run
-    // inline; simulate its effect for the remainder of the test.
-    try testing.expectEqual(@as(usize, 1), ctx.actions.items.len);
+    // inline; simulate its effect for the remainder of the test. Count
+    // only BYTECODE entries — every clip also queues an onLoad/
+    // onEnterFrame method entry per tick.
+    var code_entries: usize = 0;
+    for (ctx.actions.items) |qa| {
+        if (qa.what == .code) code_entries += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), code_entries);
     try testing.expectEqual(root.frames[2].controls.len, 2); // remove + do_action
     root.playing = false;
 

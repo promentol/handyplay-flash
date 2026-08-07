@@ -24,6 +24,7 @@ as_set_prop_flags_version_swf9
 as_transformed_flag
 attach_movie
 attach_movie_stop
+bad_placeobject_clipaction
 bad_swf_tag_past_eof
 bitand
 bitmap_data_colortransform
@@ -39,6 +40,7 @@ call_method_empty_name
 catch_references_registers
 closure_scope
 conflicting_instance_names
+create_empty_movie_clip
 define_font_glyph_table_order
 define_font_glyph_table_overlap
 define_function2
@@ -75,6 +77,7 @@ greaterthan_swf5
 greaterthan_swf8
 is_finite
 issue_1086
+issue_1104
 issue_1671
 issue_2166
 issue_3169
