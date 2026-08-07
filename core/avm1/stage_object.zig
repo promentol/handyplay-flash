@@ -106,6 +106,18 @@ pub fn displayValue(vm: *Vm, obj: *DisplayObject) !Value {
     return .{ .object = try displayObject(vm, obj) };
 }
 
+/// Is this handle a MovieClip that has been removed from the display list?
+/// A `setInterval(clip, "method", …)` stops firing when its clip goes away,
+/// and ruffle checks for exactly this (timer.rs:97-114) — an ordinary
+/// object with the same shape keeps firing.
+pub fn isRemovedClip(vm: *Vm, handle: ObjectHandle) bool {
+    if (handle == 0) return false;
+    const n = vm.objects.get(handle).native;
+    if (n != .clip) return false;
+    const mc: *MovieClip = @ptrCast(@alignCast(n.clip));
+    return mc.removed;
+}
+
 pub fn targetOfValue(vm: *Vm, v: Value) ?Target {
     return if (v == .object) targetOf(vm, v.object) else null;
 }

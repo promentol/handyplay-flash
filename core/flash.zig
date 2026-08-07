@@ -178,12 +178,23 @@ pub const Player = struct {
         try self.runInitActions(&ctx);
         try self.root.runFrame(&ctx);
         try self.root.applyPendingGoto(&ctx);
-        // Drain the action queue (actions can queue more via gotos —
-        // pending gotos apply between drains; new DoActions from replays
-        // stay suppressed per Ruffle's run_goto rule). A goto here can
-        // remove a clip whose own DoAction is still queued behind us; such
-        // clips are marked `removed` and stay alive until `retireDead`
-        // below, so the pointer is safe and scripts see undefined.
+        try self.drainActions(&ctx);
+        try self.updateTimers(&ctx);
+        self.root.clearRanThisTick();
+        self.retireDead(&ctx);
+        self.vm.now_ms += self.frame_ms;
+        self.vm.budget = 5_000_000;
+        self.vm.halted = false;
+        if (ctx.background_color) |c| self.background = c | 0xFF000000;
+    }
+
+    /// Drain the action queue (actions can queue more via gotos — pending
+    /// gotos apply between drains; new DoActions from replays stay
+    /// suppressed per Ruffle's run_goto rule). A goto here can remove a clip
+    /// whose own DoAction is still queued behind us; such clips are marked
+    /// `removed` and stay alive until `retireDead`, so the pointer is safe
+    /// and scripts see undefined.
+    fn drainActions(self: *Player, ctx: *display.movie_clip.Context) !void {
         while (ctx.popAction()) |qa| {
             if (qa.clip.removed) continue;
             const clip_obj = try self.clipObject(qa.clip);
@@ -209,14 +220,61 @@ pub const Player = struct {
                     }
                 },
             }
-            try self.root.applyPendingGoto(&ctx);
+            try self.root.applyPendingGoto(ctx);
         }
-        self.root.clearRanThisTick();
-        self.retireDead(&ctx);
-        self.vm.now_ms += self.frame_ms;
-        self.vm.budget = 5_000_000;
-        self.vm.halted = false;
-        if (ctx.background_color) |c| self.background = c | 0xFF000000;
+    }
+
+    /// Fire whatever timers came due this frame. Ruffle updates timers in
+    /// `Player::tick` AFTER `run_frame`, and drains the action queue between
+    /// callbacks, so a timer that gotos sees the effect before the next one
+    /// fires. Callbacks run with the ROOT as base clip.
+    fn updateTimers(self: *Player, ctx: *display.movie_clip.Context) !void {
+        const timers = &self.vm.timers;
+        timers.advance(self.frame_ms);
+        if (timers.list.items.len == 0) return;
+        const root_obj = try self.clipObject(&self.root);
+        var fired: u32 = 0;
+        while (timers.due()) |timer| {
+            fired += 1;
+            if (fired > @TypeOf(timers.*).MAX_TICKS) {
+                // Too many at once: rewind the clock to just before this
+                // one rather than starving the frame.
+                timers.backOff(timer);
+                break;
+            }
+            const id = timer.id;
+            const callback = timer.callback;
+            const params = timer.params;
+            const result = switch (callback) {
+                .func => |f| self.vm.callFunction(
+                    .{ .object = f },
+                    .{ .object = root_obj },
+                    params,
+                ),
+                // Resolved at FIRE time, so reassigning the method between
+                // ticks changes what runs — and a missing one just no-ops.
+                // A timer bound to a clip stops firing once that clip is
+                // removed, WITHOUT being cancelled (ruffle timer.rs:97-114).
+                .method => |m| blk: {
+                    if (avm1.stage_object.isRemovedClip(self.vm, m.this)) {
+                        break :blk avm1.value.Value.undefined_value;
+                    }
+                    const f = self.vm.getProperty(m.this, m.name, .{ .object = m.this }) catch
+                        avm1.value.Value.undefined_value;
+                    break :blk self.vm.callFunction(f, .{ .object = m.this }, params);
+                },
+            };
+            // A truthy return value cancels the interval (ruffle timer.rs
+            // `cancel_timer`).
+            const cancelled = if (result) |v|
+                avm1.value.toBoolean(v, self.vm.swf_version)
+            else |e| blk: {
+                self.reportUncaught(e);
+                break :blk false;
+            };
+            timers.reschedule(id, cancelled);
+            try self.drainActions(ctx);
+        }
     }
 
     /// Every `DoInitAction` in the main timeline, run once before the first
@@ -464,6 +522,7 @@ test {
     _ = @import("avm1/runtime.zig");
     _ = @import("avm1/activation.zig");
     _ = @import("avm1/stage_object.zig");
+    _ = @import("avm1/timers.zig");
     _ = @import("avm1/globals/decl.zig");
     _ = @import("avm1/globals/geom.zig");
     _ = @import("avm1/globals/movie_clip.zig");

@@ -158,6 +158,9 @@ pub const Vm = struct {
     /// is_over_property_recursion_limit), and the two watch_recursion tests
     /// measure exactly how deep it gets.
     property_call_stack: std.ArrayList(u64) = .empty,
+    /// setInterval/setTimeout registrations, ticked by the Player after
+    /// each frame's action drain.
+    timers: @import("timers.zig").Timers = .{},
     /// `Object.registerClass` symbol -> constructor. Small and rarely
     /// written, so a list beats a map; lookup obeys the movie's case rule.
     class_registry: std.ArrayList(ClassEntry) = .empty,
@@ -193,6 +196,7 @@ pub const Vm = struct {
         self.stack.deinit(gpa);
         self.pools.deinit(gpa);
         self.property_call_stack.deinit(gpa);
+        self.timers.deinit(gpa);
         self.trace_buf.deinit(gpa);
         self.arena_state.deinit();
         gpa.destroy(self.arena_state);

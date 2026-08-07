@@ -12,6 +12,7 @@ const value_mod = @import("../value.zig");
 const object_mod = @import("../object.zig");
 const runtime = @import("../runtime.zig");
 const decl = @import("decl.zig");
+const timers_mod = @import("../timers.zig");
 
 const Value = runtime.Value;
 const Vm = runtime.Vm;
@@ -155,6 +156,10 @@ pub fn install(vm: *Vm) !void {
     try method(vm, vm.globals, "escape", globalEscape, attrs);
     try method(vm, vm.globals, "unescape", globalUnescape, attrs);
     try method(vm, vm.globals, "updateAfterEvent", globalNoop, attrs);
+    try method(vm, vm.globals, "setInterval", globalSetInterval, attrs);
+    try method(vm, vm.globals, "setTimeout", globalSetTimeout, attrs);
+    try method(vm, vm.globals, "clearInterval", globalClearInterval, attrs);
+    try method(vm, vm.globals, "clearTimeout", globalClearInterval, attrs);
 
     // --- MovieClip ---------------------------------------------------------
     // The prototype has to exist before anything else touches it: clip
@@ -221,6 +226,56 @@ fn ctorMovieClip(p: *anyopaque, this: Value, args: []const Value) anyerror!Value
 
 const method = decl.method;
 const constNum = decl.constNum;
+
+/// `setInterval(fn, ms, ...args)` or `setInterval(obj, "name", ms, ...args)`.
+/// The first argument decides which: a FUNCTION takes the interval second,
+/// an ordinary object takes a method name second and the interval third.
+/// An `undefined` interval creates nothing and returns undefined — content
+/// uses that to feature-test.
+fn globalSetInterval(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    return createTimer(p, this, args, false);
+}
+
+fn globalSetTimeout(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    return createTimer(p, this, args, true);
+}
+
+fn createTimer(p: *anyopaque, this: Value, args: []const Value, is_timeout: bool) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    const first = arg(args, 0);
+    if (first != .object) return .undefined_value;
+
+    var callback: timers_mod.Callback = undefined;
+    var interval_arg: Value = .undefined_value;
+    var rest: []const Value = &.{};
+    if (vm.isCallable(first)) {
+        callback = .{ .func = first.object };
+        interval_arg = arg(args, 1);
+        rest = if (args.len > 2) args[2..] else &.{};
+    } else {
+        callback = .{ .method = .{
+            .this = first.object,
+            .name = try vm.toStringValue(arg(args, 1)),
+        } };
+        interval_arg = arg(args, 2);
+        rest = if (args.len > 3) args[3..] else &.{};
+    }
+    if (interval_arg == .undefined_value) return .undefined_value;
+    const interval = value_mod.toInt32(try vm.toNumber(interval_arg));
+
+    const params = try vm.arena().dupe(Value, rest);
+    const id = try vm.timers.add(vm.gpa, callback, params, interval, is_timeout);
+    return .{ .number = @floatFromInt(id) };
+}
+
+/// `clearInterval` and `clearTimeout` are the same function in Flash.
+fn globalClearInterval(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    _ = vm.timers.remove(value_mod.toInt32(try vm.toNumber(arg(args, 0))));
+    return .undefined_value;
+}
 
 /// A built-in that exists so scripts can call it, and does nothing
 /// (`updateAfterEvent` — meaningful only for a real display refresh).

@@ -135,6 +135,7 @@ remove_movie_clip
 removed_base_clip_tell_target
 removed_target_clip_scope
 root_global_parent
+set_interval
 set_target_2_swf5
 set_target_2_swf6
 set_target_2_swf7
@@ -169,6 +170,7 @@ tell_target_invalid_swf6
 this_swf7
 timeline_function_def
 timeout
+timer_run_actions
 transform
 try_catch_finally
 try_catch_stack
