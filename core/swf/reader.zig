@@ -42,7 +42,79 @@ pub const Matrix = struct {
     ty: i32 = 0,
 
     pub const identity: Matrix = .{};
+
+    /// `p ∘ c` — apply `c` first, then `p`. Same convention as
+    /// renderer.Transform.concat, which this mirrors in twips space.
+    pub fn mul(p: Matrix, c: Matrix) Matrix {
+        const cx: f64 = @floatFromInt(c.tx);
+        const cy: f64 = @floatFromInt(c.ty);
+        return .{
+            .a = p.a * c.a + p.c * c.b,
+            .b = p.b * c.a + p.d * c.b,
+            .c = p.a * c.c + p.c * c.d,
+            .d = p.b * c.c + p.d * c.d,
+            .tx = roundToI32(p.a * cx + p.c * cy) +% p.tx,
+            .ty = roundToI32(p.b * cx + p.d * cy) +% p.ty,
+        };
+    }
+
+    pub fn transformPoint(m: Matrix, x: i32, y: i32) [2]i32 {
+        const fx: f64 = @floatFromInt(x);
+        const fy: f64 = @floatFromInt(y);
+        return .{
+            roundToI32(m.a * fx + m.c * fy) +% m.tx,
+            roundToI32(m.b * fx + m.d * fy) +% m.ty,
+        };
+    }
+
+    /// AABB of the four transformed corners. Rotation grows the box, which
+    /// is exactly what `_width`/`_height` report.
+    pub fn transformRect(m: Matrix, r: Rectangle) Rectangle {
+        const p0 = m.transformPoint(r.xmin, r.ymin);
+        const p1 = m.transformPoint(r.xmin, r.ymax);
+        const p2 = m.transformPoint(r.xmax, r.ymin);
+        const p3 = m.transformPoint(r.xmax, r.ymax);
+        return .{
+            .xmin = @min(@min(p0[0], p1[0]), @min(p2[0], p3[0])),
+            .xmax = @max(@max(p0[0], p1[0]), @max(p2[0], p3[0])),
+            .ymin = @min(@min(p0[1], p1[1]), @min(p2[1], p3[1])),
+            .ymax = @max(@max(p0[1], p1[1]), @max(p2[1], p3[1])),
+        };
+    }
+
+    /// null when singular (determinant 0) — a fully-collapsed clip.
+    pub fn invert(m: Matrix) ?Matrix {
+        const det = m.a * m.d - m.b * m.c;
+        if (det == 0 or !std.math.isFinite(det)) return null;
+        const inv = 1.0 / det;
+        const ia = m.d * inv;
+        const ib = -m.b * inv;
+        const ic = -m.c * inv;
+        const id = m.a * inv;
+        const tx: f64 = @floatFromInt(m.tx);
+        const ty: f64 = @floatFromInt(m.ty);
+        return .{
+            .a = ia,
+            .b = ib,
+            .c = ic,
+            .d = id,
+            .tx = roundToI32(-(ia * tx + ic * ty)),
+            .ty = roundToI32(-(ib * tx + id * ty)),
+        };
+    }
 };
+
+/// ruffle render/src/matrix.rs `round_to_i32`: ties-to-even, NaN/inf → 0,
+/// out-of-range → i32 MIN. Also the guard against `@intFromFloat` UB.
+pub fn roundToI32(f: f64) i32 {
+    if (!std.math.isFinite(f)) return 0;
+    if (f >= 2147483648.0 or f < -2147483648.0) return std.math.minInt(i32);
+    var r = @round(f); // @round is ties-AWAY-from-zero; nudge the ties back.
+    if (@abs(f - @trunc(f)) == 0.5 and @mod(r, 2) != 0) {
+        r -= if (f > 0) @as(f64, 1) else @as(f64, -1);
+    }
+    return @intFromFloat(r);
+}
 
 /// SWF CXFORM. Multipliers are raw signed 8.8 fixed (256 = 1.0) and adds
 /// are [-255, 255] — byte-compatible with simdra's SmPaint.ColorTransform
@@ -407,4 +479,35 @@ fn writeBits(buf: []u8, fields: []const struct { u32, u6 }) void {
             bit += 1;
         }
     }
+}
+
+test "Matrix mul/transformRect/invert and ties-to-even rounding" {
+    const t = std.testing;
+    // Ties round to even, NaN/inf to 0, out-of-range to i32 MIN.
+    try t.expectEqual(@as(i32, 2), roundToI32(2.5));
+    try t.expectEqual(@as(i32, 4), roundToI32(3.5));
+    try t.expectEqual(@as(i32, -2), roundToI32(-2.5));
+    try t.expectEqual(@as(i32, -4), roundToI32(-3.5));
+    try t.expectEqual(@as(i32, 1), roundToI32(1.4));
+    try t.expectEqual(@as(i32, 0), roundToI32(std.math.nan(f64)));
+    try t.expectEqual(@as(i32, 0), roundToI32(std.math.inf(f64)));
+
+    // Scale-then-translate composes as parent ∘ child.
+    const scale: Matrix = .{ .a = 2, .d = 2 };
+    const move: Matrix = .{ .tx = 10, .ty = 20 };
+    const m = scale.mul(move);
+    try t.expectEqual(@as(i32, 20), m.tx);
+    try t.expectEqual(@as(i32, 40), m.ty);
+
+    // 90° rotation swaps the extents of a non-square box.
+    const rot: Matrix = .{ .a = 0, .b = 1, .c = -1, .d = 0 };
+    const r = rot.transformRect(.{ .xmin = 0, .xmax = 100, .ymin = 0, .ymax = 40 });
+    try t.expectEqual(@as(i32, 40), r.width());
+    try t.expectEqual(@as(i32, 100), r.height());
+
+    const inv = m.invert().?;
+    const back = inv.transformPoint(m.tx, m.ty);
+    try t.expectEqual(@as(i32, 0), back[0]);
+    try t.expectEqual(@as(i32, 0), back[1]);
+    try t.expectEqual(@as(?Matrix, null), (Matrix{ .a = 0, .b = 0, .c = 0, .d = 0 }).invert());
 }

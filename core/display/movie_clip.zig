@@ -32,6 +32,28 @@ pub const Context = struct {
     /// entries (DoInitAction) occupy the first `init_count` slots.
     actions: std.ArrayList(QueuedAction) = .empty,
     init_count: usize = 0,
+    /// Children removed this tick, NOT yet freed. The action queue holds
+    /// raw `*MovieClip`s and AVM1 objects hold them via `native.clip`, so
+    /// freeing at removal time is a use-after-free: a queued script that
+    /// calls `gotoAndStop` can destroy a clip whose own DoAction is still
+    /// sitting in the queue. Removal marks the subtree `removed` (scripts
+    /// then see undefined, as in ruffle's avm1_removed) and defers the
+    /// free to the end of the tick.
+    graveyard: std.ArrayList(*DisplayObject) = .empty,
+
+    pub fn deinit(self: *Context, gpa: std.mem.Allocator) void {
+        self.drainGraveyard(gpa);
+        self.graveyard.deinit(gpa);
+        self.actions.deinit(gpa);
+    }
+
+    pub fn drainGraveyard(self: *Context, gpa: std.mem.Allocator) void {
+        for (self.graveyard.items) |obj| {
+            obj.deinit(gpa);
+            gpa.destroy(obj);
+        }
+        self.graveyard.clearRetainingCapacity();
+    }
 };
 
 pub const QueuedAction = struct {
@@ -57,6 +79,14 @@ pub const MovieClip = struct {
     /// runs its first frame on placement, so the parent's child-tick loop
     /// must skip it (otherwise it advances twice in one tick).
     ran_this_tick: bool = false,
+    /// The DisplayObject that placed this clip. Null only for the root,
+    /// whose placement the Player owns. `matrix`/`color_transform`/`name`
+    /// live there, not here, so every display property goes through it.
+    placement: ?*DisplayObject = null,
+    parent: ?*MovieClip = null,
+    /// Off the display list but possibly still referenced by AVM1 (ruffle
+    /// avm1_removed): property reads must yield undefined, not garbage.
+    removed: bool = false,
 
     pub fn init(frames: []const library.Frame) MovieClip {
         return .{ .frames = frames };
@@ -127,7 +157,7 @@ pub const MovieClip = struct {
         const frame = self.frames[frame_num - 1];
         for (frame.controls) |control| switch (control) {
             .place => |po| try self.placeObject(ctx, po, frame_num),
-            .remove => |ro| self.removeAtDepth(ctx, ro.depth),
+            .remove => |ro| try self.removeAtDepth(ctx, ro.depth),
             .set_background_color => |c| ctx.background_color = c,
             .do_action => |bytecode| if (run_actions) {
                 try ctx.actions.append(ctx.gpa, .{ .clip = self, .code = bytecode });
@@ -158,7 +188,13 @@ pub const MovieClip = struct {
             return;
         };
         self.pending_goto = null;
-        if (target == self.current_frame) return;
+        if (target == self.current_frame) {
+            // A no-op goto on THIS clip must still let children apply theirs.
+            for (self.children.items) |child| {
+                if (child.kind == .clip) try child.kind.clip.applyPendingGoto(ctx);
+            }
+            return;
+        }
         // Rewind: children placed on frames at or before the target
         // SURVIVE (ruffle run_goto survives_rewind) — only later
         // placements are dropped. Replaying from frame 1 is then safe:
@@ -171,8 +207,7 @@ pub const MovieClip = struct {
                 const child = self.children.items[i];
                 if (child.place_frame > target) {
                     _ = self.children.orderedRemove(i);
-                    child.deinit(ctx.gpa);
-                    ctx.gpa.destroy(child);
+                    try retire(ctx, child);
                     continue;
                 }
                 i += 1;
@@ -199,12 +234,11 @@ pub const MovieClip = struct {
         return null;
     }
 
-    fn removeAtDepth(self: *MovieClip, ctx: *Context, depth: u16) void {
+    fn removeAtDepth(self: *MovieClip, ctx: *Context, depth: u16) Error!void {
         for (self.children.items, 0..) |child, i| {
             if (child.depth == depth) {
                 _ = self.children.orderedRemove(i);
-                child.deinit(ctx.gpa);
-                ctx.gpa.destroy(child);
+                try retire(ctx, child);
                 return;
             }
         }
@@ -218,12 +252,12 @@ pub const MovieClip = struct {
                 try self.instantiate(ctx, id, po, frame_num);
             },
             .replace => |id| {
-                self.removeAtDepth(ctx, po.depth);
+                try self.removeAtDepth(ctx, po.depth);
                 try self.instantiate(ctx, id, po, frame_num);
             },
             .modify => {
                 const child = self.childAtDepth(po.depth) orelse return;
-                applyPlacement(child, po);
+                try applyPlacement(ctx, child, po, false);
             },
         }
     }
@@ -251,7 +285,11 @@ pub const MovieClip = struct {
             .place_frame = frame_num,
             .kind = kind,
         };
-        applyPlacement(obj, po);
+        if (kind == .clip) {
+            kind.clip.placement = obj;
+            kind.clip.parent = self;
+        }
+        try applyPlacement(ctx, obj, po, true);
         // Insert keeping depth order (render walks the list directly).
         var insert_at: usize = self.children.items.len;
         for (self.children.items, 0..) |child, i| {
@@ -270,14 +308,43 @@ pub const MovieClip = struct {
     }
 };
 
-fn applyPlacement(obj: *DisplayObject, po: swf.place.PlaceObject) void {
-    if (po.matrix) |m| obj.matrix = m;
-    if (po.color_transform) |t| obj.color_transform = t;
-    if (po.ratio) |x| obj.ratio = x;
-    if (po.name) |n| obj.name = n;
-    if (po.clip_depth) |d| obj.clip_depth = d;
-    if (po.blend_mode) |m| obj.blend_mode = m;
-    if (po.is_visible) |v| obj.visible = v;
+/// ruffle `apply_place_object` (display_object.rs). The whole transform
+/// block is skipped once a script has moved the object, otherwise a
+/// PlaceObject2-with-move on a later frame — or a goto replay — silently
+/// undoes every scripted `_x`/`_alpha`.
+///
+/// `name` and `clip_depth` are deliberately outside that gate AND only
+/// applied at initial placement, matching ruffle's instantiate_child.
+fn applyPlacement(ctx: *Context, obj: *DisplayObject, po: swf.place.PlaceObject, initial: bool) Error!void {
+    if (initial or !obj.transformed_by_script) {
+        if (po.matrix) |m| obj.setMatrix(m);
+        if (po.color_transform) |t| obj.color_transform = t;
+        if (po.ratio) |x| obj.ratio = x;
+        if (po.blend_mode) |m| obj.blend_mode = m;
+        // PlaceObject's visibility flag is honoured only from SWF 11 on.
+        if (po.is_visible) |v| {
+            if (ctx.movie.swf_version >= 11) obj.visible = v;
+        }
+    }
+    if (initial) {
+        if (po.name) |n| try obj.setNameFromSwf(ctx.gpa, n, ctx.movie.swf_version);
+        if (po.clip_depth) |d| obj.clip_depth = d;
+    }
+}
+
+/// Take a child off the display list without freeing it yet. Marks the
+/// whole clip subtree `removed` so AVM1 reads return undefined, and hands
+/// the object to the tick's graveyard.
+fn retire(ctx: *Context, obj: *DisplayObject) Error!void {
+    markRemoved(obj);
+    try ctx.graveyard.append(ctx.gpa, obj);
+}
+
+fn markRemoved(obj: *DisplayObject) void {
+    if (obj.kind != .clip) return;
+    const mc = obj.kind.clip;
+    mc.removed = true;
+    for (mc.children.items) |child| markRemoved(child);
 }
 
 // --- Tests -----------------------------------------------------------------
@@ -324,7 +391,7 @@ test "timeline: place, sprite instantiation, remove, implicit stop, goto replay"
     var movie = try makeMovie(gpa);
     defer movie.deinit();
     var ctx: Context = .{ .gpa = gpa, .movie = &movie };
-    defer ctx.actions.deinit(gpa);
+    defer ctx.deinit(gpa);
 
     var root = MovieClip.init(movie.frames);
     defer root.deinit(gpa);
@@ -372,7 +439,7 @@ test "single-frame clip implicitly stops; multi-frame loops" {
     var movie = try makeMovie(gpa);
     defer movie.deinit();
     var ctx: Context = .{ .gpa = gpa, .movie = &movie };
-    defer ctx.actions.deinit(gpa);
+    defer ctx.deinit(gpa);
     var root = MovieClip.init(movie.frames);
     defer root.deinit(gpa);
     // Play through 3 frames, tick again → loops to 1.

@@ -30,11 +30,10 @@ pub const Host = struct {
     goto_label: ?*const fn (ctx: *anyopaque, clip: *anyopaque, label: []const u16, play: bool) bool = null,
     set_playing: ?*const fn (ctx: *anyopaque, clip: *anyopaque, playing: bool) void = null,
     next_prev: ?*const fn (ctx: *anyopaque, clip: *anyopaque, delta: i2) void = null,
-    get_property: ?*const fn (ctx: *anyopaque, clip: *anyopaque, index: u8) f64 = null,
-    set_property: ?*const fn (ctx: *anyopaque, clip: *anyopaque, index: u8, v: f64) void = null,
-    resolve_target: ?*const fn (ctx: *anyopaque, from: *anyopaque, path: []const u16) ?*anyopaque = null,
-    clip_object: ?*const fn (ctx: *anyopaque, clip: *anyopaque, vm: *Vm) ObjectHandle = null,
 };
+
+/// Stage render quality — `_quality` / `_highquality` read and write it.
+pub const Quality = enum { low, medium, high, best };
 
 pub const Vm = struct {
     gpa: std.mem.Allocator,
@@ -71,6 +70,14 @@ pub const Vm = struct {
     max_call_depth: u32 = 256,
     halted: bool = false,
     host: Host = .{},
+    /// Stage state the display-property table reads and writes. Not part
+    /// of any clip, so it lives here rather than behind a Host hook.
+    quality: Quality = .high,
+    sound_buf_time: i32 = 5,
+    stage_focus_rect: bool = true,
+    /// Mouse position in stage pixels; the frontend writes it (M4-C).
+    mouse_x: f64 = 0,
+    mouse_y: f64 = 0,
     /// trace() output collects here as UTF-8 lines.
     trace_buf: std.ArrayList(u8) = .empty,
     /// Scratch for cross-frame throw propagation (unused in M3 — uncaught

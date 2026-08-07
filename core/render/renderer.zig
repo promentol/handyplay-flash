@@ -84,18 +84,28 @@ pub const Renderer = struct {
     }
 
     /// Render one frame: clear to the background, then walk the tree.
+    /// `root_placement` carries the root clip's own transform — the root
+    /// has no parent to hold it, but `_root._x`/`_alpha`/`_visible` are
+    /// writable, so it is applied here between the stage and the tree.
     pub fn renderFrame(
         self: *Renderer,
         canvas: *canvas_mod.Canvas,
         root: *const movie_clip.MovieClip,
+        root_placement: *const display_object.DisplayObject,
         background: swf.reader.Color,
         stage: Transform,
     ) !void {
         // Opaque background (logical RGBA → surface order fill).
         const bg = background | 0xFF000000;
         simdra.simd.fillU32(canvas.surface.pixels, simdra.simd.swizzleRB(bg));
+        if (!root_placement.visible) return;
         const ctx = try canvas.ctx();
-        try self.renderClip(ctx, root, stage, .{});
+        try self.renderClip(
+            ctx,
+            root,
+            stage.concat(root_placement.matrix),
+            root_placement.color_transform,
+        );
         ctx.setColorTransform(.{}); // leave ctx state clean
     }
 
@@ -328,6 +338,7 @@ test "render a placed square shape through the full pipeline" {
     defer movie.deinit();
 
     var ctx_: movie_clip.Context = .{ .gpa = gpa, .movie = &movie };
+    defer ctx_.deinit(gpa);
     var root = movie_clip.MovieClip.init(movie.frames);
     defer root.deinit(gpa);
     try root.runFrame(&ctx_);
@@ -336,7 +347,13 @@ test "render a placed square shape through the full pipeline" {
     defer canvas.deinit();
     var renderer = Renderer.init(movie.allocator());
     const stage: Transform = .{ .a = 1.0 / 20.0, .d = 1.0 / 20.0 };
-    try renderer.renderFrame(&canvas, &root, 0x00FFFFFF, stage);
+    var root_placement: display_object.DisplayObject = .{
+        .character_id = 0,
+        .depth = 0,
+        .kind = .{ .clip = &root },
+        .owns_kind = false,
+    };
+    try renderer.renderFrame(&canvas, &root, &root_placement, 0x00FFFFFF, stage);
 
     // Whole 10x10 canvas should be red (surface order BGRA: R in byte 2).
     // ±2 LSB tolerance absorbs the AA coverage rounding (same tolerance

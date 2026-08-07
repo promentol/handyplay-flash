@@ -103,7 +103,15 @@ cxforms concat (8.8 fixed) and pass STRAIGHT into simdra's
 These ops currently pop correctly but act as stubs (all in
 `core/avm1/activation.zig`; search for "M3.5"/"M4" comments):
 
-### A1. GetProperty / SetProperty (0x22/0x23)
+### A1. GetProperty / SetProperty (0x22/0x23) — ✅ DONE
+Landed in `core/avm1/stage_object.zig`, together with the named form
+(`mc._x`) since Ruffle serves both from one table. Two corrections to the
+spec text below, found while implementing:
+  • scale/rotation are a CACHED decomposition, not re-derived per read —
+    `sqrt(a²+b²)` drifts and `stage_property_representation` demands 300
+    exact round-trips. Store percent and degrees, not units and radians.
+  • `Twips::from_pixels` TRUNCATES; `_x = 1.234` is 24 twips, not 25.
+
 The SWF4 indexed property table. Reference:
 `reference/ruffle/core/src/avm1/object/stage_object.rs:279` — order is
 LOAD-BEARING (it IS the index):

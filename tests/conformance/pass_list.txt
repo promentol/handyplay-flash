@@ -7,9 +7,11 @@ array_concat
 array_enumerate
 array_properties
 array_prototyping
+array_slice
 array_trivial
 as1_constructor_v7
 as_broadcaster_initialize
+as_transformed_flag
 bad_swf_tag_past_eof
 bitand
 bitmap_data_colortransform
@@ -23,12 +25,14 @@ bitxor
 call_method_empty_name
 catch_references_registers
 closure_scope
+conflicting_instance_names
 define_font_glyph_table_order
 define_font_glyph_table_overlap
 define_function2
 define_function_case_sensitive
 delete
 depth_replacement_audio_unloading
+display_object_properties
 do_init_action
 equals
 equals_swf4_alt
@@ -38,6 +42,9 @@ execution_order3
 focusrect_mouse_swf8
 focusrect_mouse_swf9
 focusrect_swf5
+getproperty
+getproperty_swf4
+getproperty_swf5
 goto_advance2
 goto_both_ways1
 goto_both_ways2
@@ -69,6 +76,10 @@ prototype_properties
 shared_object_serialize_typed_objects
 single_frame
 sound_start_load
+stage_object_properties
+stage_object_properties_get_var
+stage_object_properties_swf6
+stage_property_representation
 strictly_equals
 string_paths_keyevents
 string_paths_timer

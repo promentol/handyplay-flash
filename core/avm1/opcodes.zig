@@ -337,7 +337,8 @@ pub const PushValue = union(enum) {
     register: u8,
     boolean: bool,
     double: f64,
-    int: u32,
+    /// ActionPush type 7 is SIGNED (ruffle read.rs:328 read_i32).
+    int: i32,
     const8: u8,
     const16: u16,
 };
@@ -360,7 +361,7 @@ pub const PushIterator = struct {
             4 => .{ .register = self.r.readU8() catch return null },
             5 => .{ .boolean = (self.r.readU8() catch return null) != 0 },
             6 => .{ .double = self.r.readF64Swapped() catch return null },
-            7 => .{ .int = self.r.readU32() catch return null },
+            7 => .{ .int = self.r.readI32() catch return null },
             8 => .{ .const8 = self.r.readU8() catch return null },
             9 => .{ .const16 = self.r.readU16() catch return null },
             else => null, // invalid type kills the rest of the run
@@ -405,7 +406,7 @@ test "decode simple ops, push runs, jumps" {
     var it = PushIterator.init(a1.push);
     try std.testing.expectEqualStrings("hi", it.next().?.string);
     try std.testing.expectEqual(@as(f64, 1.0), it.next().?.double);
-    try std.testing.expectEqual(@as(u32, 7), it.next().?.int);
+    try std.testing.expectEqual(@as(i32, 7), it.next().?.int);
     try std.testing.expectEqual(@as(?PushValue, null), it.next());
 
     try std.testing.expectEqual(OpCode.add2, (try readAction(&r)).?.simple);

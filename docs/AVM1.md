@@ -13,11 +13,16 @@ Status: `todo` → `decode` (opcodes.zig) → `exec` (interpreter) → `done`
 **M3 CLOSED**: every opcode 0x00–0x9F decodes and executes. All ops are
 `exec` except the stubs listed below (they pop their operands correctly
 but have no effect yet) — promotion is workstream A of docs/M4-SPEC.md.
-Corpus: 76/697 (tests/conformance/pass_list.txt).
+Corpus: 92/696 (tests/conformance/pass_list.txt).
+
+**M4-A1 landed**: GetProperty/SetProperty (0x22/23) are real, sharing one
+22-entry table in `core/avm1/stage_object.zig` with the named form
+(`mc._x`) reached through GetMember/SetMember/GetVariable/SetVariable.
+`_xmouse`/`_ymouse` read the (still-zero) `Vm.mouse_*` until workstream C
+wires the frontend; `_droptarget` awaits StartDrag; `_url` is always "".
 
 | Stub | Why | Milestone |
 |---|---|---|
-| GetProperty / SetProperty (0x22/23) | needs the `_x`.._ymouse display table | M4 |
 | TargetPath (0x45) | needs clip path strings | M4 |
 | CloneSprite / RemoveSprite (0x24/25) | duplicateMovieClip | M4 |
 | StartDrag / EndDrag (0x27/28) | needs mouse state | M4 |
@@ -68,8 +73,8 @@ Corpus: 76/697 (tests/conformance/pass_list.txt).
 | 0x1D | SetVariable | exec | |
 | 0x20 | SetTarget2 | exec | dynamic SetTarget |
 | 0x21 | StringAdd | exec | |
-| 0x22 | GetProperty | exec | index into display-prop table (order load-bearing) |
-| 0x23 | SetProperty | exec | |
+| 0x22 | GetProperty | done | index into display-prop table (order load-bearing) |
+| 0x23 | SetProperty | done | value coerced by index even when the write is dropped |
 | 0x24 | CloneSprite | exec | |
 | 0x25 | RemoveSprite | exec | |
 | 0x26 | Trace | exec | → trace_sink |

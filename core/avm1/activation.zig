@@ -15,6 +15,7 @@ const value_mod = @import("value.zig");
 const object_mod = @import("object.zig");
 const opcodes = @import("opcodes.zig");
 const runtime = @import("runtime.zig");
+const stage = @import("stage_object.zig");
 
 const Value = runtime.Value;
 const Vm = runtime.Vm;
@@ -127,7 +128,7 @@ pub const Activation = struct {
     /// the scope chain; clip traversal proper lands with the display glue.
     fn getVariable(self: *Activation, name: strings.AvmString) !Value {
         if (pathSeparator(name) == null) {
-            return self.vm.scopeGet(self.scope, name) orelse .undefined_value;
+            return try self.scopeLookup(name) orelse .undefined_value;
         }
         var it = PathIter.init(name);
         var current: Value = .undefined_value;
@@ -139,7 +140,7 @@ pub const Activation = struct {
                 continue;
             }
             if (first) {
-                current = self.vm.scopeGet(self.scope, part) orelse return .undefined_value;
+                current = try self.scopeLookup(part) orelse return .undefined_value;
                 first = false;
                 continue;
             }
@@ -150,7 +151,7 @@ pub const Activation = struct {
 
     fn setVariable(self: *Activation, name: strings.AvmString, v: Value) !void {
         const sep = pathSeparator(name) orelse {
-            try self.vm.scopeSet(self.scope, name, v);
+            try self.scopeAssign(name, v);
             return;
         };
         _ = sep;
@@ -168,6 +169,41 @@ pub const Activation = struct {
         if (container == .object) {
             try self.memberSet(container, member, v);
         }
+    }
+
+    /// Vm.scopeGet, but each scope object that is a clip also exposes its
+    /// children, `_parent`/`_root` and the display properties — timeline
+    /// code says bare `_x` and bare `myClip`, not `this._x`.
+    fn scopeLookup(self: *Activation, name: strings.AvmString) !?Value {
+        const cs = self.vm.case_sensitive;
+        var cur = self.scope;
+        while (cur != 0) {
+            if (self.vm.objects.getChained(cur, name, cs)) |_| {
+                return try self.vm.getProperty(cur, name, .{ .object = cur });
+            }
+            if (try stage.resolveMember(self.vm, cur, name)) |v| return v;
+            cur = self.vm.objects.get(cur).scope_parent;
+        }
+        return self.vm.objects.getChained(self.vm.globals, name, cs);
+    }
+
+    /// Vm.scopeSet's counterpart to `scopeLookup`: a bare `_x = 10` in
+    /// timeline code has to reach the clip's display property, not define
+    /// a plain variable that shadows it forever.
+    fn scopeAssign(self: *Activation, name: strings.AvmString, v: Value) !void {
+        const cs = self.vm.case_sensitive;
+        var cur = self.scope;
+        var bottom = self.scope;
+        while (cur != 0) {
+            if (self.vm.objects.hasOwn(cur, name, cs)) {
+                try self.vm.objects.put(cur, name, v, cs);
+                return;
+            }
+            if (try stage.assignMember(self.vm, cur, name, v)) return;
+            bottom = cur;
+            cur = self.vm.objects.get(cur).scope_parent;
+        }
+        try self.vm.objects.put(bottom, name, v, cs);
     }
 
     fn pathSeparator(name: strings.AvmString) ?usize {
@@ -215,6 +251,12 @@ pub const Activation = struct {
                 if (strings.eqlIgnoreCase(name, S("__proto__"))) {
                     return self.vm.objects.get(h).proto;
                 }
+                // A clip's own (and inherited) members win; only when
+                // there is no binding at all do path props, children and
+                // display props get a look in.
+                if (self.vm.objects.getChained(h, name, self.vm.case_sensitive) == null) {
+                    if (try stage.resolveMember(self.vm, h, name)) |v| return v;
+                }
                 return self.vm.getProperty(h, name, target);
             },
             .string => |s| {
@@ -256,6 +298,9 @@ pub const Activation = struct {
             self.vm.objects.get(h).proto = if (v == .object) v else .undefined_value;
             return;
         }
+        // A display property name writes through to the clip; anything
+        // else is an ordinary put on the clip's own ScriptObject.
+        if (try stage.assignMember(self.vm, h, name, v)) return;
         const o = self.vm.objects.get(h);
         if (o.native == .array) {
             // Numeric keys maintain length.
@@ -810,18 +855,33 @@ pub const Activation = struct {
             },
             .get_property => {
                 const index = try self.popNumber();
-                const target = try self.popString();
-                _ = target;
-                _ = index; // M3.5 display glue
-                try self.push(.undefined_value);
+                // NOT popString: an operand that already IS a clip must
+                // short-circuit, and otherwise its toString is observable.
+                const path = self.pop();
+                const target = try self.resolveDisplayTarget(path);
+                const prop = propertyIndex(index);
+                if (target != null and prop != null) {
+                    try self.push(try stage.getByIndex(self.vm, target.?, prop.?));
+                } else {
+                    try self.push(.undefined_value);
+                }
             },
             .set_property => {
-                const v = try self.popNumber();
+                const v = self.pop();
                 const index = try self.popNumber();
-                const target = try self.popString();
-                _ = v;
-                _ = index;
-                _ = target; // M3.5 display glue
+                const path = self.pop();
+                const target = try self.resolveDisplayTarget(path);
+                const prop = propertyIndex(index);
+                if (prop) |i| {
+                    const read_only = stage.PROPERTIES[i].set == null;
+                    if (target == null or read_only) {
+                        // Coerce anyway — valueOf/toString are observable
+                        // even though the write goes nowhere.
+                        _ = try stage.actionPropertyCoerce(self.vm, i, v);
+                    } else {
+                        try stage.setByIndex(self.vm, target.?, i, v);
+                    }
+                }
             },
             .clone_sprite => {
                 _ = self.pop();
@@ -1008,6 +1068,18 @@ pub const Activation = struct {
         return self.this;
     }
 
+    /// GetProperty/SetProperty's target operand. An empty path means "the
+    /// current target clip"; anything else resolves as a variable path.
+    /// A missing target yields null and the op pushes undefined.
+    fn resolveDisplayTarget(self: *Activation, path: Value) !?stage.Target {
+        // A value that already is a clip is used directly.
+        if (stage.targetOfValue(self.vm, path)) |t| return t;
+        const s = try self.vm.toStringValue(path);
+        if (s.len == 0) return stage.targetOfValue(self.vm, self.targetValue());
+        const resolved = try self.getVariable(s);
+        return stage.targetOfValue(self.vm, resolved);
+    }
+
     // --- host bridges (movie control) -------------------------------------
 
     fn currentClip(self: *Activation) ?*anyopaque {
@@ -1043,6 +1115,15 @@ pub const Activation = struct {
         if (host.next_prev) |f| f(host.ctx.?, clip, delta);
     }
 };
+
+/// GetProperty/SetProperty's index operand. Non-finite or <= -1 is not a
+/// property at all; everything else truncates toward zero, so -0.8 is
+/// index 0 (`_x`) rather than an error.
+fn propertyIndex(n: f64) ?usize {
+    if (!std.math.isFinite(n) or n <= -1.0) return null;
+    const i: usize = @intFromFloat(@max(n, 0));
+    return if (i < stage.PROPERTIES.len) i else null;
+}
 
 fn ecmaMod(a: f64, b: f64) f64 {
     if (std.math.isNan(a) or std.math.isNan(b) or b == 0 or std.math.isInf(a)) return std.math.nan(f64);

@@ -13,11 +13,13 @@ pub const avm1 = struct {
     pub const object = @import("avm1/object.zig");
     pub const runtime = @import("avm1/runtime.zig");
     pub const activation = @import("avm1/activation.zig");
+    pub const stage_object = @import("avm1/stage_object.zig");
 };
 
 pub const display = struct {
     pub const library = @import("display/library.zig");
     pub const display_object = @import("display/display_object.zig");
+    pub const bounds = @import("display/bounds.zig");
     pub const movie_clip = @import("display/movie_clip.zig");
     // M4: button.zig, text.zig.
 };
@@ -40,6 +42,10 @@ pub const Player = struct {
     gpa: std.mem.Allocator,
     movie: swf.movie.Movie,
     root: display.movie_clip.MovieClip,
+    /// The root clip has no parent to hold its placement, but AVM1 can
+    /// still write `_root._x`/`_alpha`/`_visible`, so the Player owns one.
+    /// `owns_kind` is false — `root` is a field, not a heap allocation.
+    root_placement: display.display_object.DisplayObject,
     canvas: render.canvas.Canvas,
     renderer: render.renderer.Renderer,
     background: swf.reader.Color,
@@ -63,12 +69,22 @@ pub const Player = struct {
             .gpa = gpa,
             .movie = movie,
             .root = display.movie_clip.MovieClip.init(movie.frames),
+            .root_placement = undefined,
             .canvas = try render.canvas.Canvas.init(gpa, w, h),
             .renderer = render.renderer.Renderer.init(self.movie.allocator()),
             .background = (movie.background_color orelse 0x00FFFFFF) | 0xFF000000,
             .vm = try Vm.create(gpa, movie.swf_version),
             .frame_ms = 1000.0 / @as(f64, fps_clamped),
         };
+        // After the literal: both halves need `self` to be at its final
+        // address, and frame 1 below can already touch `_root._x`.
+        self.root_placement = .{
+            .character_id = 0,
+            .depth = 0,
+            .kind = .{ .clip = &self.root },
+            .owns_kind = false,
+        };
+        self.root.placement = &self.root_placement;
         self.installHost();
         // Frame 1 executes immediately so the first present isn't blank.
         try self.runOneFrame();
@@ -105,15 +121,19 @@ pub const Player = struct {
 
     fn runOneFrame(self: *Player) !void {
         var ctx: display.movie_clip.Context = .{ .gpa = self.gpa, .movie = &self.movie };
-        defer ctx.actions.deinit(self.gpa);
+        defer ctx.deinit(self.gpa);
         try self.root.runFrame(&ctx);
         try self.root.applyPendingGoto(&ctx);
         // Drain the action queue (actions can queue more via gotos —
         // pending gotos apply between drains; new DoActions from replays
-        // stay suppressed per Ruffle's run_goto rule).
+        // stay suppressed per Ruffle's run_goto rule). A goto here can
+        // remove a clip whose own DoAction is still queued behind us; such
+        // clips are marked `removed` and stay alive until `retireDead`
+        // below, so the pointer is safe and scripts see undefined.
         var i: usize = 0;
         while (i < ctx.actions.items.len) : (i += 1) {
             const qa = ctx.actions.items[i];
+            if (qa.clip.removed) continue;
             const clip_obj = try self.clipObject(qa.clip);
             var act = avm1.activation.Activation.init(
                 self.vm,
@@ -125,10 +145,27 @@ pub const Player = struct {
             _ = act.run() catch {};
             try self.root.applyPendingGoto(&ctx);
         }
+        self.retireDead(&ctx);
         self.vm.now_ms += self.frame_ms;
         self.vm.budget = 200_000;
         self.vm.halted = false;
         if (ctx.background_color) |c| self.background = c | 0xFF000000;
+    }
+
+    /// Free the clips removed during this tick, now that no queued action
+    /// can still reference them. Their AVM1 objects may outlive them (a
+    /// script can hold the reference), so sever the native link first —
+    /// otherwise every later property read is a use-after-free.
+    fn retireDead(self: *Player, ctx: *display.movie_clip.Context) void {
+        for (ctx.graveyard.items) |obj| self.severClipObjects(obj);
+        ctx.drainGraveyard(self.gpa);
+    }
+
+    fn severClipObjects(self: *Player, obj: *display.display_object.DisplayObject) void {
+        if (obj.kind != .clip) return;
+        const mc = obj.kind.clip;
+        if (mc.avm_object != 0) self.vm.objects.get(mc.avm_object).native = .none;
+        for (mc.children.items) |child| self.severClipObjects(child);
     }
 
     /// Lazily create/fetch the AVM1 object for a clip. The clip object IS
@@ -217,7 +254,13 @@ pub const Player = struct {
             .tx = -@as(f64, @floatFromInt(self.movie.header.xmin)) * inv_twips,
             .ty = -@as(f64, @floatFromInt(self.movie.header.ymin)) * inv_twips,
         };
-        try self.renderer.renderFrame(&self.canvas, &self.root, self.background, stage);
+        try self.renderer.renderFrame(
+            &self.canvas,
+            &self.root,
+            &self.root_placement,
+            self.background,
+            stage,
+        );
     }
 
     /// XRGB8888 little-endian, width()*height().
@@ -248,6 +291,7 @@ test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("display/library.zig");
     _ = @import("display/display_object.zig");
+    _ = @import("display/bounds.zig");
     _ = @import("display/movie_clip.zig");
     _ = @import("render/canvas.zig");
     _ = @import("render/shape_utils.zig");
@@ -258,5 +302,6 @@ test {
     _ = @import("avm1/object.zig");
     _ = @import("avm1/runtime.zig");
     _ = @import("avm1/activation.zig");
+    _ = @import("avm1/stage_object.zig");
     _ = @import("avm1/globals/globals.zig");
 }

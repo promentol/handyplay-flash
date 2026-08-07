@@ -30,15 +30,16 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | ⬜ spec ready (`docs/M4-SPEC.md`) |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 A1 done (**92/696**); B–F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
 
 **Visually working today**: `squares.swf` and `homestuck-beta.swf` render
 correctly (shapes, curves, strokes, gradients, layering, timeline).
-**Scripting today**: every AVM1 opcode executes; 76 of Ruffle's 697
-conformance tests pass byte-exactly.
+**Scripting today**: every AVM1 opcode executes and the display-property
+table is live (`_x`, `_alpha`, `_rotation`, … via both `getProperty` and
+`mc._x`); 92 of Ruffle's 696 conformance tests pass.
 
 ---
 
@@ -293,11 +294,22 @@ getters/setters, ASSetPropFlags **version-gate bits**, SetTarget
 retargeting, DoInitAction at Initialize priority, proto-chain `for..in`,
 goto rewind survival, no double-tick of newly placed clips.
 
-**Documented stubs (11)** — listed with rationale in `docs/AVM1.md`.
-Chief among them: GetProperty/SetProperty, TargetPath, CloneSprite,
-StartDrag, `Call`. Some are also no-ops in Ruffle (StrictMode,
-FsCommand2, and WaitForFrame which is behaviorally identical for local
-files).
+**Documented stubs (10)** — listed with rationale in `docs/AVM1.md`.
+Chief among them: TargetPath, CloneSprite, StartDrag, `Call`. Some are
+also no-ops in Ruffle (StrictMode, FsCommand2, and WaitForFrame which is
+behaviorally identical for local files).
+
+**M4 workstream A1 (display properties)** — the 22-entry table lives in
+`core/avm1/stage_object.zig`, the one file under `core/avm1/` that imports
+`core/display/`. Three things there are load-bearing and easy to undo by
+accident:
+- the table's ORDER is the SWF4 property index;
+- scale/rotation are a CACHED decomposition on `DisplayObject`, stored in
+  percent/degrees exactly as ActionScript set them (re-deriving from the
+  matrix drifts, and `stage_property_representation` checks 300 exact
+  round-trips);
+- `DisplayObject.transformed_by_script` makes the timeline stop
+  re-applying PlaceObject to script-moved objects.
 
 ---
 
