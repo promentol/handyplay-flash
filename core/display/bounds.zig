@@ -29,7 +29,9 @@ pub fn selfBounds(obj: *const DisplayObject) ?Rectangle {
         // size (M4-E); morph shapes stay undecoded until M7. Ruffle reports
         // the start shape for a morph under BoundsMode::Script — a known gap.
         .button, .bitmap, .morph_shape => null,
-        .clip => null,
+        // A clip's own geometry is whatever the drawing API put there
+        // (ruffle MovieClip::self_bounds -> drawing.self_bounds).
+        .clip => |mc| if (mc.drawing) |d| d.bounds else null,
     };
 }
 

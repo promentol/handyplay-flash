@@ -20,6 +20,7 @@ const shape_utils = @import("shape_utils.zig");
 const canvas_mod = @import("canvas.zig");
 const display_object = @import("../display/display_object.zig");
 const movie_clip = @import("../display/movie_clip.zig");
+const drawing = @import("../display/drawing.zig");
 
 pub const Error = std.mem.Allocator.Error || error{OutOfMemory};
 
@@ -116,6 +117,8 @@ pub const Renderer = struct {
         parent_t: Transform,
         parent_cx: swf.reader.ColorTransform,
     ) Error!void {
+        // Script-drawn geometry sits UNDER every child of the same clip.
+        if (clip.drawing) |*d| try self.renderDrawing(ctx, @constCast(d), parent_t, parent_cx);
         for (clip.children.items) |child| {
             if (!child.visible) continue;
             if (child.clip_depth != 0) continue; // M7: masks (skip the masker)
@@ -137,7 +140,41 @@ pub const Renderer = struct {
         t: Transform,
         cx: swf.reader.ColorTransform,
     ) Error!void {
-        const paths = try self.distilled(id, shape);
+        try self.drawPaths(ctx, try self.distilled(id, shape), t, cx);
+    }
+
+    /// Script drawing-API geometry. Subpaths still open (no `endFill` yet)
+    /// must draw too, so they are emitted after the committed ones.
+    fn renderDrawing(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        d: *drawing.Drawing,
+        t: Transform,
+        cx: swf.reader.ColorTransform,
+    ) Error!void {
+        try self.drawPaths(ctx, d.paths.items, t, cx);
+        var open: [2]shape_utils.DrawPath = undefined;
+        var n: usize = 0;
+        if (d.fill) |f| if (f.commands.items.len > 1) {
+            open[n] = .{ .fill = .{ .style = f.style, .commands = f.commands.items, .winding = .even_odd } };
+            n += 1;
+        };
+        if (d.line) |l| if (l.commands.items.len > 1) {
+            open[n] = .{ .stroke = .{ .style = l.style, .is_closed = false, .commands = l.commands.items } };
+            n += 1;
+        };
+        try self.drawPaths(ctx, open[0..n], t, cx);
+    }
+
+    fn drawPaths(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        paths: []const shape_utils.DrawPath,
+        t: Transform,
+        cx: swf.reader.ColorTransform,
+    ) Error!void {
+        _ = self;
+        if (paths.len == 0) return;
         ctx.setTransform(t.a, t.b, t.c, t.d, t.tx, t.ty);
         ctx.setColorTransform(toSimdraCxform(cx));
         for (paths) |path| {

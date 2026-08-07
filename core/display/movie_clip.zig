@@ -16,6 +16,7 @@ const std = @import("std");
 const swf = @import("../swf/swf.zig");
 const library = @import("library.zig");
 const display_object = @import("display_object.zig");
+const drawing_mod = @import("drawing.zig");
 
 const DisplayObject = display_object.DisplayObject;
 
@@ -101,6 +102,9 @@ pub const MovieClip = struct {
     /// Off the display list but possibly still referenced by AVM1 (ruffle
     /// avm1_removed): property reads must yield undefined, not garbage.
     removed: bool = false,
+    /// Script drawing-API geometry, created on the first draw call. Most
+    /// clips never draw, so this stays null and costs a pointer.
+    drawing: ?drawing_mod.Drawing = null,
 
     pub fn init(frames: []const library.Frame) MovieClip {
         return .{ .frames = frames };
@@ -112,6 +116,13 @@ pub const MovieClip = struct {
             gpa.destroy(child);
         }
         self.children.deinit(gpa);
+        if (self.drawing) |*d| d.deinit();
+    }
+
+    /// The drawing, created empty on first use.
+    pub fn drawingMut(self: *MovieClip, gpa: std.mem.Allocator) *drawing_mod.Drawing {
+        if (self.drawing == null) self.drawing = drawing_mod.Drawing.init(gpa);
+        return &self.drawing.?;
     }
 
     pub fn totalFrames(self: *const MovieClip) u16 {

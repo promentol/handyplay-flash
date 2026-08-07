@@ -7,6 +7,7 @@
 //! Reference: reference/ruffle/core/src/avm1/globals/movie_clip.rs.
 
 const std = @import("std");
+const swf = @import("../../swf/swf.zig");
 const strings = @import("../string.zig");
 const value_mod = @import("../value.zig");
 const runtime = @import("../runtime.zig");
@@ -33,6 +34,13 @@ pub fn install(vm: *Vm) !void {
     try method(vm, proto, "createEmptyMovieClip", createEmptyMovieClip);
     try method(vm, proto, "removeMovieClip", removeMovieClip);
     try method(vm, proto, "swapDepths", swapDepths);
+    try method(vm, proto, "beginFill", beginFill);
+    try method(vm, proto, "endFill", endFill);
+    try method(vm, proto, "lineStyle", lineStyle);
+    try method(vm, proto, "moveTo", moveTo);
+    try method(vm, proto, "lineTo", lineTo);
+    try method(vm, proto, "curveTo", curveTo);
+    try method(vm, proto, "clear", clearDrawing);
     try method(vm, proto, "getDepth", getDepth);
     try method(vm, proto, "getNextHighestDepth", getNextHighestDepth);
 }
@@ -135,6 +143,131 @@ fn swapDepths(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
         },
     };
     _ = stage.swapDepths(vm, t, depth);
+    return .undefined_value;
+}
+
+// --- drawing API ----------------------------------------------------------
+//
+// Coordinates arrive in PIXELS and become twips by truncation; colours are
+// 0xRRGGBB with a separate 0-100 alpha. See core/display/drawing.zig for
+// the subpath model these five methods drive.
+
+fn drawingFor(vm: *Vm, this: Value) ?*stage.drawing.Drawing {
+    const t = stage.targetOfValue(vm, this) orelse return null;
+    return stage.drawingOf(vm, t);
+}
+
+/// 0xRRGGBB + a 0-100 alpha → the engine's 0xAABBGGRR.
+fn rgbaFrom(rgb: u32, alpha_pct: f64) u32 {
+    const a: u32 = @intFromFloat(std.math.clamp(alpha_pct, 0, 100) / 100.0 * 255.0);
+    return ((rgb >> 16) & 0xFF) | (((rgb >> 8) & 0xFF) << 8) | ((rgb & 0xFF) << 16) | (a << 24);
+}
+
+fn alphaArg(vm: *Vm, args: []const Value, i: usize) !f64 {
+    if (i >= args.len) return 100;
+    const n = try vm.toNumber(args[i]);
+    return if (std.math.isNan(n)) 0 else n;
+}
+
+fn beginFill(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const d = drawingFor(vm, this) orelse return .undefined_value;
+    // No colour at all means "stop filling", exactly like endFill.
+    if (args.len == 0 or arg(args, 0) == .undefined_value) {
+        try d.setFillStyle(null);
+        return .undefined_value;
+    }
+    const rgb: u32 = @bitCast(value_mod.toInt32(try vm.toNumber(args[0])));
+    try d.setFillStyle(.{ .solid = rgbaFrom(rgb, try alphaArg(vm, args, 1)) });
+    return .undefined_value;
+}
+
+fn endFill(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    const d = drawingFor(vm, this) orelse return .undefined_value;
+    try d.setFillStyle(null);
+    return .undefined_value;
+}
+
+fn lineStyle(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const d = drawingFor(vm, this) orelse return .undefined_value;
+    if (args.len == 0 or arg(args, 0) == .undefined_value) {
+        try d.setLineStyle(null);
+        return .undefined_value;
+    }
+    // Thickness is CLAMPED to 0..255px before conversion (ruffle
+    // line_style), so a wild value cannot blow up the stroke bounds.
+    const thickness = std.math.clamp(try vm.toNumber(args[0]), 0, 255);
+    const rgb: u32 = if (args.len > 1) @bitCast(value_mod.toInt32(try vm.toNumber(args[1]))) else 0;
+    var style: swf.shape.LineStyle = .{
+        .width = @intFromFloat(@trunc(thickness * 20)),
+        .fill = .{ .solid = rgbaFrom(rgb, try alphaArg(vm, args, 2)) },
+    };
+    if (args.len > 3) style.pixel_hinting = value_mod.toBoolean(args[3], vm.swf_version);
+    if (args.len > 4) {
+        const s = try vm.toStringValue(args[4]);
+        style.no_h_scale = strings.eqlIgnoreCase(s, S("none")) or strings.eqlIgnoreCase(s, S("vertical"));
+        style.no_v_scale = strings.eqlIgnoreCase(s, S("none")) or strings.eqlIgnoreCase(s, S("horizontal"));
+    }
+    if (args.len > 5) style.start_cap = capOf(try vm.toStringValue(args[5]));
+    style.end_cap = style.start_cap;
+    if (args.len > 6) style.join = joinOf(try vm.toStringValue(args[6]));
+    if (args.len > 7) style.miter_limit = @floatCast(try vm.toNumber(args[7]));
+    try d.setLineStyle(style);
+    return .undefined_value;
+}
+
+fn capOf(s: strings.AvmString) swf.shape.LineCap {
+    if (strings.eqlIgnoreCase(s, S("none"))) return .none;
+    if (strings.eqlIgnoreCase(s, S("square"))) return .square;
+    return .round;
+}
+
+fn joinOf(s: strings.AvmString) swf.shape.LineJoin {
+    if (strings.eqlIgnoreCase(s, S("miter"))) return .miter;
+    if (strings.eqlIgnoreCase(s, S("bevel"))) return .bevel;
+    return .round;
+}
+
+fn moveTo(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const d = drawingFor(vm, this) orelse return .undefined_value;
+    try d.draw(.{ .move_to = .{
+        .x = stage.drawCoord(try vm.toNumber(arg(args, 0))),
+        .y = stage.drawCoord(try vm.toNumber(arg(args, 1))),
+    } });
+    return .undefined_value;
+}
+
+fn lineTo(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const d = drawingFor(vm, this) orelse return .undefined_value;
+    try d.draw(.{ .line_to = .{
+        .x = stage.drawCoord(try vm.toNumber(arg(args, 0))),
+        .y = stage.drawCoord(try vm.toNumber(arg(args, 1))),
+    } });
+    return .undefined_value;
+}
+
+fn curveTo(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const d = drawingFor(vm, this) orelse return .undefined_value;
+    try d.draw(.{ .quad_to = .{
+        .cx = stage.drawCoord(try vm.toNumber(arg(args, 0))),
+        .cy = stage.drawCoord(try vm.toNumber(arg(args, 1))),
+        .ax = stage.drawCoord(try vm.toNumber(arg(args, 2))),
+        .ay = stage.drawCoord(try vm.toNumber(arg(args, 3))),
+    } });
+    return .undefined_value;
+}
+
+fn clearDrawing(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    const d = drawingFor(vm, this) orelse return .undefined_value;
+    d.clear();
     return .undefined_value;
 }
 

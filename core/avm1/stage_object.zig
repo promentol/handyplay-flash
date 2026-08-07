@@ -19,6 +19,7 @@ const runtime = @import("runtime.zig");
 const display_object = @import("../display/display_object.zig");
 const movie_clip = @import("../display/movie_clip.zig");
 const bounds_mod = @import("../display/bounds.zig");
+pub const drawing = @import("../display/drawing.zig");
 
 const Value = value_mod.Value;
 const Vm = runtime.Vm;
@@ -855,6 +856,11 @@ pub fn createAt(
         obj.matrix = src.matrix;
         obj.color_transform = src.color_transform;
         obj.clip_actions = src.clip_actions;
+        // Script-drawn geometry comes across too (clone_sprite:1014-1016),
+        // so the clone's `_width` covers the inherited paths as well.
+        if (src.kind == .clip and obj.kind == .clip) {
+            if (src.kind.clip.drawing) |*d| obj.kind.clip.drawing = try d.clone(ctx.gpa);
+        }
     }
     try parent.finishInstantiate(ctx, obj);
     return obj;
@@ -870,6 +876,19 @@ pub fn cloneSprite(vm: *Vm, source: Target, name: []const u16, depth: i32) !?*Di
     // Matrix, colour transform and onClipEvent handlers all come from the
     // source (ruffle clone_sprite:1004-1013).
     return createAt(vm, parent, source.obj.character_id, depth, name, source.obj);
+}
+
+/// The clip's script-drawing store, created on first use. Null when the
+/// target is not a MovieClip (shapes and text fields cannot be drawn on).
+pub fn drawingOf(vm: *Vm, t: Target) ?*drawing.Drawing {
+    const ctx = displayCtx(vm) orelse return null;
+    const clip = t.clip orelse return null;
+    return clip.drawingMut(ctx.gpa);
+}
+
+/// A pixel argument as twips, truncating like `Twips::from_pixels`.
+pub fn drawCoord(n: f64) i32 {
+    return twipsFromPixels(n);
 }
 
 /// ruffle `swap_depths` (globals/movie_clip.rs:1343-1394). The one way a

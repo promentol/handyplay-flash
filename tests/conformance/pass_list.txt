@@ -48,6 +48,7 @@ depth_replacement_audio_unloading
 display_object_properties
 do_init_action
 duplicate_movie_clip
+duplicate_movie_clip_drawing
 empty_movieclip_can_attach_movies
 enumerate
 equals
@@ -98,6 +99,7 @@ movieclip_line_gradient_style
 movieclip_name_from_timeline
 movieclip_prototype_extension
 named_shapes
+nan_scale
 nested_textfields_in_buttons
 netstream_play_flv_screen
 new_object_enumerate
