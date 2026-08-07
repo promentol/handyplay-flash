@@ -152,6 +152,18 @@ pub fn install(vm: *Vm) !void {
     try method(vm, vm.globals, "escape", globalEscape);
     try method(vm, vm.globals, "unescape", globalUnescape);
 
+    // --- MovieClip ---------------------------------------------------------
+    // No methods yet (workstream B); the prototype has to EXIST regardless,
+    // because clip objects chain to it and content routinely does
+    // `MovieClip.prototype.foo = function(){}` expecting every clip to
+    // inherit it.
+    {
+        const mc_proto = try vm.objects.create();
+        vm.objects.get(mc_proto).proto = .{ .object = vm.object_proto };
+        vm.movieclip_proto = mc_proto;
+        try ctor(vm, "MovieClip", ctorMovieClip, mc_proto);
+    }
+
     // --- Error ------------------------------------------------------------
     {
         const error_proto = try vm.objects.create();
@@ -164,6 +176,12 @@ pub fn install(vm: *Vm) !void {
     try vm.objects.putWithAttrs(vm.globals, S("Infinity"), .{ .number = std.math.inf(f64) }, attrs, cs);
     try vm.objects.putWithAttrs(vm.globals, S("NaN"), .{ .number = std.math.nan(f64) }, attrs, cs);
     try vm.objects.putWithAttrs(vm.globals, S("_global"), .{ .object = vm.globals }, attrs, cs);
+}
+
+fn ctorMovieClip(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = p;
+    _ = args;
+    return this;
 }
 
 fn method(vm: *Vm, target: ObjectHandle, comptime name: []const u8, f: object_mod.NativeFn) !void {

@@ -73,6 +73,10 @@ pub const Avm1Function = struct {
     constant_pool: u32 = 0,
     /// swf_version of the defining movie (drives case rules inside).
     swf_version: u8 = 6,
+    /// The clip this function was DEFINED in. SWF6+ calls are proper
+    /// closures and use it; SWF5 calls are not and use `this`'s clip
+    /// instead (ruffle function.rs:295-334).
+    base_clip: ObjectHandle = 0,
 };
 
 pub const FunctionKind = union(enum) {

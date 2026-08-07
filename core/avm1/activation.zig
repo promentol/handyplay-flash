@@ -382,10 +382,14 @@ pub const Activation = struct {
         var cur = self.scope;
         while (cur != 0) {
             const node = self.scopeObject(cur);
-            if (self.vm.objects.getChained(node, name, cs)) |_| {
+            // Same three-step order as memberGet, per scope object.
+            if (self.vm.objects.getOwn(node, name, cs) != null) {
                 return try self.vm.getProperty(node, name, .{ .object = node });
             }
             if (try stage.resolveMember(self.vm, node, name)) |v| return v;
+            if (self.vm.objects.getChained(node, name, cs) != null) {
+                return try self.vm.getProperty(node, name, .{ .object = node });
+            }
             cur = self.vm.objects.get(cur).scope_parent;
         }
         return self.vm.objects.getChained(self.vm.globals, name, cs);
@@ -420,10 +424,12 @@ pub const Activation = struct {
                 if (strings.eqlIgnoreCase(name, S("__proto__"))) {
                     return self.vm.objects.get(h).proto;
                 }
-                // A clip's own (and inherited) members win; only when
-                // there is no binding at all do path props, children and
-                // display props get a look in.
-                if (self.vm.objects.getChained(h, name, self.vm.case_sensitive) == null) {
+                // OWN properties win, then the display fallback, then the
+                // PROTOTYPE chain. The fallback sits between them because
+                // ruffle applies it per object inside get_local_stored —
+                // which is what stops a polluted `MovieClip.prototype._root`
+                // from shadowing the real one (corpus issue_768).
+                if (self.vm.objects.getOwn(h, name, self.vm.case_sensitive) == null) {
                     if (try stage.resolveMember(self.vm, h, name)) |v| return v;
                 }
                 return self.vm.getProperty(h, name, target);
@@ -545,6 +551,7 @@ pub const Activation = struct {
                     .scope = self.scope,
                     .constant_pool = self.constant_pool,
                     .swf_version = self.swf_version,
+                    .base_clip = self.base_clip,
                 });
                 if (f.name.len > 0) {
                     const name = try self.swfStr(f.name);
@@ -564,6 +571,7 @@ pub const Activation = struct {
                     .scope = self.scope,
                     .constant_pool = self.constant_pool,
                     .swf_version = self.swf_version,
+                    .base_clip = self.base_clip,
                 });
                 if (f.name.len > 0) {
                     const name = try self.swfStr(f.name);

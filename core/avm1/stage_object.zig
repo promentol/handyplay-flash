@@ -612,7 +612,7 @@ fn localMouse(vm: *Vm, t: Target) [2]f64 {
 pub fn clipObject(vm: *Vm, mc: *MovieClip) !ObjectHandle {
     if (mc.avm_object != 0) return mc.avm_object;
     const h = try vm.objects.create();
-    vm.objects.get(h).proto = .{ .object = vm.object_proto };
+    vm.objects.get(h).proto = .{ .object = if (vm.movieclip_proto != 0) vm.movieclip_proto else vm.object_proto };
     vm.objects.get(h).native = .{ .clip = @ptrCast(mc) };
     mc.avm_object = h;
     return h;

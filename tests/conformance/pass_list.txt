@@ -84,6 +84,7 @@ mask_with_drawing
 movieclip_begin_gradient_fill
 movieclip_line_gradient_style
 movieclip_name_from_timeline
+movieclip_prototype_extension
 nested_textfields_in_buttons
 netstream_play_flv_screen
 new_object_enumerate
@@ -95,6 +96,7 @@ shared_object_serialize_typed_objects
 single_frame
 slash_syntax
 sound_start_load
+stage_object_children
 stage_object_enumerate
 stage_object_properties
 stage_object_properties_get_var
@@ -109,6 +111,8 @@ swf4_bool
 swf5_encoding
 swf6_string_as_bool
 swf7_case_sensitive
+target_clip_swf5
+target_clip_swf6
 target_path
 target_paths/swf4
 tell_target

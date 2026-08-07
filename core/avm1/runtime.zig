@@ -56,6 +56,9 @@ pub const Vm = struct {
     string_proto: ObjectHandle = 0,
     number_proto: ObjectHandle = 0,
     boolean_proto: ObjectHandle = 0,
+    /// MovieClip.prototype — clip objects chain to it, so script can hang
+    /// methods there and every clip inherits them.
+    movieclip_proto: ObjectHandle = 0,
     /// Bottom scope for timeline code (the current target clip's variable
     /// object; a plain object in pure-VM tests).
     root_scope: ObjectHandle = 0,
@@ -554,6 +557,14 @@ pub const Vm = struct {
 
         var act = activation.Activation.init(self, f.body, this, local, f.constant_pool);
         act.local_registers = registers;
+        // SWF6+ functions are CLOSURES: they carry the base clip from
+        // where they were defined. SWF5 functions are not — they adopt
+        // `this`'s clip, which Activation.init already derived.
+        // ruffle function.rs:303-310.
+        if (self.swf_version >= 6 and f.base_clip != 0) {
+            act.base_clip = f.base_clip;
+            act.target_clip = f.base_clip;
+        }
         const flow = try act.run();
         return switch (flow) {
             .return_value => |v| v,
