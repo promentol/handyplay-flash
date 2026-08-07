@@ -9,6 +9,10 @@
 # Each corpus dir has test.swf + output.txt (expected trace, line-exact)
 # + test.toml (num_frames / num_ticks). pass_list.txt is APPEND-ONLY in
 # normal use — a formerly-passing test that fails is a regression.
+#
+# A test.toml may carry an [approximations] table, in which case numeric
+# lines compare with a tolerance instead of byte-exactly (ruffle
+# tests/framework/src/runner/trace.rs + options/approximations.rs).
 set -u
 CORPUS="${CORPUS:-reference/ruffle/tests/tests/swfs/avm1}"
 BIN=./zig-out/bin/trace_runner
@@ -23,6 +27,54 @@ frames_for() {
     echo "$n"
 }
 
+have_approx() {
+    # 0 if test.toml has [approximations] with bare_numbers = true.
+    grep -q '^bare_numbers *= *true' "$1" 2>/dev/null
+}
+
+toml_num() {
+    # toml_num <file> <key> <default>
+    v=$(sed -n "s/^$2 *= *\([0-9.eE+-]*\).*/\1/p" "$1" 2>/dev/null | head -1)
+    [ -n "$v" ] || v="$3"
+    echo "$v"
+}
+
+# Mirror of ruffle's approximate trace comparison: line counts must match,
+# then per line — if BOTH sides parse as numbers, accept them within
+# (epsilon, max_relative) per the `approx` crate's relative_eq; two NaNs
+# also pass; otherwise the strings must match exactly. The regex-driven
+# `number_patterns` mode is unused by every AVM1 corpus dir, so it is not
+# implemented.
+approx_cmp() {
+    # approx_cmp <actual> <expected> <epsilon> <max_relative>
+    # NOTE: `close` and `exp` are awk builtins — do not use them as names.
+    awk -v eps="$3" -v maxrel="$4" '
+    function isnum(s) { return s ~ /^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$/ }
+    function isnan(s) { return s ~ /^[+-]?[Nn][Aa][Nn]$/ }
+    function abs(x)   { return x < 0 ? -x : x }
+    function approxeq(a, b,   diff, largest) {
+        if (a == b) return 1
+        diff = abs(a - b)
+        if (diff <= eps) return 1
+        largest = abs(a) > abs(b) ? abs(a) : abs(b)
+        return diff <= largest * maxrel
+    }
+    NR == FNR { want[FNR] = $0; nwant = FNR; next }
+    { got[FNR] = $0; ngot = FNR }
+    END {
+        if (nwant != ngot) exit 1
+        for (i = 1; i <= nwant; i++) {
+            if (isnan(got[i]) && isnan(want[i])) continue
+            if (isnum(got[i]) && isnum(want[i])) {
+                if (approxeq(got[i] + 0, want[i] + 0)) continue
+                exit 1
+            }
+            if (got[i] != want[i]) exit 1
+        }
+        exit 0
+    }' "$2" "$1"
+}
+
 run_one() {
     d="$1"
     swf="$CORPUS/$d/test.swf"
@@ -30,7 +82,14 @@ run_one() {
     toml="$CORPUS/$d/test.toml"
     [ -f "$swf" ] && [ -f "$exp" ] || return 2
     "$BIN" "$swf" --frames "$(frames_for "$toml")" >"$TMP" 2>/dev/null || return 1
-    diff -q "$TMP" "$exp" >/dev/null 2>&1
+    if have_approx "$toml"; then
+        # `approx`'s defaults are f64::EPSILON for both knobs.
+        approx_cmp "$TMP" "$exp" \
+            "$(toml_num "$toml" epsilon 2.220446049250313e-16)" \
+            "$(toml_num "$toml" max_relative 2.220446049250313e-16)"
+    else
+        diff -q "$TMP" "$exp" >/dev/null 2>&1
+    fi
 }
 
 case "${1:-}" in
@@ -74,8 +133,12 @@ case "${1:-}" in
 *)
     d="$1"
     swf="$CORPUS/$d/test.swf"
-    "$BIN" "$swf" --frames "$(frames_for "$CORPUS/$d/test.toml")" >"$TMP" 2>&1
-    echo "--- ours vs expected ($d):"
+    toml="$CORPUS/$d/test.toml"
+    if run_one "$d"; then verdict=PASS; else verdict=FAIL; fi
+    have_approx "$toml" && verdict="$verdict (approximate)"
+    # Re-run with stderr merged so panics show up in the diff.
+    "$BIN" "$swf" --frames "$(frames_for "$toml")" >"$TMP" 2>&1
+    echo "--- $verdict: ours vs expected ($d):"
     diff "$TMP" "$CORPUS/$d/output.txt" | head -40
     ;;
 esac
