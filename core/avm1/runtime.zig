@@ -287,10 +287,10 @@ pub const Vm = struct {
         if (a == .boolean) return self.abstractEquals(.{ .number = if (a.boolean) 1 else 0 }, b);
         if (b == .boolean) return self.abstractEquals(a, .{ .number = if (b.boolean) 1 else 0 });
         if (a == .number and b == .string) {
-            return a.number == value_mod.stringToNumber(b.string);
+            return a.number == value_mod.stringToNumber(b.string, self.swf_version);
         }
         if (a == .string and b == .number) {
-            return value_mod.stringToNumber(a.string) == b.number;
+            return value_mod.stringToNumber(a.string, self.swf_version) == b.number;
         }
         // primitive vs object → ToPrimitive(object).
         if (a == .object and b != .object) {

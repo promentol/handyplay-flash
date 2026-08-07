@@ -42,7 +42,7 @@ pub fn toBoolean(v: Value, swf_version: u8) bool {
         .number => |n| !(n == 0 or std.math.isNan(n)),
         .string => |s| blk: {
             if (swf_version < 7) {
-                const n = stringToNumber(s);
+                const n = stringToNumber(s, swf_version);
                 break :blk !(n == 0 or std.math.isNan(n));
             }
             break :blk s.len > 0;
@@ -61,67 +61,171 @@ pub fn toNumberPrimitive(v: Value, swf_version: u8) f64 {
         .null_value => if (swf_version < 7) 0 else std.math.nan(f64),
         .boolean => |b| if (b) 1 else 0,
         .number => |n| n,
-        .string => |s| stringToNumber(s),
+        .string => |s| stringToNumber(s, swf_version),
         .object => std.math.nan(f64),
     };
 }
 
-/// ES3 §9.3.1 ToNumber(String): optional whitespace, optional sign,
-/// decimal/hex literal, Infinity; empty → 0; anything else → NaN.
-pub fn stringToNumber(s: strings.AvmString) f64 {
-    var i: usize = 0;
-    while (i < s.len and isWs(s[i])) i += 1;
-    var j: usize = s.len;
-    while (j > i and isWs(s[j - 1])) j -= 1;
-    const t = s[i..j];
-    if (t.len == 0) return 0;
-
-    // Hex literal (no sign allowed per ES3).
-    if (t.len > 2 and t[0] == '0' and (t[1] == 'x' or t[1] == 'X')) {
-        var acc: f64 = 0;
-        for (t[2..]) |c| {
-            const d = hexDigit(c) orelse return std.math.nan(f64);
-            acc = acc * 16 + @as(f64, @floatFromInt(d));
+/// Flash's ToNumber(String) — NOT ES3's, and it changes with SWF version
+/// (ruffle avm1/value.rs `string_to_f64`). Three regimes:
+///
+///   • SWF ≥ 6: a leading `0x` means hex and a leading `0` followed only by
+///     digits 0-7 means OCTAL; both parse as a WRAPPING i32. `"013"` is 11,
+///     not 13.
+///   • SWF 5: strict decimal — trailing garbage is NaN.
+///   • SWF ≤ 4: lenient — parse the numeric prefix and ignore the rest,
+///     then turn NaN into 0. `"11ABC"` is 11 and `"ABC"` is 0.
+///
+/// The `getproperty`/`getproperty_swf4`/`getproperty_swf5` corpus tests are
+/// the same script at three versions and exist to pin exactly this.
+pub fn stringToNumber(s: strings.AvmString, swf_version: u8) f64 {
+    if (swf_version >= 6) {
+        const radix = guessRadix(s);
+        if (radix != 10) {
+            // Bug compatibility: Flash strips the `0x` by position, so a
+            // SIGNED hex literal keeps its `x` and fails to parse.
+            const body = if (radix == 16) s[@min(2, s.len)..] else s;
+            return parseIntRadix(body, radix) orelse std.math.nan(f64);
         }
-        return acc;
     }
+    const strict = swf_version >= 5;
+    const result = parseFloatImpl(s, strict);
+    if (!strict and std.math.isNan(result)) return 0;
+    return result;
+}
 
-    var buf: [64]u8 = undefined;
-    if (t.len > buf.len) return std.math.nan(f64);
-    for (t, 0..) |c, k| {
-        if (c > 0x7F) return std.math.nan(f64);
-        buf[k] = @intCast(c);
+/// ruffle `guess_radix`: 16 for `0x`, 8 for a leading `0` with all-octal
+/// digits, else 10. One optional sign is skipped first.
+fn guessRadix(str: strings.AvmString) u8 {
+    var s = str;
+    if (s.len > 0 and (s[0] == '+' or s[0] == '-')) s = s[1..];
+    if (s.len == 0 or s[0] != '0') return 10;
+    s = s[1..];
+    if (s.len > 0 and (s[0] == 'x' or s[0] == 'X')) return 16;
+    for (s) |c| {
+        if (c < '0' or c > '7') return 10;
     }
-    const ascii = buf[0..t.len];
+    return 8;
+}
 
-    var body = ascii;
+/// ruffle `Wrapping::<i32>::from_wstr_radix` — wraps on overflow, null on
+/// an empty body or any digit outside the radix.
+fn parseIntRadix(str: strings.AvmString, radix: u8) ?f64 {
+    var s = str;
     var neg = false;
-    if (body.len > 0 and (body[0] == '+' or body[0] == '-')) {
-        neg = body[0] == '-';
-        body = body[1..];
+    if (s.len == 0) return null;
+    if (s[0] == '-' or s[0] == '+') {
+        neg = s[0] == '-';
+        s = s[1..];
     }
-    if (std.mem.eql(u8, body, "Infinity")) {
-        return if (neg) -std.math.inf(f64) else std.math.inf(f64);
+    if (s.len == 0) return null;
+    var acc: i32 = 0;
+    for (s) |c| {
+        const d = digitValue(c) orelse return null;
+        if (d >= radix) return null;
+        acc = acc *% radix;
+        acc = if (neg) acc -% @as(i32, d) else acc +% @as(i32, d);
     }
-    // Reject forms parseFloat would accept but ES3 StrToNum shouldn't
-    // (e.g. "1f"): parse then require full consumption via parseFloat's
-    // strictness — std.fmt.parseFloat rejects trailing garbage already.
-    const n = std.fmt.parseFloat(f64, ascii) catch return std.math.nan(f64);
-    // parseFloat accepts "nan"/"inf" spellings ES3 doesn't.
-    if (std.ascii.indexOfIgnoreCase(ascii, "nan") != null) return std.math.nan(f64);
-    if (std.ascii.indexOfIgnoreCase(ascii, "inf") != null) return std.math.nan(f64);
-    return n;
+    return @floatFromInt(acc);
+}
+
+/// ruffle `parse_float_impl`. Note it has NO `Infinity` literal — AVM1
+/// `Number("Infinity")` really is NaN. In lenient mode a numeric prefix is
+/// accepted and the tail ignored.
+fn parseFloatImpl(str: strings.AvmString, strict: bool) f64 {
+    const nan = std.math.nan(f64);
+    var s = str;
+    while (s.len > 0 and isWs(s[0])) s = s[1..];
+
+    var neg = false;
+    if (s.len > 0 and (s[0] == '+' or s[0] == '-')) {
+        neg = s[0] == '-';
+        s = s[1..];
+    }
+    const after_sign = s;
+
+    // Integer part. `exp` is the power of ten of the leading digit.
+    while (s.len > 0 and isDigit(s[0])) s = s[1..];
+    var exp: i32 = @as(i32, @intCast(after_sign.len - s.len)) - 1;
+
+    // Fractional part.
+    if (s.len > 0 and s[0] == '.') {
+        s = s[1..];
+        while (s.len > 0 and isDigit(s[0])) s = s[1..];
+    }
+
+    // No digits at all → not a number.
+    if (s.len == after_sign.len) return nan;
+
+    if (s.len > 0 and (s[0] == 'e' or s[0] == 'E')) {
+        s = s[1..];
+        var exp_neg = false;
+        if (s.len > 0 and (s[0] == '+' or s[0] == '-')) {
+            exp_neg = s[0] == '-';
+            s = s[1..];
+        }
+        var exponent: i32 = 0;
+        while (s.len > 0 and isDigit(s[0])) : (s = s[1..]) {
+            exponent = exponent *% 10;
+            exponent = exponent +% @as(i32, @intCast(s[0] - '0'));
+        }
+        if (exp_neg) exponent = -%exponent;
+        exp = exp +% exponent;
+    }
+
+    if (strict and s.len != 0) return nan;
+
+    // Accumulate digit-by-digit from the sign-stripped head; a second '.'
+    // is skipped rather than terminating (Flash allows multiple dots).
+    var result: f64 = 0;
+    var e = exp;
+    for (after_sign) |c| {
+        if (isDigit(c)) {
+            result += decimalShift(@floatFromInt(c - '0'), e);
+            e -%= 1;
+        } else if (c == '.') {
+            // Allow multiple dots.
+        } else break;
+    }
+    return if (neg) -result else result;
+}
+
+/// `value * 10^exp` by repeated squaring. The multiply and divide branches
+/// are deliberately separate — that asymmetry is Flash's rounding.
+fn decimalShift(value: f64, exp: i32) f64 {
+    var v = value;
+    var base: f64 = 10.0;
+    if (exp > 0) {
+        var e = exp;
+        while (e > 0) {
+            if (e & 1 != 0) v *= base;
+            e >>= 1;
+            base *= base;
+        }
+    } else {
+        var e: u32 = @abs(exp);
+        while (e > 0) {
+            if (e & 1 != 0) v /= base;
+            e >>= 1;
+            base *= base;
+        }
+    }
+    return v;
+}
+
+fn isDigit(c: u16) bool {
+    return c >= '0' and c <= '9';
 }
 
 fn isWs(c: u16) bool {
     return c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == 0x0B or c == 0x0C or c == 0xA0;
 }
 
-fn hexDigit(c: u16) ?u4 {
+fn digitValue(c: u16) ?u8 {
     return switch (c) {
         '0'...'9' => @intCast(c - '0'),
-        'a'...'f' => @intCast(c - 'a' + 10),
-        'A'...'F' => @intCast(c - 'A' + 10),
+        'a'...'z' => @intCast(c - 'a' + 10),
+        'A'...'Z' => @intCast(c - 'A' + 10),
         else => null,
     };
 }
@@ -299,15 +403,42 @@ test "ES3 ToString(Number) formatting" {
 
 test "ToNumber(String) and integer conversions" {
     const S = strings.ascii;
-    try std.testing.expectEqual(@as(f64, 0), stringToNumber(S("")));
-    try std.testing.expectEqual(@as(f64, 0), stringToNumber(S("  ")));
-    try std.testing.expectEqual(@as(f64, 42), stringToNumber(S(" 42 ")));
-    try std.testing.expectEqual(@as(f64, -1.5), stringToNumber(S("-1.5")));
-    try std.testing.expectEqual(@as(f64, 255), stringToNumber(S("0xFF")));
-    try std.testing.expect(std.math.isNan(stringToNumber(S("12ab"))));
-    try std.testing.expect(std.math.isNan(stringToNumber(S("Zoo"))));
-    try std.testing.expect(std.math.isPositiveInf(stringToNumber(S("Infinity"))));
-    try std.testing.expectEqual(@as(f64, 3e2), stringToNumber(S("3e2")));
+    // Common ground across versions.
+    for ([_]u8{ 4, 5, 6 }) |v| {
+        try std.testing.expectEqual(@as(f64, 42), stringToNumber(S(" 42"), v));
+        try std.testing.expectEqual(@as(f64, -1.5), stringToNumber(S("-1.5"), v));
+        try std.testing.expectEqual(@as(f64, 3e2), stringToNumber(S("3e2"), v));
+    }
+    // Only LEADING whitespace is trimmed, so a trailing space is garbage
+    // and strict mode rejects it (ruffle parse_float_impl `trim_start`).
+    try std.testing.expect(std.math.isNan(stringToNumber(S(" 42 "), 5)));
+    try std.testing.expectEqual(@as(f64, 42), stringToNumber(S(" 42 "), 4));
+    // SWF≥6 guesses a radix — this is the `getproperty` index table.
+    try std.testing.expectEqual(@as(f64, 11), stringToNumber(S("013"), 6)); // octal!
+    try std.testing.expectEqual(@as(f64, 19), stringToNumber(S("0x13"), 6));
+    try std.testing.expectEqual(@as(f64, 255), stringToNumber(S("0xFF"), 6));
+    try std.testing.expect(std.math.isNan(stringToNumber(S("11ABC"), 6)));
+    try std.testing.expect(std.math.isNan(stringToNumber(S("ABC"), 6)));
+    // Flash strips `0x` by position, so a signed hex literal keeps its `x`.
+    try std.testing.expect(std.math.isNan(stringToNumber(S("-0x10"), 6)));
+    try std.testing.expectEqual(@as(f64, 8), stringToNumber(S("08"), 6)); // not octal
+    // SWF5: strict decimal, no radix guessing.
+    try std.testing.expectEqual(@as(f64, 13), stringToNumber(S("013"), 5));
+    try std.testing.expect(std.math.isNan(stringToNumber(S("0x13"), 5)));
+    try std.testing.expect(std.math.isNan(stringToNumber(S("11ABC"), 5)));
+    try std.testing.expect(std.math.isNan(stringToNumber(S("ABC"), 5)));
+    try std.testing.expect(std.math.isNan(stringToNumber(S("12ab"), 5)));
+    // SWF4: lenient prefix parse, NaN collapses to 0.
+    try std.testing.expectEqual(@as(f64, 13), stringToNumber(S("013"), 4));
+    try std.testing.expectEqual(@as(f64, 0), stringToNumber(S("0x13"), 4));
+    try std.testing.expectEqual(@as(f64, 11), stringToNumber(S("11ABC"), 4));
+    try std.testing.expectEqual(@as(f64, 0), stringToNumber(S("ABC"), 4));
+    // AVM1 has no `Infinity` literal (ruffle parse_float_impl).
+    try std.testing.expect(std.math.isNan(stringToNumber(S("Infinity"), 6)));
+    try std.testing.expectEqual(@as(f64, 0), stringToNumber(S("Infinity"), 4));
+    // Empty is NaN at SWF5+, 0 below (no digits consumed).
+    try std.testing.expect(std.math.isNan(stringToNumber(S(""), 6)));
+    try std.testing.expectEqual(@as(f64, 0), stringToNumber(S(""), 4));
 
     try std.testing.expectEqual(@as(i32, -1), toInt32(4294967295.0));
     try std.testing.expectEqual(@as(i32, 0), toInt32(std.math.nan(f64)));
