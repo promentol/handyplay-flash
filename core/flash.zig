@@ -12,7 +12,8 @@ pub const display = struct {
 
 pub const render = struct {
     pub const canvas = @import("render/canvas.zig");
-    // M2: shape_utils.zig (SWF records → SmPath), fills.zig.
+    pub const shape_utils = @import("render/shape_utils.zig");
+    // M2: fills.zig (FillStyle → SmPaint mapping).
 };
 
 test {
