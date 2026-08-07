@@ -926,12 +926,15 @@ pub const Activation = struct {
             .enumerate => {
                 const name = try self.popString();
                 const target = try self.getVariable(name);
-                try self.push(.null_value);
+                // UNDEFINED, not null, is the end-of-enumeration sentinel
+                // (ruffle activation.rs:1041). Enumerating a non-object
+                // leaves just the sentinel, and the SWF traces it.
+                try self.push(.undefined_value);
                 if (target == .object) try self.pushEnumKeys(target.object);
             },
             .enumerate2 => {
                 const target = self.pop();
-                try self.push(.null_value);
+                try self.push(.undefined_value);
                 if (target == .object) try self.pushEnumKeys(target.object);
             },
             .instance_of => {

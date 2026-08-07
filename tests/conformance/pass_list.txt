@@ -35,6 +35,7 @@ delete
 depth_replacement_audio_unloading
 display_object_properties
 do_init_action
+enumerate
 equals
 equals_swf4_alt
 equals_swf5

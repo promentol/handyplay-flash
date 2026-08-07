@@ -299,7 +299,7 @@ pub const MovieClip = struct {
         // the child runs its own first frame below, so nested placements
         // number pre-order — the same order ruffle gets by naming in
         // post_instantiation ahead of construct_as_avm1_object.
-        if (obj.name == null) try assignInstanceName(ctx, obj);
+        if (obj.name == null and takesInstanceName(obj.kind)) try assignInstanceName(ctx, obj);
         // Insert keeping depth order (render walks the list directly).
         var insert_at: usize = self.children.items.len;
         for (self.children.items, 0..) |child, i| {
@@ -317,6 +317,19 @@ pub const MovieClip = struct {
         }
     }
 };
+
+/// Only clips, buttons and text fields are auto-named under AVM1 — the
+/// other kinds gate `set_default_instance_name` on `is_action_script_3()`
+/// (ruffle graphic.rs:308, text.rs:280, morph_shape.rs:177, bitmap.rs:322)
+/// while movie_clip.rs:2748, avm1_button.rs:272 and edit_text.rs:2578 call
+/// it unconditionally. Naming the rest would BOTH advance the counter too
+/// fast and make an unnamed shape reachable as `_root.instanceN`.
+fn takesInstanceName(kind: DisplayObject.Kind) bool {
+    return switch (kind) {
+        .clip, .button, .edit_text => true,
+        .shape, .morph_shape, .text, .bitmap => false,
+    };
+}
 
 fn assignInstanceName(ctx: *Context, obj: *DisplayObject) Error!void {
     var buf: [24]u8 = undefined;
