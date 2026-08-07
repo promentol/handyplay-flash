@@ -620,6 +620,13 @@ pub const Activation = struct {
                     const fin = try self.runSlice(t.finally_body, self.scope);
                     if (fin != .next) return fin; // finally overrides
                 }
+                // Still thrown after the catch (no catch, or the catch
+                // RETHREW): keep unwinding, so an enclosing try — here or
+                // in a calling function — still sees it.
+                if (flow == .thrown) {
+                    self.vm.pending_throw = flow.thrown;
+                    return error.Avm1Thrown;
+                }
                 if (flow != .next) return flow;
             },
             .goto_frame => |frame| self.hostGotoFrame(frame + 1, null),

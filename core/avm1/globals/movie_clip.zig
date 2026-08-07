@@ -33,6 +33,7 @@ pub fn install(vm: *Vm) !void {
     try method(vm, proto, "createEmptyMovieClip", createEmptyMovieClip);
     try method(vm, proto, "removeMovieClip", removeMovieClip);
     try method(vm, proto, "getDepth", getDepth);
+    try method(vm, proto, "getNextHighestDepth", getNextHighestDepth);
 }
 
 fn method(vm: *Vm, target: ObjectHandle, comptime name: []const u8, f: object_mod.NativeFn) !void {
@@ -116,6 +117,23 @@ fn getDepth(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
     const depth: i32 = t.obj.depth;
     return .{ .number = @floatFromInt(depth -% stage.AVM_DEPTH_BIAS) };
+}
+
+/// One above the highest occupied depth, in AS space, floored at 0
+/// (ruffle globals/movie_clip.rs:1081-1091). Content leans on this to
+/// stack attached clips, so without it every attach lands on depth 0 and
+/// silently replaces the last one.
+fn getNextHighestDepth(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    const clip = t.clip orelse return .undefined_value;
+    var highest: i32 = 0;
+    for (clip.children.items) |child| {
+        if (child.depth > highest) highest = child.depth;
+    }
+    const next = highest -% (stage.AVM_DEPTH_BIAS - 1);
+    return .{ .number = @floatFromInt(@max(next, 0)) };
 }
 
 fn newClipValue(vm: *Vm, obj: *@import("../../display/display_object.zig").DisplayObject) !Value {

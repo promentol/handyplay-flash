@@ -653,6 +653,11 @@ pub const Vm = struct {
         const flow = try act.run();
         return switch (flow) {
             .return_value => |v| v,
+            // A throw that reached the top of the callee keeps going.
+            .thrown => |v| {
+                self.pending_throw = v;
+                return error.Avm1Thrown;
+            },
             else => .undefined_value,
         };
     }

@@ -97,8 +97,10 @@ nested_textfields_in_buttons
 netstream_play_flv_screen
 new_object_enumerate
 primitive_instanceof
+property_invalid_base_clip
 prototype_properties
 removed_base_clip_tell_target
+removed_target_clip_scope
 root_global_parent
 set_target_2_swf5
 set_target_2_swf6
@@ -133,6 +135,7 @@ tell_target_invalid_swf6
 this_swf7
 timeline_function_def
 timeout
+try_catch_finally
 try_catch_stack
 try_finally_simple
 typeof
