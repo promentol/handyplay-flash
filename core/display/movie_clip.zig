@@ -138,7 +138,14 @@ pub const MovieClip = struct {
         }
         if (self.playing or self.current_frame == 0) {
             const next = self.determineNextFrame();
-            if (next != self.current_frame or self.current_frame == 0) {
+            if (next < self.current_frame) {
+                // Looping past the last frame is a GOTO, not a bare replay
+                // of frame 1 (ruffle determine_next_frame -> First ->
+                // run_goto(1)). Without the rewind, frame 1's places land
+                // on depths the later frames still occupy and are refused,
+                // so the second lap silently loses clips.
+                try self.runGoto(ctx, next);
+            } else if (next != self.current_frame or self.current_frame == 0) {
                 try self.executeFrame(ctx, @max(next, 1), true);
                 self.current_frame = @max(next, 1);
             }
@@ -238,12 +245,20 @@ pub const MovieClip = struct {
             }
             return;
         }
-        // Rewind: children placed on frames at or before the target
-        // SURVIVE (ruffle run_goto survives_rewind) — only later
-        // placements are dropped. Replaying from frame 1 is then safe:
-        // `placeObject` refuses to place over an occupied depth, so
-        // survivors keep their identity (and their timeline position)
-        // instead of being destroyed and re-created.
+        try self.runGoto(ctx, target);
+        for (self.children.items) |child| {
+            if (child.kind == .clip) try child.kind.clip.applyPendingGoto(ctx);
+        }
+    }
+
+    /// Rewind (if the target is behind us) and replay up to it.
+    ///
+    /// Children placed on frames at or before the target SURVIVE (ruffle
+    /// run_goto survives_rewind) — only later placements are dropped.
+    /// Replaying from frame 1 is then safe: `placeObject` refuses to place
+    /// over an occupied depth, so survivors keep their identity (and their
+    /// timeline position) instead of being destroyed and re-created.
+    pub fn runGoto(self: *MovieClip, ctx: *Context, target: u16) Error!void {
         if (target < self.current_frame) {
             var i: usize = 0;
             while (i < self.children.items.len) {
@@ -265,9 +280,6 @@ pub const MovieClip = struct {
             try self.executeFrame(ctx, f, f == target);
         }
         self.current_frame = target;
-        for (self.children.items) |child| {
-            if (child.kind == .clip) try child.kind.clip.applyPendingGoto(ctx);
-        }
     }
 
     pub fn childAtDepth(self: *MovieClip, depth: i32) ?*DisplayObject {

@@ -38,6 +38,7 @@ catch_references_registers
 closure_scope
 conflicting_instance_names
 create_empty_movie_clip
+default_names
 define_font_glyph_table_order
 define_font_glyph_table_overlap
 define_function2
