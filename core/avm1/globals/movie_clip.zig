@@ -16,6 +16,7 @@ const stage = @import("../stage_object.zig");
 const decl = @import("decl.zig");
 const display_object = @import("../../display/display_object.zig");
 const activation = @import("../activation.zig");
+const geom = @import("geom.zig");
 
 const Value = value_mod.Value;
 const Vm = runtime.Vm;
@@ -96,6 +97,7 @@ pub fn install(vm: *Vm) !void {
     try decl.property(vm, proto, "_lockroot", getLockRoot, setLockRoot, hidden);
     try decl.property(vm, proto, "blendMode", getBlendMode, setBlendMode, ver(hidden, decl.V8));
     try decl.property(vm, proto, "filters", getFilters, setFilters, ver(hidden, decl.V8));
+    try decl.property(vm, proto, "transform", getTransform, setTransform, ver(.{ .dont_enum = true }, decl.V8));
 }
 
 // --- timeline control ---------------------------------------------------------
@@ -378,6 +380,25 @@ fn setFilters(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = p;
     _ = this;
     _ = args;
+    return .undefined_value;
+}
+
+/// A NEW flash.geom.Transform view every read, which is why
+/// `mc.transform == mc.transform` is false.
+fn getTransform(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    _ = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    return geom.newTransform(vm, this.object);
+}
+
+/// Assignment COPIES the source's matrix and colour transform; anything
+/// that is not a Transform is ignored.
+fn setTransform(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    try geom.assignTransform(vm, t, arg(args, 0));
     return .undefined_value;
 }
 

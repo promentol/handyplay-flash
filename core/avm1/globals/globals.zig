@@ -188,6 +188,8 @@ pub fn install(vm: *Vm) !void {
         _ = try decl.class(vm, "TextField", ctorMovieClip, tf_proto, attrs);
     }
 
+    try @import("geom.zig").install(vm);
+
     // --- Error ------------------------------------------------------------
     {
         const error_proto = try vm.objects.create();

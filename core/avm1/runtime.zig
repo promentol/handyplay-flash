@@ -85,6 +85,14 @@ pub const Vm = struct {
     /// prototypes must exist now so `getDepth` and friends resolve.
     button_proto: ObjectHandle = 0,
     textfield_proto: ObjectHandle = 0,
+    /// flash.geom prototypes. Held here because the engine constructs these
+    /// objects itself (`mc.transform`, `Color.getTransform`, `getBounds`),
+    /// not only via `new`.
+    point_proto: ObjectHandle = 0,
+    rectangle_proto: ObjectHandle = 0,
+    matrix_proto: ObjectHandle = 0,
+    colortransform_proto: ObjectHandle = 0,
+    transform_proto: ObjectHandle = 0,
     /// Bottom scope for timeline code (the current target clip's variable
     /// object; a plain object in pure-VM tests).
     root_scope: ObjectHandle = 0,
@@ -561,6 +569,11 @@ pub const Vm = struct {
         // instance's own and call the same constructor again
         // (ruffle construct_on_existing passes 1).
         const r = try self.callWithSuperDepth(ctor, this, args, 1);
+        // Ruffle propagates the return value ONLY for native constructors
+        // (function.rs:709 "Propagate the return value only for native
+        // constructors") — a bytecode constructor's `return 5` is ignored,
+        // but `new Transform()` with no clip really is undefined.
+        if (self.objects.get(ctor.object).native.function == .native) return r;
         return if (r == .object) r else this;
     }
 

@@ -399,6 +399,7 @@ test {
     _ = @import("avm1/activation.zig");
     _ = @import("avm1/stage_object.zig");
     _ = @import("avm1/globals/decl.zig");
+    _ = @import("avm1/globals/geom.zig");
     _ = @import("avm1/globals/movie_clip.zig");
     _ = @import("avm1/globals/globals.zig");
 }

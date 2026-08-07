@@ -102,6 +102,10 @@ pub const NativeInfo = union(enum) {
     /// `super`: the same `this`, viewed with `depth` layers of prototype
     /// peeled off (ruffle object/super_object.rs).
     super_obj: struct { this: ObjectHandle, depth: u8 },
+    /// flash.geom.Transform — a live view of the display object whose AVM1
+    /// handle this holds. A handle rather than a pointer so a removed clip
+    /// simply stops resolving, like every other retained reference.
+    transform: ObjectHandle,
 };
 
 pub const ScriptObject = struct {

@@ -37,6 +37,7 @@ call_method_empty_name
 catch_references_registers
 closure_scope
 conflicting_instance_names
+constructor_function
 create_empty_movie_clip
 custom_clip_methods
 default_names
@@ -59,6 +60,7 @@ error
 execution_order3
 export_assets
 extends_chain
+extends_native_type
 focusrect_mouse_swf8
 focusrect_mouse_swf9
 focusrect_swf5
@@ -104,6 +106,7 @@ looping_real_2_declared_2
 mask_reapply
 mask_with_drawing
 movieclip_begin_gradient_fill
+movieclip_default_state
 movieclip_get_instance_at_depth
 movieclip_getbounds
 movieclip_hittest
@@ -157,6 +160,7 @@ tell_target_invalid_swf6
 this_swf7
 timeline_function_def
 timeout
+transform
 try_catch_finally
 try_catch_stack
 try_finally_simple

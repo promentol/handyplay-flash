@@ -131,6 +131,22 @@ pub const ColorTransform = struct {
     pub fn isIdentity(t: ColorTransform) bool {
         return std.meta.eql(t, .{});
     }
+
+    /// `parent ∘ child` — apply `child` first. Ruffle's `Mul` for
+    /// ColorTransform: the multipliers are 8.8 fixed products and the adds
+    /// WRAP as i16 rather than clamping to ±255. The lack of a clamp is
+    /// observable — `Transform.concatenatedColorTransform` reports offsets
+    /// well outside the byte range (corpus `transform` expects -523).
+    pub fn concat(parent: ColorTransform, child: ColorTransform) ColorTransform {
+        var r: ColorTransform = .{};
+        inline for (0..4) |i| {
+            const m = (@as(i32, parent.mult[i]) * @as(i32, child.mult[i])) >> 8;
+            const scaled = (@as(i32, parent.mult[i]) * @as(i32, child.add[i])) >> 8;
+            r.mult[i] = @truncate(m);
+            r.add[i] = @truncate(scaled +% @as(i32, parent.add[i]));
+        }
+        return r;
+    }
 };
 
 /// Packed RGBA (R in byte 0 — simdra/logical order). RGB reads get A=255.

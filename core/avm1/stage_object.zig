@@ -1175,6 +1175,25 @@ pub fn hitTestObject(a: Target, b: Target) bool {
     return bounds_mod.intersects(ba, bb);
 }
 
+/// The object's colour transform with every ancestor's applied on top of
+/// it — what `Transform.concatenatedColorTransform` reports. Composition is
+/// parent-then-child and does NOT clamp the offsets.
+pub fn concatenatedColorTransform(t: Target) swf.reader.ColorTransform {
+    var ct = t.obj.color_transform;
+    var parent = t.parent();
+    while (parent) |p| {
+        const placement = p.placement orelse break;
+        ct = placement.color_transform.concat(ct);
+        parent = p.parent;
+    }
+    return ct;
+}
+
+/// Bounds in STAGE space, children included.
+pub fn worldBounds(t: Target) ?swf.reader.Rectangle {
+    return bounds_mod.boundsWithTransform(t.obj, localToGlobalMatrix(t));
+}
+
 /// The object's PARENT space → stage space (its own matrix excluded).
 pub fn parentToGlobalMatrix(t: Target) swf.reader.Matrix {
     var m: swf.reader.Matrix = .identity;

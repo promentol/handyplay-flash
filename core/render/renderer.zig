@@ -51,16 +51,7 @@ pub const Transform = struct {
     }
 };
 
-fn concatCxform(parent: swf.reader.ColorTransform, child: swf.reader.ColorTransform) swf.reader.ColorTransform {
-    var r: swf.reader.ColorTransform = .{};
-    inline for (0..4) |i| {
-        const m = (@as(i32, parent.mult[i]) * @as(i32, child.mult[i])) >> 8;
-        const ad = ((@as(i32, child.add[i]) * @as(i32, parent.mult[i])) >> 8) + @as(i32, parent.add[i]);
-        r.mult[i] = @intCast(std.math.clamp(m, std.math.minInt(i16), std.math.maxInt(i16)));
-        r.add[i] = @intCast(std.math.clamp(ad, -255, 255));
-    }
-    return r;
-}
+const concatCxform = swf.reader.ColorTransform.concat;
 
 fn toSimdraCxform(t: swf.reader.ColorTransform) simdra.SmPaint.ColorTransform {
     return .{ .mult = t.mult, .add = t.add };
