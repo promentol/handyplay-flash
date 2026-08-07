@@ -27,6 +27,14 @@ pub const Context = struct {
     movie: *const swf.movie.Movie,
     /// Set by SetBackgroundColor during execution.
     background_color: ?swf.reader.Color = null,
+    /// DoAction bytecodes queued this tick (drained by the player AFTER
+    /// all clips ran — Ruffle's ActionQueue model, single priority in M3).
+    actions: std.ArrayList(QueuedAction) = .empty,
+};
+
+pub const QueuedAction = struct {
+    clip: *MovieClip,
+    code: []const u8,
 };
 
 pub const MovieClip = struct {
@@ -41,6 +49,8 @@ pub const MovieClip = struct {
     /// Deferred goto target (applied by the tree owner after the action
     /// scan so replay never recurses inside control execution).
     pending_goto: ?u16 = null,
+    /// Lazily-created AVM1 object handle for this clip (0 = none yet).
+    avm_object: u32 = 0,
 
     pub fn init(frames: []const library.Frame) MovieClip {
         return .{ .frames = frames };
@@ -56,6 +66,14 @@ pub const MovieClip = struct {
 
     pub fn totalFrames(self: *const MovieClip) u16 {
         return @intCast(self.frames.len);
+    }
+
+    pub fn labelToNumber(self: *const MovieClip, name: []const u8) ?u16 {
+        for (self.frames, 0..) |f, i| {
+            const label = f.label orelse continue;
+            if (std.ascii.eqlIgnoreCase(label, name)) return @intCast(i + 1);
+        }
+        return null;
     }
 
     /// One tick: advance this clip (when playing), then tick children.
@@ -98,41 +116,11 @@ pub const MovieClip = struct {
             .place => |po| try self.placeObject(ctx, po, frame_num),
             .remove => |ro| self.removeAtDepth(ctx, ro.depth),
             .set_background_color => |c| ctx.background_color = c,
-            .do_action => |bytecode| if (run_actions) self.scanTimelineActions(bytecode),
+            .do_action => |bytecode| if (run_actions) {
+                try ctx.actions.append(ctx.gpa, .{ .clip = self, .code = bytecode });
+            },
             .start_sound, .sound_stream_block => {}, // M6
         };
-    }
-
-    /// M2 stand-in for the interpreter: recognize the SWF3 timeline
-    /// actions that appear standalone in DoAction. Anything else is left
-    /// for M3's queued execution.
-    fn scanTimelineActions(self: *MovieClip, bytecode: []const u8) void {
-        var r = swf.reader.Reader.init(bytecode);
-        while (true) {
-            const op = r.readU8() catch return;
-            if (op == 0) return;
-            var body: []const u8 = &.{};
-            if (op >= 0x80) {
-                const len = r.readU16() catch return;
-                body = r.readSlice(@min(len, r.remaining())) catch return;
-            }
-            switch (op) {
-                0x06 => self.playing = true, // Play
-                0x07 => self.playing = false, // Stop
-                0x04 => { // NextFrame
-                    self.gotoFrame(self.current_frame + 1);
-                },
-                0x05 => { // PreviousFrame
-                    if (self.current_frame > 1) self.gotoFrame(self.current_frame - 1);
-                },
-                0x81 => { // GotoFrame (0-based operand)
-                    var br = swf.reader.Reader.init(body);
-                    const n = br.readU16() catch return;
-                    self.gotoFrame(n + 1);
-                },
-                else => {}, // M3
-            }
-        }
     }
 
     /// Record a goto target for applyPendingGoto (public: the host seam
@@ -300,6 +288,7 @@ test "timeline: place, sprite instantiation, remove, implicit stop, goto replay"
     var movie = try makeMovie(gpa);
     defer movie.deinit();
     var ctx: Context = .{ .gpa = gpa, .movie = &movie };
+    defer ctx.actions.deinit(gpa);
 
     var root = MovieClip.init(movie.frames);
     defer root.deinit(gpa);
@@ -322,7 +311,11 @@ test "timeline: place, sprite instantiation, remove, implicit stop, goto replay"
     try root.applyPendingGoto(&ctx);
     try testing.expectEqual(@as(u16, 3), root.current_frame);
     try testing.expectEqual(@as(usize, 1), root.children.items.len); // depth 1 removed
-    try testing.expect(!root.playing); // Stop ran
+    // The Stop DoAction is QUEUED for the interpreter (M3 model), not run
+    // inline; simulate its effect for the remainder of the test.
+    try testing.expectEqual(@as(usize, 1), ctx.actions.items.len);
+    try testing.expectEqual(root.frames[2].controls.len, 2); // remove + do_action
+    root.playing = false;
 
     // Stopped: further ticks don't advance.
     try root.runFrame(&ctx);
@@ -343,14 +336,14 @@ test "single-frame clip implicitly stops; multi-frame loops" {
     var movie = try makeMovie(gpa);
     defer movie.deinit();
     var ctx: Context = .{ .gpa = gpa, .movie = &movie };
+    defer ctx.actions.deinit(gpa);
     var root = MovieClip.init(movie.frames);
     defer root.deinit(gpa);
-    // Play through 3 frames, un-stop, tick → loops to 1.
+    // Play through 3 frames, tick again → loops to 1.
     for (0..3) |_| {
         try root.runFrame(&ctx);
         try root.applyPendingGoto(&ctx);
     }
-    root.playing = true;
     try root.runFrame(&ctx);
     try root.applyPendingGoto(&ctx);
     try testing.expectEqual(@as(u16, 1), root.current_frame);

@@ -1,3 +1,501 @@
-//! M3: Avm1 — shared value stack, 4 global registers, constant-pool stack,
-//! intrusive clip-exec list (INSTANTIATION order), per-swf-version prototype
-//! sets, ScriptLimits, ActionQueue (Initialize/Construct/Default priorities).
+//! The AVM1 virtual machine: object table, shared value stack, global
+//! registers, constant pools, scope objects, prototypes, deterministic
+//! clock/rng, trace sink — plus the coercions that touch the object graph
+//! (ToPrimitive via valueOf/toString) and the function-call machinery
+//! (DefineFunction locals, DefineFunction2 register preloading in the
+//! canonical order this/arguments/super/_root/_parent/_global).
+//!
+//! References: ruffle core/src/avm1/{runtime,activation,function}.rs,
+//! open-flash avm1/actions (esp. define-function2.md).
+
+const std = @import("std");
+const rdr = @import("../swf/reader.zig");
+const strings = @import("string.zig");
+const value_mod = @import("value.zig");
+const object_mod = @import("object.zig");
+const opcodes = @import("opcodes.zig");
+
+pub const Value = value_mod.Value;
+pub const ObjectHandle = value_mod.ObjectHandle;
+const S = strings.ascii;
+
+pub const Error = error{OutOfMemory};
+
+/// Host hooks the display layer installs (movie control, clip variables).
+/// All optional so the pure VM runs standalone in tests.
+pub const Host = struct {
+    ctx: ?*anyopaque = null,
+    /// gotoFrame(target_clip_native, frame_1based, and_play)
+    goto_frame: ?*const fn (ctx: *anyopaque, clip: *anyopaque, frame: u16, play: bool) void = null,
+    goto_label: ?*const fn (ctx: *anyopaque, clip: *anyopaque, label: []const u16, play: bool) bool = null,
+    set_playing: ?*const fn (ctx: *anyopaque, clip: *anyopaque, playing: bool) void = null,
+    next_prev: ?*const fn (ctx: *anyopaque, clip: *anyopaque, delta: i2) void = null,
+    get_property: ?*const fn (ctx: *anyopaque, clip: *anyopaque, index: u8) f64 = null,
+    set_property: ?*const fn (ctx: *anyopaque, clip: *anyopaque, index: u8, v: f64) void = null,
+    resolve_target: ?*const fn (ctx: *anyopaque, from: *anyopaque, path: []const u16) ?*anyopaque = null,
+    clip_object: ?*const fn (ctx: *anyopaque, clip: *anyopaque, vm: *Vm) ObjectHandle = null,
+};
+
+pub const Vm = struct {
+    gpa: std.mem.Allocator,
+    arena_state: *std.heap.ArenaAllocator,
+    objects: object_mod.Objects,
+    stack: std.ArrayList(Value) = .empty,
+    /// The 4 global registers (StoreRegister / Push register outside fn2).
+    registers: [4]Value = @splat(.undefined_value),
+    /// Decoded constant pools; functions capture the pool index active at
+    /// definition time.
+    pools: std.ArrayList([]const strings.AvmString) = .empty,
+    active_pool: u32 = 0,
+    swf_version: u8,
+    case_sensitive: bool,
+    /// _global and the system prototypes.
+    globals: ObjectHandle = 0,
+    object_proto: ObjectHandle = 0,
+    function_proto: ObjectHandle = 0,
+    array_proto: ObjectHandle = 0,
+    string_proto: ObjectHandle = 0,
+    number_proto: ObjectHandle = 0,
+    boolean_proto: ObjectHandle = 0,
+    /// Bottom scope for timeline code (the current target clip's variable
+    /// object; a plain object in pure-VM tests).
+    root_scope: ObjectHandle = 0,
+    /// The root movie object exposed as _root/_level0.
+    root_object: Value = .undefined_value,
+    /// Deterministic frame clock (ms since start), advanced by the player.
+    now_ms: f64 = 0,
+    rng: std.Random.DefaultPrng,
+    /// Per-frame action budget (recursion/time guard, ScriptLimits-ish).
+    budget: u32 = 200_000,
+    call_depth: u32 = 0,
+    max_call_depth: u32 = 256,
+    halted: bool = false,
+    host: Host = .{},
+    /// trace() output collects here as UTF-8 lines.
+    trace_buf: std.ArrayList(u8) = .empty,
+    /// Scratch for cross-frame throw propagation (unused in M3 — uncaught
+    /// function throws are swallowed at the call boundary; see callAvm1).
+    pending_throw: Value = .undefined_value,
+
+    pub fn create(gpa: std.mem.Allocator, swf_version: u8) Error!*Vm {
+        const arena_state = try gpa.create(std.heap.ArenaAllocator);
+        errdefer gpa.destroy(arena_state);
+        arena_state.* = std.heap.ArenaAllocator.init(gpa);
+        const self = try gpa.create(Vm);
+        self.* = .{
+            .gpa = gpa,
+            .arena_state = arena_state,
+            .objects = object_mod.Objects.init(arena_state.allocator()),
+            .swf_version = swf_version,
+            .case_sensitive = swf_version >= 7,
+            .rng = std.Random.DefaultPrng.init(0x5EED),
+        };
+        try @import("globals/globals.zig").install(self);
+        self.root_scope = try self.newObject();
+        self.root_object = .{ .object = self.root_scope };
+        // _root / _level0 resolve to the root scope in pure-VM mode.
+        try self.objects.put(self.globals, S("_root"), self.root_object, self.case_sensitive);
+        try self.objects.put(self.globals, S("_level0"), self.root_object, self.case_sensitive);
+        return self;
+    }
+
+    pub fn destroy(self: *Vm) void {
+        const gpa = self.gpa;
+        self.stack.deinit(gpa);
+        self.pools.deinit(gpa);
+        self.trace_buf.deinit(gpa);
+        self.arena_state.deinit();
+        gpa.destroy(self.arena_state);
+        gpa.destroy(self);
+    }
+
+    pub fn arena(self: *Vm) std.mem.Allocator {
+        return self.arena_state.allocator();
+    }
+
+    // --- objects ---------------------------------------------------------
+
+    pub fn newObject(self: *Vm) Error!ObjectHandle {
+        const h = try self.objects.create();
+        if (self.object_proto != 0) {
+            self.objects.get(h).proto = .{ .object = self.object_proto };
+        }
+        return h;
+    }
+
+    pub fn newArray(self: *Vm) Error!ObjectHandle {
+        const h = try self.objects.create();
+        self.objects.get(h).native = .array;
+        if (self.array_proto != 0) {
+            self.objects.get(h).proto = .{ .object = self.array_proto };
+        }
+        try self.objects.putWithAttrs(h, S("length"), .{ .number = 0 }, .{ .dont_enum = true, .dont_delete = true }, self.case_sensitive);
+        return h;
+    }
+
+    pub fn newNativeFn(self: *Vm, f: object_mod.NativeFn) Error!ObjectHandle {
+        const h = try self.objects.create();
+        self.objects.get(h).native = .{ .function = .{ .native = f } };
+        if (self.function_proto != 0) {
+            self.objects.get(h).proto = .{ .object = self.function_proto };
+        }
+        return h;
+    }
+
+    pub fn newAvm1Fn(self: *Vm, f: object_mod.Avm1Function) Error!ObjectHandle {
+        const h = try self.objects.create();
+        self.objects.get(h).native = .{ .function = .{ .avm1 = f } };
+        if (self.function_proto != 0) {
+            self.objects.get(h).proto = .{ .object = self.function_proto };
+        }
+        // Every function gets a fresh .prototype whose constructor is it.
+        const proto = try self.newObject();
+        try self.objects.putWithAttrs(proto, S("constructor"), .{ .object = h }, .{ .dont_enum = true }, self.case_sensitive);
+        try self.objects.putWithAttrs(h, S("prototype"), .{ .object = proto }, .{ .dont_enum = true }, self.case_sensitive);
+        return h;
+    }
+
+    pub fn isCallable(self: *Vm, v: Value) bool {
+        if (v != .object) return false;
+        return self.objects.get(v.object).native == .function;
+    }
+
+    // --- array helpers ---------------------------------------------------
+
+    pub fn arraySet(self: *Vm, h: ObjectHandle, index: u32, v: Value) Error!void {
+        var buf: [12]u8 = undefined;
+        const key = std.fmt.bufPrint(&buf, "{d}", .{index}) catch unreachable;
+        var wide: [12]u16 = undefined;
+        for (key, 0..) |c, i| wide[i] = c;
+        try self.objects.put(h, wide[0..key.len], v, self.case_sensitive);
+        const len = self.arrayLength(h);
+        if (index + 1 > len) try self.setArrayLength(h, index + 1);
+    }
+
+    pub fn arrayLength(self: *Vm, h: ObjectHandle) u32 {
+        const v = self.objects.getOwn(h, S("length"), self.case_sensitive) orelse return 0;
+        const n = value_mod.toNumberPrimitive(v, self.swf_version);
+        if (std.math.isNan(n) or n < 0) return 0;
+        return @intFromFloat(@min(n, 4294967295.0));
+    }
+
+    pub fn setArrayLength(self: *Vm, h: ObjectHandle, len: u32) Error!void {
+        try self.objects.putWithAttrs(h, S("length"), .{ .number = @floatFromInt(len) }, .{ .dont_enum = true, .dont_delete = true }, self.case_sensitive);
+    }
+
+    // --- coercions touching the object graph ------------------------------
+
+    pub const Hint = enum { number, string };
+
+    pub fn toPrimitive(self: *Vm, v: Value, hint: Hint) Error!Value {
+        if (v != .object) return v;
+        const h = v.object;
+        const first: strings.AvmString = if (hint == .string) S("toString") else S("valueOf");
+        const second: strings.AvmString = if (hint == .string) S("valueOf") else S("toString");
+        const lookup_order = [2]strings.AvmString{ first, second };
+        for (lookup_order) |name| {
+            if (self.objects.getChained(h, name, self.case_sensitive)) |m| {
+                if (self.isCallable(m)) {
+                    const r = self.callFunction(m, v, &.{}) catch Value.undefined_value;
+                    if (r.isPrimitive()) return r;
+                }
+            }
+        }
+        // Boxed primitives unwrap even without methods.
+        switch (self.objects.get(h).native) {
+            .boxed_number => |n| return .{ .number = n },
+            .boxed_string => |s| return .{ .string = s },
+            .boxed_bool => |b| return .{ .boolean = b },
+            else => {},
+        }
+        return .undefined_value;
+    }
+
+    pub fn toNumber(self: *Vm, v: Value) Error!f64 {
+        const p = try self.toPrimitive(v, .number);
+        return value_mod.toNumberPrimitive(p, self.swf_version);
+    }
+
+    pub fn toStringValue(self: *Vm, v: Value) Error!strings.AvmString {
+        switch (v) {
+            .undefined_value => return S("undefined"),
+            .null_value => return S("null"),
+            .boolean => |b| return if (b) S("true") else S("false"),
+            .number => |n| {
+                var buf: [40]u8 = undefined;
+                const s = value_mod.numberToStringBuf(&buf, n);
+                const wide = try self.arena().alloc(u16, s.len);
+                for (s, 0..) |c, i| wide[i] = c;
+                return wide;
+            },
+            .string => |s| return s,
+            .object => |h| {
+                // toString via the chain, else type-tagged default.
+                const p = try self.toPrimitive(v, .string);
+                if (p == .string) return p.string;
+                if (p != .undefined_value) return self.toStringValue(p);
+                return switch (self.objects.get(h).native) {
+                    .function => S("[type Function]"),
+                    .clip => S("[type MovieClip]"),
+                    else => S("[type Object]"),
+                };
+            },
+        }
+    }
+
+    pub fn typeOf(self: *Vm, v: Value) strings.AvmString {
+        return switch (v) {
+            .object => |h| switch (self.objects.get(h).native) {
+                .function => S("function"),
+                .clip => S("movieclip"),
+                else => S("object"),
+            },
+            .undefined_value => S("undefined"),
+            .null_value => S("null"),
+            .boolean => S("boolean"),
+            .number => S("number"),
+            .string => S("string"),
+        };
+    }
+
+    /// ES3 §11.9.3 abstract equality (Equals2), incl. object arms.
+    pub fn abstractEquals(self: *Vm, a: Value, b: Value) Error!bool {
+        // Same-type fast paths.
+        if (@as(std.meta.Tag(Value), a) == @as(std.meta.Tag(Value), b)) {
+            return switch (a) {
+                .undefined_value, .null_value => true,
+                .number => |x| x == b.number,
+                .string => |x| strings.eql(x, b.string),
+                .boolean => |x| x == b.boolean,
+                .object => |x| x == b.object,
+            };
+        }
+        // null == undefined.
+        if ((a == .null_value and b == .undefined_value) or
+            (a == .undefined_value and b == .null_value)) return true;
+        // number vs string / boolean folding.
+        if (a == .boolean) return self.abstractEquals(.{ .number = if (a.boolean) 1 else 0 }, b);
+        if (b == .boolean) return self.abstractEquals(a, .{ .number = if (b.boolean) 1 else 0 });
+        if (a == .number and b == .string) {
+            return a.number == value_mod.stringToNumber(b.string);
+        }
+        if (a == .string and b == .number) {
+            return value_mod.stringToNumber(a.string) == b.number;
+        }
+        // primitive vs object → ToPrimitive(object).
+        if (a == .object and b != .object) {
+            const p = try self.toPrimitive(a, .number);
+            if (p == .object or p == .undefined_value) return false;
+            return self.abstractEquals(p, b);
+        }
+        if (b == .object and a != .object) {
+            const p = try self.toPrimitive(b, .number);
+            if (p == .object or p == .undefined_value) return false;
+            return self.abstractEquals(a, p);
+        }
+        return false;
+    }
+
+    /// ES3 §11.8.5 abstract relational (Less2/Greater): returns
+    /// undefined when incomparable (NaN involved).
+    pub fn abstractLess(self: *Vm, a: Value, b: Value) Error!Value {
+        const pa = try self.toPrimitive(a, .number);
+        const pb = try self.toPrimitive(b, .number);
+        if (pa == .string and pb == .string) {
+            return .{ .boolean = strings.order(pa.string, pb.string) == .lt };
+        }
+        const na = value_mod.toNumberPrimitive(pa, self.swf_version);
+        const nb = value_mod.toNumberPrimitive(pb, self.swf_version);
+        if (std.math.isNan(na) or std.math.isNan(nb)) return .undefined_value;
+        return .{ .boolean = na < nb };
+    }
+
+    pub fn strictEquals(self: *Vm, a: Value, b: Value) bool {
+        _ = self;
+        if (@as(std.meta.Tag(Value), a) != @as(std.meta.Tag(Value), b)) return false;
+        return switch (a) {
+            .undefined_value, .null_value => true,
+            .number => |x| x == b.number,
+            .string => |x| strings.eql(x, b.string),
+            .boolean => |x| x == b.boolean,
+            .object => |x| x == b.object,
+        };
+    }
+
+    // --- scope objects ----------------------------------------------------
+
+    /// Scope chains are ScriptObjects linked by `scope_parent`.
+    pub fn newScope(self: *Vm, parent: ObjectHandle) Error!ObjectHandle {
+        const h = try self.objects.create(); // NO object proto on scopes
+        self.objects.get(h).scope_parent = parent;
+        return h;
+    }
+
+    pub fn scopeGet(self: *Vm, scope: ObjectHandle, name: strings.AvmString) ?Value {
+        var cur = scope;
+        while (cur != 0) {
+            if (self.objects.getChained(cur, name, self.case_sensitive)) |v| return v;
+            cur = self.objects.get(cur).scope_parent;
+        }
+        // Finally _global.
+        return self.objects.getChained(self.globals, name, self.case_sensitive);
+    }
+
+    /// SetVariable semantics: overwrite an existing binding anywhere on
+    /// the chain, else define on the BOTTOM (target/timeline) scope.
+    pub fn scopeSet(self: *Vm, scope: ObjectHandle, name: strings.AvmString, v: Value) Error!void {
+        var cur = scope;
+        var bottom = scope;
+        while (cur != 0) {
+            if (self.objects.hasOwn(cur, name, self.case_sensitive)) {
+                try self.objects.put(cur, name, v, self.case_sensitive);
+                return;
+            }
+            bottom = cur;
+            cur = self.objects.get(cur).scope_parent;
+        }
+        try self.objects.put(bottom, name, v, self.case_sensitive);
+    }
+
+    /// DefineLocal: always on the innermost scope.
+    pub fn scopeDefineLocal(self: *Vm, scope: ObjectHandle, name: strings.AvmString, v: Value) Error!void {
+        try self.objects.put(scope, name, v, self.case_sensitive);
+    }
+
+    // --- function calls ---------------------------------------------------
+
+    pub fn callFunction(self: *Vm, callee: Value, this: Value, args: []const Value) anyerror!Value {
+        if (!self.isCallable(callee)) return .undefined_value;
+        if (self.call_depth >= self.max_call_depth) {
+            self.halted = true;
+            return .undefined_value;
+        }
+        self.call_depth += 1;
+        defer self.call_depth -= 1;
+        const fk = self.objects.get(callee.object).native.function;
+        switch (fk) {
+            .native => |f| return f(@ptrCast(self), this, args),
+            .avm1 => |f| return self.callAvm1(callee.object, f, this, args),
+        }
+    }
+
+    /// `new` semantics: fresh object with ctor.prototype, ctor invoked
+    /// with it as this; object result overrides.
+    pub fn construct(self: *Vm, ctor: Value, args: []const Value) anyerror!Value {
+        if (!self.isCallable(ctor)) return .undefined_value;
+        const obj = try self.objects.create();
+        const proto = self.objects.getChained(ctor.object, S("prototype"), self.case_sensitive) orelse
+            Value{ .object = self.object_proto };
+        self.objects.get(obj).proto = if (proto == .object) proto else .{ .object = self.object_proto };
+        try self.objects.putWithAttrs(obj, S("__constructor__"), ctor, .{ .dont_enum = true }, self.case_sensitive);
+        const this: Value = .{ .object = obj };
+        const r = try self.callFunction(ctor, this, args);
+        return if (r == .object) r else this;
+    }
+
+    fn callAvm1(self: *Vm, callee: ObjectHandle, f: object_mod.Avm1Function, this: Value, args: []const Value) anyerror!Value {
+        const activation = @import("activation.zig");
+        // Fresh local scope chained to the captured definition scope.
+        const local = try self.newScope(f.scope);
+
+        // Local registers (fn2) — r0 unused by preloads; slots r1.. get the
+        // preloaded values in canonical order.
+        var registers: []Value = &.{};
+        if (f.with_registers and f.register_count > 0) {
+            registers = try self.arena().alloc(Value, f.register_count);
+            @memset(registers, .undefined_value);
+        }
+        var next_reg: u8 = 1;
+
+        const fl = f.flags;
+        const preload = f.with_registers;
+        // this
+        if (preload and fl.preload_this) {
+            if (next_reg < registers.len) registers[next_reg] = this;
+            next_reg += 1;
+        }
+        if (!(preload and fl.suppress_this)) {
+            try self.objects.putWithAttrs(local, S("this"), this, .{ .dont_enum = true, .dont_delete = true }, self.case_sensitive);
+        }
+        // arguments
+        const wants_arguments = !preload or (!fl.suppress_arguments or fl.preload_arguments);
+        var args_val: Value = .undefined_value;
+        if (wants_arguments) {
+            const arr = try self.newArray();
+            for (args, 0..) |av, i| try self.arraySet(arr, @intCast(i), av);
+            try self.objects.putWithAttrs(arr, S("callee"), .{ .object = callee }, .{ .dont_enum = true }, self.case_sensitive);
+            args_val = .{ .object = arr };
+        }
+        if (preload and fl.preload_arguments) {
+            if (next_reg < registers.len) registers[next_reg] = args_val;
+            next_reg += 1;
+        }
+        if (!(preload and fl.suppress_arguments)) {
+            if (wants_arguments) {
+                try self.objects.putWithAttrs(local, S("arguments"), args_val, .{ .dont_enum = true, .dont_delete = true }, self.case_sensitive);
+            }
+        }
+        // super (M4: real super object; undefined placeholder preserves
+        // the register numbering).
+        if (preload and fl.preload_super) {
+            next_reg += 1;
+        }
+        // _root/_parent/_global preloads.
+        if (preload and fl.preload_root) {
+            if (next_reg < registers.len) registers[next_reg] = self.root_object;
+            next_reg += 1;
+        }
+        if (preload and fl.preload_parent) {
+            if (next_reg < registers.len) registers[next_reg] = self.root_object; // M4: real _parent
+            next_reg += 1;
+        }
+        if (preload and fl.preload_global) {
+            if (next_reg < registers.len) registers[next_reg] = .{ .object = self.globals };
+            next_reg += 1;
+        }
+
+        // Parameters: register-bound or named locals.
+        var it = opcodes.ParamIterator.init(f.params_raw, f.with_registers);
+        var i: usize = 0;
+        while (it.next()) |p| : (i += 1) {
+            const av: Value = if (i < args.len) args[i] else .undefined_value;
+            if (f.with_registers and p.register != 0) {
+                if (p.register < registers.len) registers[p.register] = av;
+            } else {
+                const name = try strings.fromSwf(self.arena(), p.name, f.swf_version);
+                try self.objects.put(local, name, av, self.case_sensitive);
+            }
+        }
+
+        var act = activation.Activation.init(self, f.body, this, local, f.constant_pool);
+        act.local_registers = registers;
+        const flow = try act.run();
+        return switch (flow) {
+            .return_value => |v| v,
+            // Uncaught function-boundary throws are swallowed (M3; Flash
+            // reports and continues — recorded simplification).
+            .thrown => .undefined_value,
+            else => .undefined_value,
+        };
+    }
+
+    // --- misc -------------------------------------------------------------
+
+    pub fn traceLine(self: *Vm, s: strings.AvmString) Error!void {
+        const utf8 = strings.toUtf8(self.arena(), s) catch return;
+        try self.trace_buf.appendSlice(self.gpa, utf8);
+        try self.trace_buf.append(self.gpa, '\n');
+    }
+
+    pub fn pushStack(self: *Vm, v: Value) Error!void {
+        try self.stack.append(self.gpa, v);
+    }
+
+    pub fn popStack(self: *Vm) Value {
+        return self.stack.pop() orelse .undefined_value;
+    }
+};
+
+test {
+    _ = @import("activation.zig");
+}

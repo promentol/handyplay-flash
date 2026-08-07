@@ -6,6 +6,15 @@ const std = @import("std");
 
 pub const swf = @import("swf/swf.zig");
 
+pub const avm1 = struct {
+    pub const opcodes = @import("avm1/opcodes.zig");
+    pub const strings = @import("avm1/string.zig");
+    pub const value = @import("avm1/value.zig");
+    pub const object = @import("avm1/object.zig");
+    pub const runtime = @import("avm1/runtime.zig");
+    pub const activation = @import("avm1/activation.zig");
+};
+
 pub const display = struct {
     pub const library = @import("display/library.zig");
     pub const display_object = @import("display/display_object.zig");
@@ -22,6 +31,9 @@ pub const render = struct {
 
 pub const LoadError = swf.movie.Error || error{OutOfMemory};
 
+const Vm = avm1.runtime.Vm;
+const MovieClipT = display.movie_clip.MovieClip;
+
 /// The player instance. Heap-pinned (`create`/`destroy`) because the
 /// simdra surface↔canvas pair is self-referential once created.
 pub const Player = struct {
@@ -31,6 +43,7 @@ pub const Player = struct {
     canvas: render.canvas.Canvas,
     renderer: render.renderer.Renderer,
     background: swf.reader.Color,
+    vm: *Vm,
     /// Fixed timestep (ms/frame) from the SWF header, clamped 0.01–120 fps.
     frame_ms: f64,
     acc_ms: f64 = 0,
@@ -53,8 +66,10 @@ pub const Player = struct {
             .canvas = try render.canvas.Canvas.init(gpa, w, h),
             .renderer = render.renderer.Renderer.init(self.movie.allocator()),
             .background = (movie.background_color orelse 0x00FFFFFF) | 0xFF000000,
+            .vm = try Vm.create(gpa, movie.swf_version),
             .frame_ms = 1000.0 / @as(f64, fps_clamped),
         };
+        self.installHost();
         // Frame 1 executes immediately so the first present isn't blank.
         try self.runOneFrame();
         try self.renderNow();
@@ -63,6 +78,7 @@ pub const Player = struct {
 
     pub fn destroy(self: *Player) void {
         const gpa = self.gpa;
+        self.vm.destroy();
         self.root.deinit(gpa);
         self.canvas.deinit();
         self.movie.deinit();
@@ -89,9 +105,107 @@ pub const Player = struct {
 
     fn runOneFrame(self: *Player) !void {
         var ctx: display.movie_clip.Context = .{ .gpa = self.gpa, .movie = &self.movie };
+        defer ctx.actions.deinit(self.gpa);
         try self.root.runFrame(&ctx);
         try self.root.applyPendingGoto(&ctx);
+        // Drain the action queue (actions can queue more via gotos —
+        // pending gotos apply between drains; new DoActions from replays
+        // stay suppressed per Ruffle's run_goto rule).
+        var i: usize = 0;
+        while (i < ctx.actions.items.len) : (i += 1) {
+            const qa = ctx.actions.items[i];
+            const clip_obj = try self.clipObject(qa.clip);
+            var act = avm1.activation.Activation.init(
+                self.vm,
+                qa.code,
+                .{ .object = clip_obj },
+                clip_obj,
+                self.vm.active_pool,
+            );
+            _ = act.run() catch {};
+            try self.root.applyPendingGoto(&ctx);
+        }
+        self.vm.now_ms += self.frame_ms;
+        self.vm.budget = 200_000;
+        self.vm.halted = false;
         if (ctx.background_color) |c| self.background = c | 0xFF000000;
+    }
+
+    /// Lazily create/fetch the AVM1 object for a clip. The clip object IS
+    /// the timeline's variable scope (scope_parent = 0 → falls through to
+    /// _global), with native = the MovieClip pointer for host dispatch.
+    fn clipObject(self: *Player, mc: *MovieClipT) !avm1.runtime.ObjectHandle {
+        if (mc.avm_object != 0) return mc.avm_object;
+        const h = try self.vm.objects.create();
+        self.vm.objects.get(h).proto = .{ .object = self.vm.object_proto };
+        self.vm.objects.get(h).native = .{ .clip = @ptrCast(mc) };
+        mc.avm_object = h;
+        if (mc == &self.root) {
+            self.vm.root_scope = h;
+            self.vm.root_object = .{ .object = h };
+            const S = avm1.strings.ascii;
+            try self.vm.objects.put(self.vm.globals, S("_root"), self.vm.root_object, self.vm.case_sensitive);
+            try self.vm.objects.put(self.vm.globals, S("_level0"), self.vm.root_object, self.vm.case_sensitive);
+        }
+        return h;
+    }
+
+    fn installHost(self: *Player) void {
+        self.vm.host = .{
+            .ctx = @ptrCast(self),
+            .goto_frame = hostGotoFrame,
+            .goto_label = hostGotoLabel,
+            .set_playing = hostSetPlaying,
+            .next_prev = hostNextPrev,
+        };
+    }
+
+    fn hostGotoFrame(ctx: *anyopaque, clip: *anyopaque, frame: u16, play: bool) void {
+        _ = ctx;
+        const mc: *MovieClipT = @ptrCast(@alignCast(clip));
+        mc.gotoFrame(frame);
+        mc.playing = play;
+    }
+
+    fn hostGotoLabel(ctx: *anyopaque, clip: *anyopaque, label: []const u16, play: bool) bool {
+        const self: *Player = @ptrCast(@alignCast(ctx));
+        const mc: *MovieClipT = @ptrCast(@alignCast(clip));
+        var buf: [128]u8 = undefined;
+        var n: usize = 0;
+        for (label) |c| {
+            if (n >= buf.len or c > 0x7F) break;
+            buf[n] = @intCast(c);
+            n += 1;
+        }
+        _ = self;
+        const target = mc.labelToNumber(buf[0..n]) orelse return false;
+        mc.gotoFrame(target);
+        mc.playing = play;
+        return true;
+    }
+
+    fn hostSetPlaying(ctx: *anyopaque, clip: *anyopaque, playing: bool) void {
+        _ = ctx;
+        const mc: *MovieClipT = @ptrCast(@alignCast(clip));
+        mc.playing = playing;
+    }
+
+    fn hostNextPrev(ctx: *anyopaque, clip: *anyopaque, delta: i2) void {
+        _ = ctx;
+        const mc: *MovieClipT = @ptrCast(@alignCast(clip));
+        const cur = mc.current_frame;
+        if (delta > 0) {
+            mc.gotoFrame(cur + 1);
+        } else if (cur > 1) {
+            mc.gotoFrame(cur - 1);
+        }
+        mc.playing = false;
+    }
+
+    /// Take accumulated trace() output (UTF-8; caller-owned view valid
+    /// until the next VM activity).
+    pub fn takeTrace(self: *Player) []const u8 {
+        return self.vm.trace_buf.items;
     }
 
     fn renderNow(self: *Player) !void {
@@ -128,5 +242,21 @@ pub const Player = struct {
 };
 
 test {
+    // Explicit imports: test blocks are only collected from files that a
+    // test-context import reaches (refAllDecls alone proved unreliable —
+    // display/render/avm1 tests silently dropped out of the binary).
     @import("std").testing.refAllDecls(@This());
+    _ = @import("display/library.zig");
+    _ = @import("display/display_object.zig");
+    _ = @import("display/movie_clip.zig");
+    _ = @import("render/canvas.zig");
+    _ = @import("render/shape_utils.zig");
+    _ = @import("render/renderer.zig");
+    _ = @import("avm1/opcodes.zig");
+    _ = @import("avm1/string.zig");
+    _ = @import("avm1/value.zig");
+    _ = @import("avm1/object.zig");
+    _ = @import("avm1/runtime.zig");
+    _ = @import("avm1/activation.zig");
+    _ = @import("avm1/globals/globals.zig");
 }

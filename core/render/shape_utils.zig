@@ -368,10 +368,12 @@ test "shared edge: fill0 flips and segments link into closed contours" {
         // Diagonal (200,200)→(0,0): left of travel = fill 2, right = fill 1
         sc(null, 2, 1, null),
         edge(-200, -200),
-        // Outer edges of the right triangle (fill1 = 2): (0,0)→(200,0)→(200,200)
-        sc(.{ 0, 0 }, null, 2, null),
-        edge(200, 0),
-        edge(0, 200),
+        // Outer edges of the right triangle (fill1 = 2), travelling
+        // (200,200)→(200,0)→(0,0) so fill 2 stays on the right side and
+        // the contour links onto the flipped diagonal. fill0 cleared.
+        sc(.{ 200, 200 }, 0, 2, null),
+        edge(0, -200),
+        edge(-200, 0),
     };
     const s: swf_shape.Shape = .{
         .version = 1,

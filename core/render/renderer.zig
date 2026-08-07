@@ -339,10 +339,16 @@ test "render a placed square shape through the full pipeline" {
     try renderer.renderFrame(&canvas, &root, 0x00FFFFFF, stage);
 
     // Whole 10x10 canvas should be red (surface order BGRA: R in byte 2).
+    // ±2 LSB tolerance absorbs the AA coverage rounding (same tolerance
+    // simdra's own napi-parity suite uses).
     const px = canvas.pixels();
-    try std.testing.expectEqual(@as(u32, 0x00FF0000), px[0] & 0x00FFFFFF);
-    try std.testing.expectEqual(@as(u32, 0x00FF0000), px[55] & 0x00FFFFFF);
-    try std.testing.expectEqual(@as(u32, 0x00FF0000), px[99] & 0x00FFFFFF);
+    for ([_]usize{ 0, 55, 99 }) |i| {
+        const r = (px[i] >> 16) & 0xFF;
+        const g = (px[i] >> 8) & 0xFF;
+        const b = px[i] & 0xFF;
+        try std.testing.expect(r >= 253);
+        try std.testing.expect(g <= 2 and b <= 2);
+    }
 }
 
 fn appendTag(gpa: std.mem.Allocator, list: *std.ArrayList(u8), code: u16, body: []const u8) !void {
