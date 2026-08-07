@@ -249,103 +249,213 @@ pub fn toUint16(n: f64) u16 {
 /// ES3 §9.8.1 ToString(Number) — exact JS formatting: shortest
 /// round-trip digits, integer notation for 1 ≤ |n| < 1e21, fixed decimals
 /// down to 1e-6, exponential beyond. `buf` needs ~32 bytes.
-pub fn numberToStringBuf(buf: []u8, n: f64) []const u8 {
-    if (std.math.isNan(n)) return copyInto(buf, "NaN");
-    if (n == 0) return copyInto(buf, "0");
-    if (std.math.isInf(n)) {
-        return copyInto(buf, if (n < 0) "-Infinity" else "Infinity");
+/// Flash's own float→string, bugs included.
+///
+/// This is NOT ES3 `ToString(Number)`. Flash Player shifts the value into
+/// [0, 10), pulls 15 digits out by repeated multiplication, then rounds —
+/// and the rounding mishandles a 9.999→10 carry. The visible consequences
+/// are part of the format: at most 15 significant digits (so 0.1 + 0.2
+/// prints "0.30000000000000004" nowhere and "0.3" everywhere), exponent
+/// notation from 1e15 rather than 1e21, and `-9999999999999996` printing as
+/// the digit-less "-e+16".
+///
+/// Port of ruffle core/src/avm1/value.rs `f64_to_string`.
+pub fn numberToStringBuf(buf: []u8, n_in: f64) []const u8 {
+    if (std.math.isNan(n_in)) return copyInto(buf, "NaN");
+    if (n_in == 0) return copyInto(buf, "0");
+    if (std.math.isInf(n_in)) {
+        return copyInto(buf, if (n_in < 0) "-Infinity" else "Infinity");
+    }
+    // Integers in i32 range print directly — the common case, and it avoids
+    // the digit machinery rounding e.g. 2147483647 to 15 digits.
+    if (n_in >= -2147483648.0 and n_in <= 2147483647.0 and @rem(n_in, 1) == 0) {
+        return std.fmt.bufPrint(buf, "{d}", .{@as(i32, @intFromFloat(n_in))}) catch
+            copyInto(buf, "0");
     }
 
-    // Shortest digits via std's scientific renderer: "-d.ddde±x".
-    var sci_buf: [64]u8 = undefined;
-    const sci = std.fmt.float.render(&sci_buf, n, .{ .mode = .scientific }) catch unreachable;
-    var idx: usize = 0;
-    var out_len: usize = 0;
-    var negative = false;
-    if (sci[idx] == '-') {
-        negative = true;
-        idx += 1;
+    var work: [64]u8 = undefined;
+    var len: usize = 0;
+    var n = n_in;
+    const is_negative = n < 0;
+    if (is_negative) {
+        n = -n;
+        work[len] = '-';
+        len += 1;
     }
-    var digits: [20]u8 = undefined;
-    var ndigits: usize = 0;
-    digits[ndigits] = sci[idx];
-    ndigits += 1;
-    idx += 1;
-    if (idx < sci.len and sci[idx] == '.') {
-        idx += 1;
-        while (idx < sci.len and sci[idx] != 'e') : (idx += 1) {
-            digits[ndigits] = sci[idx];
-            ndigits += 1;
-        }
-    }
-    while (idx < sci.len and sci[idx] != 'e') idx += 1;
-    idx += 1; // past 'e'
-    const exp10 = std.fmt.parseInt(i32, sci[idx..], 10) catch 0;
-    // Trim trailing zero digits (renderer may emit "1.0e0"-style).
-    while (ndigits > 1 and digits[ndigits - 1] == '0') ndigits -= 1;
 
-    // ES3 notation: k digits, value = s × 10^(pos - k) with pos = exp10+1.
-    const k: i32 = @intCast(ndigits);
-    const pos: i32 = exp10 + 1; // decimal point position
-    var w: usize = 0;
-    if (negative) {
-        buf[w] = '-';
-        w += 1;
+    // Base-2 exponent straight out of the bit pattern.
+    const MANTISSA_BITS = 52;
+    const EXPONENT_MASK: u64 = 0x7ff;
+    const EXPONENT_BIAS: i32 = 1023;
+    var exp_base2: i32 = @as(i32, @intCast((@as(u64, @bitCast(n)) >> MANTISSA_BITS) & EXPONENT_MASK)) - EXPONENT_BIAS;
+    if (exp_base2 == -EXPONENT_BIAS) {
+        // Subnormal: scale into the normal range and re-read the exponent.
+        const NORMAL_SCALE: f64 = 1.801439850948198e16; // 2^54
+        const scaled = n * NORMAL_SCALE;
+        exp_base2 = @as(i32, @intCast((@as(u64, @bitCast(scaled)) >> MANTISSA_BITS) & EXPONENT_MASK)) - EXPONENT_BIAS - 54;
     }
-    if (pos >= 1 and pos <= 21) {
-        if (k <= pos) {
-            // ddd000
-            @memcpy(buf[w..][0..ndigits], digits[0..ndigits]);
-            w += ndigits;
-            var z: i32 = pos - k;
-            while (z > 0) : (z -= 1) {
-                buf[w] = '0';
-                w += 1;
-            }
-        } else {
-            // dd.ddd
-            const ipart: usize = @intCast(pos);
-            @memcpy(buf[w..][0..ipart], digits[0..ipart]);
-            w += ipart;
-            buf[w] = '.';
-            w += 1;
-            @memcpy(buf[w..][0 .. ndigits - ipart], digits[ipart..ndigits]);
-            w += ndigits - ipart;
+
+    // Flash's less-precise log10(2) — using the exact one shifts edge cases.
+    const LOG10_2: f64 = 0.301029995663981;
+    var exp: i32 = @intFromFloat(@round(@as(f64, @floatFromInt(exp_base2)) * LOG10_2));
+
+    var mantissa = decimalShift(n, -exp);
+    // The estimate can be off by one in either direction.
+    if (truncI32(mantissa) == 0) {
+        exp -= 1;
+        mantissa = decimalShift(n, -exp);
+    }
+    if (truncI32(mantissa) >= 10) {
+        exp += 1;
+        mantissa = decimalShift(n, -exp);
+    }
+
+    const Digits = struct {
+        m: f64,
+        fn next(self: *@This()) u8 {
+            const d = truncI32(self.m);
+            self.m -= @floatFromInt(d);
+            self.m *= 10.0;
+            return '0' + @as(u8, @intCast(@max(@min(d, 9), 0)));
         }
-    } else if (pos <= 0 and pos > -6) {
-        // 0.000ddd
-        buf[w] = '0';
-        w += 1;
-        buf[w] = '.';
-        w += 1;
-        var z: i32 = -pos;
-        while (z > 0) : (z -= 1) {
-            buf[w] = '0';
-            w += 1;
+    };
+    var digits: Digits = .{ .m = mantissa };
+
+    const MAX_DECIMAL_PLACES: i32 = 15;
+    if (exp >= 15) {
+        // 1.2345e+15. No extra digit is pushed for a 9.9999→10 carry, which
+        // is precisely the "-e+16" bug.
+        work[len] = digits.next();
+        len += 1;
+        work[len] = '.';
+        len += 1;
+        var i: i32 = 0;
+        while (i < MAX_DECIMAL_PLACES - 1) : (i += 1) {
+            work[len] = digits.next();
+            len += 1;
         }
-        @memcpy(buf[w..][0..ndigits], digits[0..ndigits]);
-        w += ndigits;
+    } else if (exp >= 0) {
+        // 12345.678901234
+        work[len] = '0';
+        len += 1;
+        var i: i32 = 0;
+        while (i <= exp) : (i += 1) {
+            work[len] = digits.next();
+            len += 1;
+        }
+        work[len] = '.';
+        len += 1;
+        i = 0;
+        while (i < MAX_DECIMAL_PLACES - exp - 1) : (i += 1) {
+            work[len] = digits.next();
+            len += 1;
+        }
+        exp = 0;
+    } else if (exp >= -5) {
+        // 0.0012345678901234
+        work[len] = '0';
+        work[len + 1] = '0';
+        work[len + 2] = '.';
+        len += 3;
+        var z: i32 = 0;
+        while (z < -exp - 1) : (z += 1) {
+            work[len] = '0';
+            len += 1;
+        }
+        var i: i32 = 0;
+        while (i < MAX_DECIMAL_PLACES) : (i += 1) {
+            work[len] = digits.next();
+            len += 1;
+        }
+        exp = 0;
     } else {
-        // Exponential d.ddde±x with exponent = pos - 1.
-        buf[w] = digits[0];
-        w += 1;
-        if (ndigits > 1) {
-            buf[w] = '.';
-            w += 1;
-            @memcpy(buf[w..][0 .. ndigits - 1], digits[1..ndigits]);
-            w += ndigits - 1;
+        // 1.345e-15
+        work[len] = '0';
+        len += 1;
+        const first = digits.next();
+        if (first != '0') {
+            work[len] = first;
+            len += 1;
         }
-        buf[w] = 'e';
-        w += 1;
-        const e = pos - 1;
-        buf[w] = if (e < 0) '-' else '+';
-        w += 1;
-        const abs_e: u32 = @intCast(if (e < 0) -e else e);
-        const estr = std.fmt.bufPrint(buf[w..], "{d}", .{abs_e}) catch unreachable;
-        w += estr.len;
+        work[len] = '.';
+        len += 1;
+        var i: i32 = 0;
+        while (i < MAX_DECIMAL_PLACES - 1) : (i += 1) {
+            work[len] = digits.next();
+            len += 1;
+        }
     }
-    out_len = w;
-    return buf[0..out_len];
+
+    // Peek one more digit and round away from zero on a tie.
+    if (digits.next() >= '5') {
+        var i = len;
+        while (i > 0) {
+            i -= 1;
+            if (work[i] == '9') {
+                work[i] = '0';
+            } else if (work[i] >= '0') {
+                work[i] += 1;
+                break;
+            }
+        }
+    }
+
+    while (len > 0 and work[len - 1] == '0') len -= 1;
+    if (len > 0 and work[len - 1] == '.') len -= 1;
+
+    var start: usize = 0;
+    if (exp != 0) {
+        // Exponent form. The fix-ups below are Flash's own, and they do not
+        // cover the negative cases — hence "-e+16".
+        var pos: usize = 0;
+        while (pos < len and work[pos] == '0') pos += 1;
+        if (pos != 0) {
+            std.mem.copyForwards(u8, work[0 .. len - pos], work[pos..len]);
+            len -= pos;
+        }
+        if (len == 0) {
+            // 9.99999 rounded to 0.00000 with no room for the carry.
+            work[0] = '1';
+            len = 1;
+            exp += 1;
+        } else {
+            // 100e15 becomes 1e17.
+            var last: usize = 0;
+            var i: usize = len;
+            while (i > 0) {
+                i -= 1;
+                if (work[i] != '0') {
+                    last = i;
+                    break;
+                }
+            }
+            if (last == 0) {
+                exp += @as(i32, @intCast(len)) - 1;
+                len = 1;
+            }
+        }
+        const tail = std.fmt.bufPrint(work[len..], "e{c}{d}", .{
+            @as(u8, if (exp < 0) '-' else '+'),
+            @abs(exp),
+        }) catch "";
+        len += tail.len;
+    }
+
+    // Strip a leading zero the digit machinery left behind.
+    const i: usize = if (is_negative) 1 else 0;
+    if (len > i and work[i] == '0' and !(len > i + 1 and work[i + 1] == '.')) {
+        if (i > 0) work[i] = work[i - 1];
+        start = 1;
+    }
+    return copyInto(buf, work[start..len]);
+}
+
+
+fn truncI32(n: f64) i32 {
+    if (std.math.isNan(n)) return 0;
+    if (n >= 2147483647.0) return std.math.maxInt(i32);
+    if (n <= -2147483648.0) return std.math.minInt(i32);
+    return @intFromFloat(@trunc(n));
 }
 
 fn copyInto(buf: []u8, s: []const u8) []const u8 {
@@ -372,7 +482,10 @@ fn expectNum(expected: []const u8, n: f64) !void {
     try std.testing.expectEqualStrings(expected, numberToStringBuf(&buf, n));
 }
 
-test "ES3 ToString(Number) formatting" {
+test "Flash's ToString(Number), quirks included" {
+    // The vectors below are ruffle's own f64_to_string test cases, which
+    // were recorded against Flash Player — NOT ES3. Several are wrong by
+    // ECMA's lights and right by Flash's.
     try expectNum("0", 0.0);
     try expectNum("0", -0.0);
     try expectNum("NaN", std.math.nan(f64));
@@ -383,22 +496,42 @@ test "ES3 ToString(Number) formatting" {
     try expectNum("42", 42.0);
     try expectNum("1000000", 1e6);
     try expectNum("0.5", 0.5);
-    try expectNum("1.5", 1.5);
-    try expectNum("0.1", 0.1);
-    // Runtime addition (comptime 0.1+0.2 folds in f128 and lands on a
-    // different f64 that legitimately prints "0.3").
-    var x: f64 = 0.1;
-    x += 0.2;
-    try expectNum("0.30000000000000004", x);
-    try expectNum("3.141592653589793", std.math.pi);
-    try expectNum("100000000000000000000", 1e20);
-    try expectNum("1e+21", 1e21);
-    try expectNum("0.000001", 1e-6);
-    try expectNum("1e-7", 1e-7);
-    try expectNum("1.25e-7", 1.25e-7);
-    try expectNum("123456.789", 123456.789);
+    try expectNum("1.4", 1.4);
+    try expectNum("-990.123", -990.123);
+    try expectNum("3.14159265358979", std.math.pi); // 15 significant digits
     try expectNum("2147483647", 2147483647.0);
     try expectNum("-2147483648", -2147483648.0);
+
+    // 15 digits is the whole budget, so double-rounding artefacts vanish.
+    var x: f64 = 0.1;
+    x += 0.2;
+    try expectNum("0.3", x);
+    try expectNum("0.2", 0.19999999999999996);
+    try expectNum("100000.123456789", 100000.12345678912);
+    try expectNum("0.800000000000001", 0.8000000000000005);
+    try expectNum("0.83", 0.8300000000000005);
+
+    // Exponent notation starts at 1e15, not ES3's 1e21.
+    try expectNum("999990000000000", 9.9999e14);
+    try expectNum("1e+15", 1e15);
+    try expectNum("-1e+15", -1e15);
+    try expectNum("0.00001", 1e-5);
+    try expectNum("9.99e-6", 0.999e-5);
+
+    // Flash's rounding carry is broken, and these are the visible results.
+    try expectNum("10", 9.999999999999999);
+    try expectNum("1e+16", 9999999999999996.0);
+    try expectNum("-e+16", -9999999999999996.0); // no digit at all — Flash's bug
+    try expectNum("1e-5", 0.000009999999999999996);
+    try expectNum("-10e-6", -0.000009999999999999996);
+    try expectNum("0.0001", 0.00009999999999999996);
+
+    // Subnormals and the extremes.
+    try expectNum("9.99988867182684e-321", 1e-320);
+    try expectNum("1.79769313486231e+308", std.math.floatMax(f64));
+    try expectNum("-1.79769313486231e+308", -std.math.floatMax(f64));
+    try expectNum("2.2250738585072e-308", std.math.floatMin(f64));
+    try expectNum("4.94065645841247e-324", 5e-324);
 }
 
 test "ToNumber(String) and integer conversions" {

@@ -56,6 +56,9 @@ pub const Drag = struct {
     offset_y: i32 = 0,
 };
 
+/// 2001-02-03T04:05:06 at +05:45 == 2001-02-02T22:20:06Z == 981152406000 ms.
+pub const MOCK_EPOCH_MS: f64 = 981152406000;
+
 pub const ClassEntry = struct { name: strings.AvmString, ctor: ObjectHandle };
 
 pub const Vm = struct {
@@ -95,6 +98,7 @@ pub const Vm = struct {
     matrix_proto: ObjectHandle = 0,
     colortransform_proto: ObjectHandle = 0,
     transform_proto: ObjectHandle = 0,
+    date_proto: ObjectHandle = 0,
     /// Bottom scope for timeline code (the current target clip's variable
     /// object; a plain object in pure-VM tests).
     root_scope: ObjectHandle = 0,
@@ -102,6 +106,15 @@ pub const Vm = struct {
     root_object: Value = .undefined_value,
     /// Deterministic frame clock (ms since start), advanced by the player.
     now_ms: f64 = 0,
+    /// Wall clock at movie start, as Unix epoch milliseconds, and the local
+    /// zone's offset in minutes. `Date` reads `epoch_ms + now_ms`.
+    ///
+    /// The defaults are ruffle's test mock: 2001-02-03 04:05:06 local in a
+    /// +05:45 zone that has never used DST (core/src/locale.rs picks Nepal
+    /// for exactly that reason), so the conformance runner is deterministic
+    /// with no flag. Frontends override both via `Player.setClock`.
+    epoch_ms: f64 = MOCK_EPOCH_MS,
+    tz_offset_min: i32 = 345,
     rng: std.Random.DefaultPrng,
     /// Per-frame action budget (recursion/time guard, ScriptLimits-ish).
     budget: u32 = 5_000_000,

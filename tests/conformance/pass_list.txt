@@ -42,6 +42,7 @@ conflicting_instance_names
 constructor_function
 create_empty_movie_clip
 custom_clip_methods
+date
 default_names
 define_font_glyph_table_order
 define_font_glyph_table_overlap
@@ -50,6 +51,7 @@ define_function_case_sensitive
 delete
 depth_replacement_audio_unloading
 display_object_properties
+divide_swf4
 do_init_action
 duplicate_movie_clip
 duplicate_movie_clip_drawing

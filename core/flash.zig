@@ -74,6 +74,12 @@ pub const Player = struct {
         /// What `_url` reports. Flash uses the path the movie was loaded
         /// from; the corpus expects the local form "/test.swf".
         url: []const u8 = "",
+        /// Wall clock at movie start (Unix epoch ms) and the local zone's
+        /// offset in minutes, for `Date`. The defaults are the
+        /// deterministic mock the conformance runner needs; a real frontend
+        /// passes the real clock.
+        epoch_ms: f64 = avm1.runtime.MOCK_EPOCH_MS,
+        tz_offset_min: i32 = 345,
     };
 
     pub fn create(gpa: std.mem.Allocator, file_bytes: []const u8) LoadError!*Player {
@@ -120,6 +126,8 @@ pub const Player = struct {
         // root movie's version).
         self.vm.root_swf_version = self.movie.swf_version;
         self.vm.movie_url = avm1.strings.fromSwf(self.vm.arena(), opts.url, 8) catch &.{};
+        self.vm.epoch_ms = opts.epoch_ms;
+        self.vm.tz_offset_min = opts.tz_offset_min;
         // Bind `_root` BEFORE frame 1. Lazily creating it in the action
         // drain was a trap: a root frame that places a child before its own
         // DoAction drains the CHILD first, so every `_root`-anchored path
@@ -525,6 +533,7 @@ test {
     _ = @import("avm1/timers.zig");
     _ = @import("avm1/globals/decl.zig");
     _ = @import("avm1/globals/geom.zig");
+    _ = @import("avm1/globals/date.zig");
     _ = @import("avm1/globals/movie_clip.zig");
     _ = @import("avm1/globals/globals.zig");
 }

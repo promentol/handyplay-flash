@@ -13,7 +13,23 @@ const flash = @import("flash");
 const c = @cImport({
     @cDefine("SDL_MAIN_HANDLED", "");
     @cInclude("SDL3/SDL.h");
+    // For the wall clock and the local UTC offset: Zig's std carries no
+    // timezone database, so the C library answers both.
+    @cInclude("time.h");
 });
+
+/// Unix epoch milliseconds, now.
+fn wallClockMs() f64 {
+    return @as(f64, @floatFromInt(c.time(null))) * 1000.0;
+}
+
+/// Minutes this machine's local time is AHEAD of UTC.
+fn localOffsetMinutes() i32 {
+    var t: c.time_t = c.time(null);
+    var local: c.struct_tm = undefined;
+    if (c.localtime_r(&t, &local) == null) return 0;
+    return @intCast(@divTrunc(local.tm_gmtoff, 60));
+}
 
 pub fn main(init: std.process.Init) !u8 {
     const gpa = init.gpa;
@@ -47,7 +63,13 @@ pub fn main(init: std.process.Init) !u8 {
 
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(256 << 20));
     defer gpa.free(bytes);
-    const player = flash.Player.create(gpa, bytes) catch |err| {
+    // Real content deserves the real clock and the real path; only the
+    // conformance runner wants core's deterministic defaults.
+    const player = flash.Player.createWith(gpa, bytes, .{
+        .url = path,
+        .epoch_ms = wallClockMs(),
+        .tz_offset_min = localOffsetMinutes(),
+    }) catch |err| {
         try err_out.print("{s}: {t}\n", .{ path, err });
         try err_out.flush();
         return 1;
