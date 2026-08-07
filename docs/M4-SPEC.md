@@ -172,6 +172,13 @@ Three corrections to the sketch below, found while implementing:
   SLASH path only for clips, undefined otherwise).
 
 ### A3. Clip member resolution — ✅ DONE
+All A1/A2/A3 gates pass. What still fails in this area needs workstream B
+(`createEmptyMovieClip`/`attachMovie`): removed_target_clip_scope,
+set_target_2_swf6/7, property_invalid_base_clip, default_names,
+named_shapes. Non-clip display objects (buttons, text fields) DID land
+here — ruffle gives object1 to MovieClip, Avm1Button and EditText, but not
+to Graphic or static Text.
+
 The resolution order below landed EARLY, inside A1 (the table) and A2
 (path properties), so A3 itself was only the two loose ends: children in
 `for..in` (highest depth first, appended after own keys) and Flash's

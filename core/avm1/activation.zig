@@ -1073,7 +1073,7 @@ pub const Activation = struct {
                 } else if (v == .undefined_value) {
                     // SWF<=6 treats an undefined target as "back to base";
                     // SWF7+ nulls it (corpus tell_target_invalid_swf6).
-                    self.target_clip = if (self.swf_version > 6) null else self.base_clip;
+                    if (self.swf_version > 6) self.target_clip = null else self.setTargetClip(self.base_clip);
                 } else {
                     // Note this coerces even a clip to a string first, so
                     // a plain object's toString runs and is observable.
@@ -1289,9 +1289,25 @@ pub const Activation = struct {
     /// through the DISPLAY tree; failure sets `target_clip = null` at every
     /// SWF version, which makes movie control silently no-op while
     /// variables fall back to _root. ruffle activation.rs:3060-3089.
+    /// ruffle `set_target_clip`: "The target should revert to `None` if the
+    /// clip is removed." Resetting to a base clip that has since been
+    /// destroyed must therefore yield the FAILED state, not a dangling
+    /// target — corpus target_clip_removed.
+    fn setTargetClip(self: *Activation, h: ?ObjectHandle) void {
+        if (h) |handle| {
+            if (self.vm.objects.get(handle).native == .clip and
+                stage.targetOf(self.vm, handle) == null)
+            {
+                self.target_clip = null;
+                return;
+            }
+        }
+        self.target_clip = h;
+    }
+
     fn setTarget(self: *Activation, path: strings.AvmString) !void {
         if (path.len == 0) {
-            self.target_clip = self.base_clip;
+            self.setTargetClip(self.base_clip);
             return;
         }
         const root = self.rootHandle();
@@ -1302,7 +1318,7 @@ pub const Activation = struct {
         if (!base_removed) {
             if (resolved) |h| {
                 if (stage.targetOf(self.vm, h) != null) {
-                    self.target_clip = h;
+                    self.setTargetClip(h);
                     return;
                 }
             }

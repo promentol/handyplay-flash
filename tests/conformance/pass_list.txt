@@ -115,6 +115,7 @@ swf4_bool
 swf5_encoding
 swf6_string_as_bool
 swf7_case_sensitive
+target_clip_removed
 target_clip_swf5
 target_clip_swf6
 target_path
