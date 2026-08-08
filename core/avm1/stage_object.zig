@@ -152,6 +152,17 @@ pub fn targetOfValue(vm: *Vm, v: Value) ?Target {
     return if (v == .object) targetOf(vm, v.object) else null;
 }
 
+/// The MovieClip behind a handle, for the Player. Unlike `targetOf` this
+/// does NOT reject a removed clip: `unloadMovie` revives one, and the
+/// completion of a load has to reach the clip it was aimed at.
+pub fn clipOfHandle(vm: *Vm, handle: ObjectHandle) ?*MovieClip {
+    if (handle == 0) return null;
+    return switch (vm.objects.get(handle).native) {
+        .clip => |ptr| @ptrCast(@alignCast(ptr)),
+        else => null,
+    };
+}
+
 // --- the table -------------------------------------------------------------
 
 const Getter = *const fn (vm: *Vm, t: Target) anyerror!Value;
@@ -519,8 +530,8 @@ pub fn slashPath(vm: *Vm, t: Target) ![]const u16 {
 
 fn buildSlashPath(vm: *Vm, clip: *MovieClip) anyerror![]const u16 {
     const parent = clip.parent orelse {
-        // _level0 contributes no name; deeper levels would add "_levelN".
-        return S("");
+        // _level0 contributes no name; deeper levels add "_levelN".
+        return if (clip.level_id == 0) S("") else levelName(vm, clip.level_id);
     };
     const head = try buildSlashPath(vm, parent);
     const with_slash = try strings.concat(vm.arena(), head, S("/"));
@@ -534,8 +545,8 @@ fn buildSlashPath(vm: *Vm, clip: *MovieClip) anyerror![]const u16 {
 pub fn dotPath(vm: *Vm, t: Target) std.mem.Allocator.Error![]const u16 {
     const parts = pathPartsOf(t);
     const parent = parts.parent orelse {
-        // Only level 0 exists; the depth would select the level otherwise.
-        return S("_level0");
+        const lv: i32 = if (t.clip) |c| c.level_id else 0;
+        return levelName(vm, lv);
     };
     const head = try dotPathOfClip(vm, parent);
     const with_dot = try strings.concat(vm.arena(), head, S("."));
@@ -543,7 +554,7 @@ pub fn dotPath(vm: *Vm, t: Target) std.mem.Allocator.Error![]const u16 {
 }
 
 fn dotPathOfClip(vm: *Vm, clip: *MovieClip) std.mem.Allocator.Error![]const u16 {
-    const parent = clip.parent orelse return S("_level0");
+    const parent = clip.parent orelse return levelName(vm, clip.level_id);
     const head = try dotPathOfClip(vm, parent);
     const with_dot = try strings.concat(vm.arena(), head, S("."));
     return strings.concat(vm.arena(), with_dot, clipName(clip));
@@ -578,15 +589,30 @@ pub fn parentOf(vm: *Vm, handle: ObjectHandle) !Value {
 }
 
 /// `_levelN` / `_flashN` (a relic synonym from the earliest Flash
-/// versions). ruffle stage_object.rs:174-207. We only ever have level 0,
-/// so any other level is a valid NAME that resolves to nothing — which is
+/// versions). ruffle stage_object.rs:174-207. A level that no
+/// `loadMovieNum` has created is a valid NAME that resolves to nothing —
 /// still different from "not a level name at all" (null).
 pub fn parseLevel(vm: *Vm, name: []const u16) ?Value {
     if (name.len < 6) return null;
     const prefix = name[0..6];
     if (!nameEql(vm, prefix, S("_level")) and !nameEql(vm, prefix, S("_flash"))) return null;
     const id = parseLevelId(name[6..]);
-    return if (id == 0) vm.root_object else .undefined_value;
+    if (id == 0) return vm.root_object;
+    for (vm.levels.items) |lv| {
+        if (lv.id == id) return .{ .object = lv.obj };
+    }
+    return .undefined_value;
+}
+
+/// `_levelN`. Level 0 is the overwhelmingly common case and its name is
+/// a static, so only the loaded levels ever allocate.
+fn levelName(vm: *Vm, id: i32) []const u16 {
+    if (id == 0) return S("_level0");
+    var buf: [24]u8 = undefined;
+    const ascii = std.fmt.bufPrint(&buf, "_level{d}", .{id}) catch return S("_level0");
+    const out = vm.arena().alloc(u16, ascii.len) catch return S("_level0");
+    for (ascii, out) |c, *w| w.* = c;
+    return out;
 }
 
 fn parseLevelId(digits: []const u16) i32 {

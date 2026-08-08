@@ -352,6 +352,8 @@ pub const Renderer = struct {
         canvas: *canvas_mod.Canvas,
         root: *const movie_clip.MovieClip,
         root_placement: *const display_object.DisplayObject,
+        /// `_level1` and up, HIGHEST FIRST — the Player's own order.
+        levels: []const *display_object.DisplayObject,
         background: swf.reader.Color,
         stage: Transform,
     ) !void {
@@ -366,6 +368,14 @@ pub const Renderer = struct {
             stage.concat(root_placement.matrix),
             root_placement.color_transform,
         );
+        // `_level1` and up sit ON TOP of the root, lowest level first.
+        var i = levels.len;
+        while (i > 0) {
+            i -= 1;
+            const lv = levels[i];
+            if (!lv.visible) continue;
+            try self.renderObject(ctx, lv, stage.concat(lv.matrix), lv.color_transform);
+        }
         ctx.setColorTransform(.{}); // leave ctx state clean
     }
 
@@ -1128,7 +1138,7 @@ test "render a placed square shape through the full pipeline" {
         .kind = .{ .clip = &root },
         .owns_kind = false,
     };
-    try renderer.renderFrame(&canvas, &root, &root_placement, 0x00FFFFFF, stage);
+    try renderer.renderFrame(&canvas, &root, &root_placement, &.{}, 0x00FFFFFF, stage);
 
     // Whole 10x10 canvas should be red (surface order BGRA: R in byte 2).
     // ±2 LSB tolerance absorbs the AA coverage rounding (same tolerance

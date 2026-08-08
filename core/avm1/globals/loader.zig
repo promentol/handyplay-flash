@@ -464,6 +464,38 @@ pub fn completeLoadVars(vm: *Vm, obj: ObjectHandle, data: ?[]const u8) !void {
     try callMethod(vm, obj, S("onData"), &.{payload});
 }
 
+/// A movie load finished. The bare `loadMovie` forms broadcast nothing —
+/// only a `MovieClipLoader` has listeners, and it hears the whole
+/// sequence at once because the fetch already completed.
+pub fn movieLoadEvents(vm: *Vm, target: FetchRequest.Movie, ok: bool) !void {
+    if (target.broadcaster == 0) return;
+    const clip: Value = .{ .object = target.clip };
+    if (!ok) {
+        try broadcast(vm, target.broadcaster, S("onLoadError"), &.{ clip, .{ .string = S("URLNotFound") }, .{ .number = 0 } });
+        return;
+    }
+    try broadcast(vm, target.broadcaster, S("onLoadStart"), &.{clip});
+    try broadcast(vm, target.broadcaster, S("onLoadProgress"), &.{ clip, .{ .number = 0 }, .{ .number = 0 } });
+    try broadcast(vm, target.broadcaster, S("onLoadComplete"), &.{ clip, .{ .number = 0 } });
+    try broadcast(vm, target.broadcaster, S("onLoadInit"), &.{clip});
+}
+
+/// AsBroadcaster's `broadcastMessage`, called from the Player rather than
+/// from script: walk `_listeners` and invoke the handler each one has.
+pub fn broadcast(vm: *Vm, obj: ObjectHandle, name: AvmString, args: []const Value) !void {
+    const list = vm.objects.getChained(obj, S("_listeners"), vm.case_sensitive) orelse return;
+    if (list != .object) return;
+    const n = vm.arrayLength(list.object);
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        var buf: [12]u8 = undefined;
+        const idx = try strings.fromSwf(vm.arena(), std.fmt.bufPrint(&buf, "{d}", .{i}) catch continue, 8);
+        const entry = vm.getProperty(list.object, idx, .{ .object = list.object }) catch continue;
+        if (entry != .object) continue;
+        try callMethod(vm, entry.object, name, args);
+    }
+}
+
 // --- Tests -----------------------------------------------------------------
 
 const testing = std.testing;

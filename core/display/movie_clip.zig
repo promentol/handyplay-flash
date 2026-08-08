@@ -29,6 +29,10 @@ pub const Error = std.mem.Allocator.Error;
 /// Shared per-tick context threaded through the tree walk.
 pub const Context = struct {
     gpa: std.mem.Allocator,
+    /// The movie whose library the CURRENT walk resolves against. Not a
+    /// constant: `executeFrame` swaps in a loaded clip's own movie for the
+    /// duration of its subtree, which is how a `loadMovie` child finds its
+    /// characters instead of the root's.
     movie: *const swf.movie.Movie,
     /// Set by SetBackgroundColor during execution.
     background_color: ?swf.reader.Color = null,
@@ -224,6 +228,14 @@ pub const MovieClip = struct {
     /// `_lockroot`: when set, `_root` inside this clip resolves to the clip
     /// itself rather than the main timeline.
     lock_root: bool = false,
+    /// The movie this clip's timeline came from, when that is NOT the root
+    /// movie — i.e. a `loadMovie` target, or a level. Its library, its SWF
+    /// version and its file length are what every lookup inside the whole
+    /// subtree must use, which is what `movieOf` walks up to find.
+    movie: ?*const swf.movie.Movie = null,
+    /// Which `_levelN` this clip IS, for the parentless ones. Level 0 is
+    /// the root movie; the rest are created by `loadMovieNum`.
+    level_id: i32 = 0,
     /// Set when this clip is one of a BUTTON's child containers. It is not
     /// scriptable in its own right: every request for its AVM1 object
     /// yields the button's, so `_parent` from inside a button is the
@@ -232,6 +244,19 @@ pub const MovieClip = struct {
 
     pub fn init(frames: []const library.Frame) MovieClip {
         return .{ .frames = frames };
+    }
+
+    /// The movie whose LIBRARY this clip's characters come from. A loaded
+    /// SWF brings its own, and everything under it — nested sprites,
+    /// attachMovie, text fields resolving fonts — must look there and not
+    /// in the root movie. Walking up beats propagating at instantiate
+    /// time: it cannot go stale when a clip is re-parented or reloaded.
+    pub fn movieOf(self: *const MovieClip, ctx: *const Context) *const swf.movie.Movie {
+        var cur: ?*const MovieClip = self;
+        while (cur) |c| : (cur = c.parent) {
+            if (c.movie) |m| return m;
+        }
+        return ctx.movie;
     }
 
     pub fn deinit(self: *MovieClip, gpa: std.mem.Allocator) void {
@@ -484,6 +509,12 @@ pub const MovieClip = struct {
     }
 
     fn executeFrame(self: *MovieClip, ctx: *Context, frame_num: u16, run_actions: bool) Error!void {
+        // Every character this frame places comes from THIS clip's movie.
+        // Swapping the context here rather than at each lookup covers the
+        // whole subtree the placements build, including nested sprites.
+        const outer_movie = ctx.movie;
+        if (self.movie) |m| ctx.movie = m;
+        defer ctx.movie = outer_movie;
         if (frame_num == 0 or frame_num > self.frames.len) return;
         const frame = self.frames[frame_num - 1];
         for (frame.controls) |control| switch (control) {
@@ -549,6 +580,9 @@ pub const MovieClip = struct {
     /// over an occupied depth, so survivors keep their identity (and their
     /// timeline position) instead of being destroyed and re-created.
     pub fn runGoto(self: *MovieClip, ctx: *Context, target: u16) Error!void {
+        const outer_movie = ctx.movie;
+        if (self.movie) |m| ctx.movie = m;
+        defer ctx.movie = outer_movie;
         if (target < self.current_frame) {
             var i: usize = 0;
             while (i < self.children.items.len) {
@@ -622,6 +656,46 @@ pub const MovieClip = struct {
 
     fn byDepth(_: void, a: *DisplayObject, b: *DisplayObject) bool {
         return a.depth < b.depth;
+    }
+
+    /// Ruffle's `avm1_unload`: every child leaves the display list with its
+    /// `onUnload` fired, deepest first, and then THIS clip fires its own —
+    /// a `loadMovie`/`unloadMovie` target hears about its own unloading,
+    /// which a plain `removeMovieClip` target does not.
+    ///
+    /// The clip itself survives: it is not retired and keeps its script
+    /// object, so `clip.onUnload = f` written before the unload still finds
+    /// its way to `f`, and `_level1` still names something afterwards.
+    pub fn unloadContents(self: *MovieClip, ctx: *Context) Error!void {
+        var i = self.children.items.len;
+        while (i > 0) {
+            i -= 1;
+            try retire(ctx, self.children.items[i]);
+        }
+        self.children.clearRetainingCapacity();
+        try self.dispatchClipEventEx(ctx, swf.place.ClipEvent.UNLOAD, "onUnload", true);
+        if (self.drawing) |*d| {
+            d.deinit();
+            self.drawing = null;
+        }
+    }
+
+    /// The other half of ruffle's `replace_with_movie`: point the clip at a
+    /// new timeline (null = the empty movie an `unloadMovie` leaves behind)
+    /// and rewind it. `reset_for_movie_load` clears every flag but
+    /// `_lockroot`, which is why an unloaded clip stops being `removed` and
+    /// starts playing again.
+    pub fn replaceWithMovie(self: *MovieClip, movie: ?*const swf.movie.Movie) void {
+        self.movie = movie;
+        self.frames = if (movie) |m| m.frames else &.{};
+        self.current_frame = 0;
+        self.playing = true;
+        self.initialized = false;
+        self.ran_this_tick = false;
+        self.pending_goto = null;
+        self.removed = false;
+        self.tag_stream_len = 0;
+        if (self.placement) |p| p.path_lost = false;
     }
 
     pub fn removeAtDepth(self: *MovieClip, ctx: *Context, depth: i32) Error!void {

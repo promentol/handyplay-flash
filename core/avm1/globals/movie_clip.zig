@@ -79,6 +79,8 @@ pub fn install(vm: *Vm) !void {
     try method(vm, proto, "stopDrag", stopDrag, hidden);
     try method(vm, proto, "loadVariables", loadVariables, hidden);
     try method(vm, proto, "getURL", getUrl, hidden);
+    try method(vm, proto, "loadMovie", loadMovie, hidden);
+    try method(vm, proto, "unloadMovie", unloadMovie, hidden);
 
     // --- the property block --------------------------------------------------
     // Ruffle declares each of these with a getter/setter pair, but the
@@ -260,6 +262,29 @@ fn getUrl(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     else
         try l.formPairs(vm, locals.?);
     try l.navigate(vm, url, window, m, vars);
+    return .undefined_value;
+}
+
+/// `MovieClip.loadMovie(url, method)`. The variables it can send are the
+/// CLIP's own, not the calling frame's — the one place the method form
+/// differs from the opcode.
+fn loadMovie(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (clipOf(vm, this) == null) return .undefined_value;
+    const url = try vm.toStringValue(arg(args, 0));
+    const m = runtime.FetchRequest.Method.fromName(try vm.toStringValue(arg(args, 1))) orelse .none;
+    const l = @import("loader.zig");
+    l.spawn(vm, try l.buildRequest(vm, url, this.object, m, .{ .movie = .{ .clip = this.object } }));
+    return .undefined_value;
+}
+
+fn unloadMovie(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    if (clipOf(vm, this) == null) return .undefined_value;
+    const h = vm.host;
+    const f = h.unload_movie orelse return .undefined_value;
+    f(h.ctx orelse return .undefined_value, this.object);
     return .undefined_value;
 }
 

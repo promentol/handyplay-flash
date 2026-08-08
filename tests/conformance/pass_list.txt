@@ -190,6 +190,9 @@ focus_visibility_change
 focusrect_focuslost
 focusrect_mouse_swf8
 focusrect_mouse_swf9
+focusrect_property_swf5
+focusrect_property_swf6
+focusrect_property_swf7
 focusrect_swf5
 focusrect_swf6
 form_loader_encoding_1
@@ -235,6 +238,7 @@ issue_1906
 issue_2030
 issue_2084
 issue_2166
+issue_2870
 issue_3169
 issue_3446
 issue_4377
@@ -248,12 +252,16 @@ lessthan_swf4_alt
 lessthan_swf5
 load_cancel_via_removemovieclip
 load_vars
+loadmovie
+loadmovie_method
+loadmovienum
 loadvariables
 loadvariables2
 loadvariables_method
 loadvariablesnum
 loadvars_tostring
 local_to_global
+lock_root
 looping
 looping_real_1_declared_1
 looping_real_1_declared_2
@@ -313,6 +321,7 @@ removed_base_clip_tell_target
 removed_clip_halts_script
 removed_target_clip_scope
 rewind_depth
+root_button_mode
 root_global_parent
 sandbox_type_local_file
 sandbox_type_local_network
@@ -421,6 +430,9 @@ uncaught_exception
 uncaught_exception_bubbled
 undefined_to_string_swf6
 unload_clip_event
+unloadmovie
+unloadmovie_method
+unloadmovienum
 use_hand_cursor
 variable_args
 virtual_property_recursion_double_swf7

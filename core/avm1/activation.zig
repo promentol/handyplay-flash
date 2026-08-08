@@ -821,8 +821,25 @@ pub const Activation = struct {
             .get_url => |u| {
                 const url = try self.swfStr(u.url);
                 const target = try self.swfStr(u.target);
+                // A `_levelN` target makes this a movie load, not a
+                // navigation. Note the bound: the static form needs
+                // something AFTER "_level", where GetURL2 accepts a bare
+                // "_level" as level 0.
                 if (target.len > 6 and strings.eql(target[0..6], S("_level"))) {
-                    // Levels other than 0 do not exist yet (workstream L3).
+                    const n = value_mod.stringToNumber(target[6..], self.swf_version);
+                    if (std.math.isNan(n) or n != @trunc(n)) return .next;
+                    const id = value_mod.toInt32(n);
+                    if (url.len == 0) {
+                        // Only unload a level that already exists —
+                        // creating one just to empty it would leave a
+                        // level behind that never held anything.
+                        if (self.existingLevel(id)) |dest| self.unloadMovie(dest);
+                    } else if (self.levelHandle(id)) |dest| {
+                        loader.spawn(self.vm, .{
+                            .url = try strings.toUtf8(self.vm.arena(), url),
+                            .target = .{ .movie = .{ .clip = dest } },
+                        });
+                    }
                     return .next;
                 }
                 if (loader.fsCommandOf(url) != null) return .next;
@@ -877,11 +894,7 @@ pub const Activation = struct {
 
         var clip_target: ?ObjectHandle = null;
         if (level_target > -1) {
-            // Only level 0 exists — a load into any other level is a
-            // no-op until levels are real (workstream L3).
-            if (level_target == 0 and self.vm.root_object == .object) {
-                clip_target = self.vm.root_object.object;
-            }
+            clip_target = self.levelHandle(level_target);
         } else if (is_load_vars or is_target_sprite) {
             clip_target = if (target_val == .object and stage.targetOf(self.vm, target_val.object) != null)
                 target_val.object
@@ -909,6 +922,45 @@ pub const Activation = struct {
                 }
                 return;
             }
+        } else if (is_target_sprite) {
+            // `loadMovie`, `unloadMovie` or `unloadMovieNum`.
+            if (url.len == 0) {
+                // A blank URL on a movie load IS the unload.
+                if (clip_target) |dest| self.unloadMovie(dest);
+            } else {
+                // The level has to exist before the load can name it.
+                if (clip_target == null and level_target > -1) {
+                    clip_target = self.levelHandle(level_target);
+                }
+                if (clip_target) |dest| {
+                    loader.spawn(self.vm, try loader.buildRequest(
+                        self.vm,
+                        url,
+                        self.localScope(),
+                        method,
+                        .{ .movie = .{ .clip = dest } },
+                    ));
+                }
+            }
+            return;
+        } else if (level_target > -1) {
+            // `loadMovieNum`. It sends no variables, whatever the method
+            // bits say — ruffle builds a bare GET here.
+            if (clip_target == null) clip_target = self.levelHandle(level_target);
+            if (clip_target) |dest| {
+                if (url.len == 0) {
+                    self.unloadMovie(dest);
+                } else {
+                    loader.spawn(self.vm, try loader.buildRequest(
+                        self.vm,
+                        url,
+                        null,
+                        .none,
+                        .{ .movie = .{ .clip = dest } },
+                    ));
+                }
+            }
+            return;
         }
 
         // `getURL`. With no send method the locals are not gathered at all.
@@ -917,6 +969,36 @@ pub const Activation = struct {
         else
             try loader.formPairs(self.vm, self.localScope());
         try loader.navigate(self.vm, url, target, method, vars);
+    }
+
+    /// `_levelN`'s clip object, created if this is the first mention of
+    /// that level. Level 0 is the root and always exists.
+    fn levelHandle(self: *Activation, id: i32) ?ObjectHandle {
+        if (id == 0) {
+            return if (self.vm.root_object == .object) self.vm.root_object.object else null;
+        }
+        const h = self.vm.host;
+        const f = h.level orelse return null;
+        const obj = f(h.ctx orelse return null, id);
+        return if (obj == 0) null else obj;
+    }
+
+    /// The level's object if it has already been created, WITHOUT making
+    /// one. `unloadMovieNum` on a level nobody loaded does nothing at all.
+    fn existingLevel(self: *Activation, id: i32) ?ObjectHandle {
+        if (id == 0) {
+            return if (self.vm.root_object == .object) self.vm.root_object.object else null;
+        }
+        for (self.vm.levels.items) |lv| {
+            if (lv.id == id) return lv.obj;
+        }
+        return null;
+    }
+
+    fn unloadMovie(self: *Activation, clip: ObjectHandle) void {
+        const h = self.vm.host;
+        const f = h.unload_movie orelse return;
+        f(h.ctx orelse return, clip);
     }
 
     /// Decode and discard `n` actions. `WaitForFrame` counts ACTIONS, so

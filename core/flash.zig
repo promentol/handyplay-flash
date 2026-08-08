@@ -113,6 +113,17 @@ pub const Player = struct {
     load_file: ?*const fn (user: ?*anyopaque, url: []const u8) ?[]const u8 = null,
     load_user: ?*anyopaque = null,
     log_fetch: bool = false,
+    /// Movies loaded at runtime, owned here. Every parsed struct in the
+    /// clips below them slices into these buffers, so they must outlive
+    /// any clip that ever pointed at one — including after an
+    /// `unloadMovie`, since a queued action can still be holding a child.
+    loaded_movies: std.ArrayList(*swf.movie.Movie) = .empty,
+    /// `_level1` and up, NEWEST FIRST. That order is the execution order:
+    /// ruffle prepends every new clip to one global list, so a level
+    /// created later takes its frame before the root does (corpus
+    /// unloadmovienum, where the loaded level traces before the parent's
+    /// next frame). Level 0 is `root` and is not in here.
+    levels: std.ArrayList(*display.display_object.DisplayObject) = .empty,
 
     /// Safety valve: max timeline frames advanced per tick call.
     const MAX_FRAMES_PER_TICK = 5;
@@ -270,11 +281,21 @@ pub const Player = struct {
             gpa.destroy(f);
         }
         self.pending_loads.deinit(gpa);
+        for (self.levels.items) |lv| {
+            lv.deinit(gpa);
+            gpa.destroy(lv);
+        }
+        self.levels.deinit(gpa);
         self.clipboard.deinit(gpa);
         self.vm.destroy();
         self.root.deinit(gpa);
         self.canvas.deinit();
         self.movie.deinit();
+        for (self.loaded_movies.items) |m| {
+            m.deinit();
+            gpa.destroy(m);
+        }
+        self.loaded_movies.deinit(gpa);
         gpa.destroy(self);
     }
 
@@ -335,7 +356,80 @@ pub const Player = struct {
         switch (req.target) {
             .form => |h| try avm1.loader.completeForm(self.vm, h, body),
             .load_vars => |h| try avm1.loader.completeLoadVars(self.vm, h, body),
+            .movie => |m| try self.completeMovieLoad(m, body),
         }
+    }
+
+    /// A SWF came back (or did not). Parsing it can fail on garbage, on a
+    /// non-SWF payload, or on a missing file; all three land in the same
+    /// place, because `loadMovie` has no error channel of its own — only a
+    /// MovieClipLoader's `onLoadError` hears about it.
+    fn completeMovieLoad(self: *Player, target: avm1.runtime.FetchRequest.Movie, body: ?[]const u8) !void {
+        const ctx = self.cur_ctx orelse return;
+        const mc = avm1.stage_object.clipOfHandle(self.vm, target.clip) orelse return;
+        const loaded: ?*swf.movie.Movie = blk: {
+            const bytes = body orelse break :blk null;
+            const m = try self.gpa.create(swf.movie.Movie);
+            m.* = swf.movie.load(self.gpa, bytes) catch {
+                self.gpa.destroy(m);
+                break :blk null;
+            };
+            try self.loaded_movies.append(self.gpa, m);
+            break :blk m;
+        };
+        // Ruffle unloads and wipes the target BEFORE the fetch resolves, so
+        // a failed load still leaves the clip empty and its variables gone.
+        try mc.unloadContents(ctx);
+        self.vm.objects.clearDeletable(target.clip);
+        mc.replaceWithMovie(loaded);
+        try avm1.loader.movieLoadEvents(self.vm, target, loaded != null);
+    }
+
+    /// `_levelN`, made on demand. A level is a parentless clip that ticks
+    /// and renders after the root; once created it is never destroyed,
+    /// because `unloadMovieNum` leaves the level itself in place and only
+    /// empties it (corpus unloadmovienum still resolves `_level1`).
+    pub fn getOrCreateLevel(self: *Player, id: i32) !?*MovieClipT {
+        if (id == 0) return &self.root;
+        if (id < 0) return null;
+        for (self.levels.items) |lv| {
+            if (lv.kind.clip.level_id == id) return lv.kind.clip;
+        }
+        const mc = try self.gpa.create(MovieClipT);
+        errdefer self.gpa.destroy(mc);
+        mc.* = MovieClipT.init(&.{});
+        mc.level_id = id;
+        const obj = try self.gpa.create(display.display_object.DisplayObject);
+        obj.* = .{
+            .character_id = 0,
+            .depth = id,
+            .kind = .{ .clip = mc },
+            .owns_kind = true,
+        };
+        mc.placement = obj;
+        // Highest level first, matching the execution order below.
+        try self.levels.insert(self.gpa, 0, obj);
+        const handle = try self.clipObject(mc);
+        try self.vm.levels.append(self.vm.arena(), .{ .id = id, .obj = handle });
+        return mc;
+    }
+
+    /// `_levelN` for the VM, made on demand. Returns 0 for a level that
+    /// cannot exist.
+    fn hostLevel(ctx: *anyopaque, id: i32) u32 {
+        const self: *Player = @ptrCast(@alignCast(ctx));
+        const mc = (self.getOrCreateLevel(id) catch return 0) orelse return 0;
+        return self.clipObject(mc) catch 0;
+    }
+
+    /// `unloadMovie` / a `loadMovie` with an empty URL. Immediate, unlike
+    /// a load: the timeline is gone before the calling script continues.
+    fn hostUnloadMovie(ctx: *anyopaque, clip: u32) void {
+        const self: *Player = @ptrCast(@alignCast(ctx));
+        const c = self.cur_ctx orelse return;
+        const mc = avm1.stage_object.clipOfHandle(self.vm, clip) orelse return;
+        mc.unloadContents(c) catch return;
+        mc.replaceWithMovie(null);
     }
 
     /// `log_fetch`: ruffle's test navigator logs each request through the
@@ -405,11 +499,26 @@ pub const Player = struct {
             self.vm.display_ctx = null;
         }
         try self.runInitActions(&ctx);
+        // Levels run BEFORE the root, newest first. Ruffle has no tree
+        // walk here at all: it iterates one global list that every new
+        // clip is PREPENDED to, so a level loaded on a later tick takes
+        // its frame ahead of the main timeline's next one (corpus
+        // unloadmovienum).
+        for (self.levels.items) |lv| {
+            if (lv.kind != .clip) continue;
+            try lv.kind.clip.runFrame(&ctx);
+        }
         try self.root.runFrame(&ctx);
+        for (self.levels.items) |lv| {
+            if (lv.kind == .clip) try lv.kind.clip.applyPendingGoto(&ctx);
+        }
         try self.root.applyPendingGoto(&ctx);
         try self.drainActions(&ctx);
         try self.updateTimers(&ctx);
         self.root.clearRanThisTick();
+        for (self.levels.items) |lv| {
+            if (lv.kind == .clip) lv.kind.clip.clearRanThisTick();
+        }
         self.retireDead(&ctx);
         // Ruffle re-picks at the end of EVERY update, not just on pointer
         // events (player.rs:2386) — a clip that moves, hides or is removed
@@ -791,6 +900,8 @@ pub const Player = struct {
             .focus_roll = hostFocusRoll,
             .fetch = hostFetch,
             .navigate = hostNavigate,
+            .level = hostLevel,
+            .unload_movie = hostUnloadMovie,
         };
     }
 
@@ -1376,6 +1487,7 @@ pub const Player = struct {
             &self.canvas,
             &self.root,
             &self.root_placement,
+            self.levels.items,
             self.background,
             stage,
         );

@@ -48,6 +48,12 @@ pub const Host = struct {
     /// browser here, so a frontend either ignores it or logs it — which is
     /// exactly what the corpus's `log_fetch` dirs measure.
     navigate: ?*const fn (ctx: *anyopaque, req: NavigateRequest) void = null,
+    /// `_levelN`, created on demand by `loadMovieNum`. Returns the level
+    /// clip's script object, or 0 if that level cannot exist.
+    level: ?*const fn (ctx: *anyopaque, id: i32) ObjectHandle = null,
+    /// `unloadMovie` and the empty-URL `loadMovie`. Unlike a load this is
+    /// immediate: the timeline is gone before the calling script resumes.
+    unload_movie: ?*const fn (ctx: *anyopaque, clip: ObjectHandle) void = null,
 };
 
 /// A browser navigation, which unlike a fetch has no reply.
@@ -116,6 +122,21 @@ pub const FetchRequest = struct {
         /// text. `_bytesTotal` and `_bytesLoaded` are set, then
         /// `onHTTPStatus`, then `onData` with the RAW body.
         load_vars: ObjectHandle,
+        /// `loadMovie`, `loadMovieNum` and `MovieClipLoader.loadClip`: the
+        /// SWF replaces the target clip's entire timeline, library and
+        /// version.
+        movie: Movie,
+    };
+
+    pub const Movie = struct {
+        /// The target clip's AVM1 object. Going through the handle rather
+        /// than the display pointer means a clip removed while the load
+        /// was in flight simply cancels the load.
+        clip: ObjectHandle,
+        /// The `MovieClipLoader` that started it, whose listeners hear
+        /// onLoadStart/Progress/Init/Complete/Error. 0 for the bare
+        /// `loadMovie` forms, which broadcast nothing.
+        broadcaster: ObjectHandle = 0,
     };
 };
 
@@ -348,6 +369,11 @@ pub const Vm = struct {
     xmlnode_ctor: ObjectHandle = 0,
     xml_proto: ObjectHandle = 0,
     loadvars_proto: ObjectHandle = 0,
+    /// `_level1` and up: the levels a `loadMovieNum` has created, as
+    /// (id, script object). Level 0 is `root_object` and is not listed.
+    /// `stage_object.parseLevel` is the only reader; the Player keeps it
+    /// in step.
+    levels: std.ArrayList(struct { id: i32, obj: ObjectHandle }) = .empty,
     /// Every `flash.filters` prototype, indexed by the class's position
     /// in `globals/filters.zig`'s table. Needed to build a filter object
     /// from a PlaceObject3 record, which has no constructor to call.

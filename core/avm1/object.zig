@@ -380,6 +380,22 @@ pub const Objects = struct {
         return true;
     }
 
+    /// Drop every deletable own property. `loadMovie` does this to its
+    /// target before the new movie's code runs, so variables written by
+    /// the OLD movie are gone while ones written by the incoming
+    /// `onLoad` handlers survive (corpus loadmovie_var_persistence).
+    pub fn clearDeletable(self: *Objects, h: ObjectHandle) void {
+        const o = self.get(h);
+        var i: usize = 0;
+        while (i < o.props.items.len) {
+            if (o.props.items[i].attrs.dont_delete) {
+                i += 1;
+            } else {
+                _ = o.props.orderedRemove(i);
+            }
+        }
+    }
+
     pub fn hasOwn(self: *Objects, h: ObjectHandle, name: strings.AvmString, cs: bool) bool {
         return self.get(h).find(name, cs) != null;
     }
