@@ -359,7 +359,7 @@ pub const Player = struct {
         switch (req.target) {
             .form => |h| try avm1.loader.completeForm(self.vm, h, body),
             .load_vars => |h| try avm1.loader.completeLoadVars(self.vm, h, body),
-            .movie => |m| try self.completeMovieLoad(m, body),
+            .movie => |m| try self.completeMovieLoad(m, req.url, body),
         }
     }
 
@@ -367,7 +367,12 @@ pub const Player = struct {
     /// non-SWF payload, or on a missing file; all three land in the same
     /// place, because `loadMovie` has no error channel of its own — only a
     /// MovieClipLoader's `onLoadError` hears about it.
-    fn completeMovieLoad(self: *Player, target: avm1.runtime.FetchRequest.Movie, body: ?[]const u8) !void {
+    fn completeMovieLoad(
+        self: *Player,
+        target: avm1.runtime.FetchRequest.Movie,
+        url: []const u8,
+        body: ?[]const u8,
+    ) !void {
         const ctx = self.cur_ctx orelse return;
         const mc = avm1.stage_object.clipOfHandle(self.vm, target.clip) orelse return;
         // A fetch that succeeded but did not bring a SWF is still a
@@ -404,6 +409,13 @@ pub const Player = struct {
             bytes.len
         else
             0;
+        // FLASHVARS: the loaded URL's query string lands on the clip as
+        // plain, enumerable variables — visible to the incoming movie's
+        // own frame 1, and to nobody else (corpus loadmovie_flashvars
+        // checks `_root` did NOT get them).
+        if (std.mem.indexOfScalar(u8, url, '?')) |q| {
+            try avm1.loader.decodeInto(self.vm, target.clip, url[q + 1 ..]);
+        }
         try avm1.loader.movieLoadEvents(
             self.vm,
             target,

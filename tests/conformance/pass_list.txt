@@ -254,6 +254,7 @@ load_cancel_via_removemovieclip
 load_vars
 loadmovie
 loadmovie_fail
+loadmovie_flashvars
 loadmovie_method
 loadmovie_var_persistence
 loadmovienum
@@ -307,6 +308,7 @@ movieclip_line_gradient_style
 movieclip_name_from_timeline
 movieclip_prototype_extension
 movieclip_setmask
+moviecliploader_flashvars
 mutable_this
 named_shapes
 nan_scale
