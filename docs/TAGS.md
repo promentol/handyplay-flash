@@ -54,9 +54,9 @@ is rejected (`error.Avm2Unsupported`).
 | 90 | DefineBitsJPEG4 | 10 | — | oos | deblocking param |
 | 20 | DefineBitsLossless | 2 | M1/M4 | parse | zlib; colormap/PIX15/PIX24 |
 | 36 | DefineBitsLossless2 | 3 | M1/M4 | parse | + alpha |
-| 7 | DefineButton | 1 | M1/M4 | parse | |
-| 34 | DefineButton2 | 3 | M1/M4 | parse | ButtonCondAction |
-| 23 | DefineButtonCxform | 2 | M1/M4 | parse | decoder in button.zig; preload wiring in M4; may hold MULTIPLE cxforms (errata) |
+| 7 | DefineButton | 1 | M1/M4 | done | instantiated as a CONTAINER (display/button.zig): state children + a separate hit-area list |
+| 34 | DefineButton2 | 3 | M1/M4 | done | ButtonCondAction dispatch, incl. keyPress; the actions run on the button's PARENT timeline |
+| 23 | DefineButtonCxform | 2 | M1/M4 | parse | decoder in button.zig; preload wiring still open; may hold MULTIPLE cxforms (errata) |
 | 17 | DefineButtonSound | 2 | M6 | todo | decoder with sound work |
 | 10 | DefineFont | 1 | M1/M4 | parse | glyph shapes only |
 | 48 | DefineFont2 | 3 | M1/M4 | parse | layout/kerning/wide codes |

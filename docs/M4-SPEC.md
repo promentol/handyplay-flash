@@ -368,47 +368,63 @@ list is the 43 still-failing dirs that touch only workstream-B API.
 | The runner has no `viewport_dimensions` player option, so the screen and a noScale stage report the movie's own size | `capabilities_resolution`, `stage_scale_mode` |
 | Genuinely open in B, small and unfinished | `goto_frame` and `goto_frame2` (out-of-range and scene-offset goto), `rewind_depth` (goto rewind vs script depths), `as_broadcaster_undef` (undefined listeners), `object_prototypes` (a watcher on `__proto__` — our `__proto__` write bypasses the watcher path), `object_string_coerce_swf5/6` (one string coercion happens twice somewhere in Add), `watch_recursion_swf7` and `watch_recursion_double_swf7` (the exact nesting depth), `issue_2084`, `this_scoping` (`with(mc)` scoping), `removed_clip_halts_script` (a script must stop when its own base clip is removed) |
 
-## 5. Events: ClipActions + buttons (workstream C)
+## 5. Events: ClipActions + buttons (workstream C) — ✅ CLOSED (254/680)
 
-### C1. onClipEvent (PlaceObject2 ClipActions)
-Parsed already: `DisplayObject`'s `PlaceObject.clip_actions`
-(`swf.place.ClipAction{events, key_code, actions}`) — but NOT stored on
-the placed object. Store them at instantiate (display_object field), then
-fire per the event model:
-- `load`: once, on the clip's first `runFrame` (BEFORE frame 1 tags —
-  ruffle run_frame_avm1: first frame Load INSTEAD of EnterFrame).
-- `enterFrame`: every subsequent runFrame (before tags).
-- `unload`: on removal.
-- `mouseDown/mouseUp/mouseMove`, `keyDown/keyUp`, `keyPress<n>`: global
-  broadcasts — every clip with a matching handler fires, regardless of
-  position (that's AVM1!). Wire from SDL/libretro input via Player.
-- `press/release/releaseOutside/rollOver/rollOut/dragOver/dragOut`:
-  button-like, hit-tested.
-- `data`, `initialize`, `construct`: skip until needed.
-Queue handler bodies through `ctx.actions` with the clip as target
-(same as DoAction), in the documented priority: ruffle uses
-Initialize > Construct > Normal — add a `priority` field to QueuedAction
-and a stable sort, or three lists.
+Everything below shipped. The plan lives in the git log (`C0`..`C7`); the
+semantics worth keeping are in `docs/AVM1.md`'s "Workstream C notes" and at
+the call sites. What follows is what shipped, then what could NOT be
+reached and exactly why.
 
-### C2. Buttons
-`DisplayObject.kind == .button` currently never renders or reacts.
-- Render: a button shows its `records` filtered by state
-  (up/over/down); each record is a character (usually shape) with its own
-  matrix/cxform — reuse the renderer's shape path per record. Track
-  state per placed button (add a small struct: current state).
-- Hit-test: records with `state_hit_test` define the active area — use
-  `shape_utils` winding hit-test (port ruffle shape_utils
-  `shape_hit_test`; the DrawPath IR already carries the geometry —
-  implement point-in-fill via ray winding on the commands).
-- Input: Player receives mouse (x, y in px, buttons) from frontends
-  (`Player.setMouse` — add to seam + SDL). Each tick after clip frames:
-  compute hover/press transitions, fire `ButtonCondAction`s whose
-  `conditions` match (bit meanings in `swf.button.CondAction`), queue
-  their bytecode on the button's PARENT clip (AVM1 buttons execute in
-  parent timeline scope).
-- Keypress conditions (bits 9-15) fire on key input.
+**Shipped.** `core/display/` gained `button.zig`, `mouse.zig` and
+`tab.zig`; `core/avm1/globals/` gained `selection.zig`.
 
----
+- **Buttons are CONTAINERS.** A definition, the current state, a child list
+  for that state and a separate hit-area list — the two lists are frameless
+  MovieClips so placement, depth ordering, ticking and removal are the
+  timeline's code. State children are reused across states when depth and
+  character match. Neither container is scriptable: every request for one's
+  AVM1 object yields the BUTTON's, which is what makes `_parent` from
+  inside a button the button (typeof "object") and paths run through its
+  name. Below SWF6 a reference to a button resolves up to the first
+  MovieClip ancestor instead.
+- **Mouse picking**: the AVM1 pick only ever answers with a button (through
+  its hit-area records) or a clip in BUTTON MODE — one of the seven mouse
+  `onClipEvent` bits or one of the seven handler names anywhere on its
+  prototype chain. A clip tests itself before its children. `enabled` is
+  not consulted here; in AVM1 it is a button-only property read at dispatch.
+- **The event machine**: hovered/pressed on the Player, events COLLECTED
+  before the pair is mutated and only then fired, rollOver/rollOut/
+  dragOver/dragOut/press/release/releaseOutside in ruffle's order, and a
+  re-pick at the end of every update (a clip that hides under a stationary
+  pointer changes the hover by itself). A goto that destroys the object the
+  pointer is on hands off to the replacement at the same depth+character.
+- **Buttons dispatch** to (state, ButtonCondAction condition), running the
+  cond actions on the PARENT's timeline; clips in button mode jump to
+  `_up`/`_over`/`_down` first.
+- **keyPress**: render-list order, consumed by the FIRST handler, ruffle's
+  ButtonKeyCode numbering, and the two refusals (a button inside a button,
+  an invisible button in the `up` state).
+- **Focus**: one tracker on the Vm, `onKillFocus`/`onSetFocus`/Selection
+  listeners in order, focus dropped on removal and on hiding, `_focusrect`
+  per object, and `Selection` as a broadcaster.
+- **Tab ordering**: custom (any `tabIndex` present) or automatic (the
+  spatial `6y + x` sweep, duplicates dropped), `tabEnabled`/`tabChildren`,
+  Shift-Tab, and the highlight that gates whether key handlers fire at all.
+- **Viewport**: `Player.Options.viewport_*` and `--viewport WxH@S` in both
+  conformance scripts, feeding the screen resolution, the noScale stage
+  size (with `Stage.onResize`), the pointer mapping and `_xmouse`.
+- Also closed here: every leftover §4 listed as "genuinely open in B".
+
+**Not reached, and why.**
+
+| Blocker | Dirs |
+|---|---|
+| EditText (§D) — the object under test IS a text field | `focus_mouse`, `focus_mouse_focusable`, `focus_mouse_rollout`, `focus_keyboard_press`, `focus_remove`, `focus_visibility_change`, `selection`, `mouse_wheel_enabled`, `asfunction`, `tab_ordering_automatic_basic`, `tab_ordering_children`, `tab_ordering_custom_basic`, `tab_ordering_custom_i32_vs_u32`, `tab_ordering_custom_m1`, `tab_ordering_events`, `tab_ordering_reverse`, `tab_ordering_tabbable`, `tab_ordering_movieclip_enabled_default` |
+| TextInput events, which the harness does not replay and we do not consume | `button_keypress_vs_textinput` |
+| The LOADER (M5) | `root_button_mode`, `focusrect_property_swf5/6/7` |
+| Ruffle composes the mouse chain in 16.16 FIXED POINT (twips→pixels is 3277/65536, every step floors); our f64 version lands a pixel out for a clip a hair below an integer position | `mouse_pos`, `mouse_pos_with_scale_factor` |
+| `tabIndex` is a native slot for us, so it neither enumerates nor reads back as the u32 Flash reports for a negative value | `tab_ordering_properties` |
+| The exact interleaving of a Key listener against the roll events a Tab fires | `tab_ordering_events_mouse` |
 
 ## 6. Static text + fonts (workstream D)
 

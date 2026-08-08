@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A and B complete (**205/680**); C–F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B and C complete (**254/680**); D–F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -42,8 +42,12 @@ correctly (shapes, curves, strokes, gradients, layering, timeline).
 (shape-exact), bounds, coordinate conversion, drag. `Date`, `flash.geom`,
 `Object.registerClass`, `watch`, `setInterval`, `AsBroadcaster` and the
 Key/Mouse/Stage/System/Color singletons all exist, and the frontend feeds
-real mouse and keyboard input. 205 of Ruffle's 680 scorable conformance
-dirs pass.
+real mouse and keyboard input.
+**Interactive today**: buttons draw, hit-test and react — rollOver,
+press, release, releaseOutside, drag in and out, keyPress, and the state
+changes that go with them; clips with mouse handlers behave the same way.
+Focus, `Selection`, and Tab ordering work. 254 of Ruffle's 680 scorable
+conformance dirs pass.
 
 ---
 
@@ -115,6 +119,11 @@ handyflash/
 │   ├── display/
 │   │   ├── library.zig       character dict + per-frame Control lists
 │   │   ├── display_object.zig placed instance state
+│   │   ├── bounds.zig        self/world bounds, shape-exact hit tests
+│   │   ├── drawing.zig       the script drawing API's geometry
+│   │   ├── button.zig        a button as a CONTAINER: states + hit area + cond actions
+│   │   ├── mouse.zig         picking + the roll/press/release state machine
+│   │   ├── tab.zig           tab order: custom by tabIndex, automatic by 6y+x
 │   │   └── movie_clip.zig    timeline: runFrame / goto rewind+replay / action QUEUEING
 │   ├── avm1/                 THE INTERPRETER (M3)
 │   │   ├── opcodes.zig       full 0x00-0x9F decoder (allocation-free)
@@ -123,7 +132,11 @@ handyflash/
 │   │   ├── object.zig        handle-table ScriptObject, accessors, version-gate attrs
 │   │   ├── runtime.zig       Vm: stack/registers/pools/protos/Host hooks/calls
 │   │   ├── activation.zig    linear dispatch (the big one, ~1000 lines)
-│   │   └── globals/globals.zig  Object/Function/Array/String/Number/Boolean/Math/Error/…
+│   │   ├── stage_object.zig  display properties, paths, focus — the only
+│   │   │                     file under avm1/ that imports display/
+│   │   ├── timers.zig        setInterval / setTimeout
+│   │   └── globals/          globals.zig · decl.zig · movie_clip.zig · geom.zig
+│   │                         date.zig · singletons.zig · selection.zig
 │   └── render/
 │       ├── shape_utils.zig   SWF dual-edge records → DrawPath IR (port of ruffle)
 │       ├── renderer.zig      display-tree walk → simdra
@@ -402,11 +415,13 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697**.
 
-**Workstreams A and B are CLOSED at 205/680.** Pick up C (events and
-buttons) next — it is the largest remaining cluster and several
-already-close dirs are waiting on button hit-testing alone. `docs/M4-SPEC.md`
-§4 lists, by name and cause, the 43 workstream-B dirs that could not be
-reached; do not re-derive them.
+**Workstreams A, B and C are CLOSED at 254/680.** Pick up D (text) next:
+it is now by far the largest cluster, and it is what a surprising number
+of already-close dirs are waiting on — every remaining `focus_*`,
+`tab_ordering_*` and `selection*` failure is a TEXT FIELD standing in for
+the thing under test, not a focus or tab bug. `docs/M4-SPEC.md` §4 and §5
+list, by name and cause, every dir those two workstreams could not reach;
+do not re-derive them.
 
 Five things to know before you start:
 

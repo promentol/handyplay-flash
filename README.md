@@ -15,7 +15,7 @@ possible future direction, not a goal.
 
 ## Status
 
-M4 in progress — workstreams A and B are closed (205/680 ruffle conformance dirs pass; `sh tests/conformance/sweep.sh /tmp/r.txt`). The whole `MovieClip` class surface, `flash.geom`, `Date`, timers, `Object.registerClass`, `watch`, the AsBroadcaster singletons and real mouse/keyboard input all work. M2 — squares.swf and homestuck-beta.swf render via the display list + simdra (SDL3 `zig build run-sdl -- file.swf`, `--headless-frames N` for PNG dumps). See the living coverage
+M4 in progress — workstreams A, B and C are closed (254/680 ruffle conformance dirs pass; `sh tests/conformance/sweep.sh /tmp/r.txt`). The whole `MovieClip` class surface, `flash.geom`, `Date`, timers, `Object.registerClass`, `watch`, the AsBroadcaster singletons and real mouse/keyboard input all work, and buttons now draw, hit-test and react — press/release/roll/drag, keyPress, focus, `Selection` and Tab ordering. M2 — squares.swf and homestuck-beta.swf render via the display list + simdra (SDL3 `zig build run-sdl -- file.swf`, `--headless-frames N` for PNG dumps). See the living coverage
 matrices: [docs/TAGS.md](docs/TAGS.md), [docs/AVM1.md](docs/AVM1.md), and the
 conformance ratchet `tests/conformance/pass_list.txt`.
 
@@ -25,7 +25,7 @@ conformance ratchet `tests/conformance/pass_list.txt`.
 | M1 | full tag parser + `swfdump` (56-SWF corpus clean) | ✅ |
 | M2 | display list + timeline + rasterizer v1 + SDL3 pixels | ✅ |
 | M3 | AVM1 interpreter (full opcode set) + trace conformance | ✅ 76/697 |
-| M4 | objects/globals/buttons/text/bitmaps, ≥300/697 | 🔶 A+B done, **205/680** |
+| M4 | objects/globals/buttons/text/bitmaps, ≥300/697 | 🔶 A+B+C done, **254/680** |
 | M5 | libretro core + save-states (byte-identical roundtrip) | — |
 | M6 | audio (PCM/ADPCM → MP3 → streaming sync) | — |
 | M7 | polish: morph shapes, edit text, AA, masks, ≥450/697 | — |

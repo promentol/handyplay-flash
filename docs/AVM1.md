@@ -234,6 +234,51 @@ re-derived:
   ruffle's deterministic mock (2001-02-03 04:05:06 at +05:45) so the
   conformance runner needs no flag; frontends pass the real values.
 
+## Workstream C notes (events, buttons, focus)
+
+- **`Kind.button` is a container**, and its child containers are frameless
+  MovieClips that are NOT scriptable: `clipObject` hands out the button's
+  own AVM1 object for either, so `_parent` from inside a button IS the
+  button and its typeof is "object", not "movieclip". Below SWF6 a
+  reference to a button resolves UP to the first MovieClip ancestor
+  (ruffle `process_swf5_references`).
+- **Every stage object pushed on the AVM1 stack becomes a path-based
+  reference** (ruffle `stack_push`), so `==` and `===` compare clips by
+  PATH. Two distinct instances that share a name are equal — which only
+  happens after a goto rewind leaves both alive.
+- **The AVM1 mouse pick needs BUTTON MODE**: only buttons (through their
+  hit-area records) and clips with a mouse handler are pickable, whatever
+  they draw. A clip tests ITSELF before its children. `enabled` is a
+  button-only property here, read when the event is dispatched.
+- **Ruffle collects the mouse events before it mutates hovered/pressed**,
+  then fires them. A handler that disables the button it is on has to be
+  able to clear the hover that same event already recorded.
+- **Sibling timelines tick HIGHEST DEPTH FIRST.** There is no tree walk in
+  ruffle: one global list that new clips are PREPENDED to, so enterFrame
+  runs in reverse instantiation order.
+- **keyPress goes the other way** — render-list order, low depth to high —
+  and the FIRST handler consumes it. Its key numbering is ruffle's
+  ButtonKeyCode, which is neither ASCII nor the virtual-key codes.
+- **Key HANDLERS need focus.** `clip.onKeyDown` and `btn.onKeyDown` fire
+  only for the focused object with an active highlight (Flash #2120); the
+  `onClipEvent(keyDown)` bodies fire for everyone. Any mouse activity below
+  SWF9 clears the highlight.
+- **The focus moves the hover.** `setFocus` rolls out of the old hovered
+  object and over the new focus every time, even when the focus does not
+  actually change; the events are queued, and only a Tab runs them
+  synchronously.
+- **Automatic tab order is spatial**, ranked by `6y + x` of the top-left
+  world-bounds corner, with duplicate keys dropped — not left-to-right,
+  top-to-bottom.
+- **`_droptarget` is stored, not computed on read**: recomputed while the
+  drag is live and left behind by `stopDrag`, and it names the INNERMOST
+  clip under the pointer.
+- **`_xmouse` is quantised to whole DEVICE PIXELS** before being pushed
+  into the object's space, which is why it reads as a whole number on an
+  unscaled clip however fractional the clip's position is. A clip scaled to
+  zero has a singular matrix and falls back to the identity, so it reports
+  the device pixel count read as twips.
+
 All other codes in 0x00–0x9F are INVALID (open-flash `_index.md`); on decode we
 skip by length (>=0x80) or treat as End-adjacent no-op, matching Flash's
 tolerance.
