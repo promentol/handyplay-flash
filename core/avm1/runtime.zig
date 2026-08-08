@@ -35,6 +35,12 @@ pub const Host = struct {
     goto_label: ?*const fn (ctx: *anyopaque, clip: *anyopaque, label: []const u16, play: bool) bool = null,
     set_playing: ?*const fn (ctx: *anyopaque, clip: *anyopaque, playing: bool) void = null,
     next_prev: ?*const fn (ctx: *anyopaque, clip: *anyopaque, delta: i2) void = null,
+    /// The focus moved: the HOVER follows it, with the roll events that
+    /// implies (ruffle focus_tracker.rs `roll_over`). `obj` is the new
+    /// focus's display object, null when the focus was cleared.
+    /// `run_now` drains the queue before returning, which a KEY-driven
+    /// move does and a programmatic one does not.
+    focus_roll: ?*const fn (ctx: *anyopaque, obj: ?*anyopaque, run_now: bool) void = null,
 };
 
 /// Stage render quality — `_quality` / `_highquality` read and write it.

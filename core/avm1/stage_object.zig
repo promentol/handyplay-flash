@@ -1265,7 +1265,23 @@ pub fn isFocusable(vm: *Vm, handle: ObjectHandle) bool {
 /// `Selection` listeners (focus_tracker.rs set_internal). All three run
 /// INLINE — focus handlers are not queued.
 pub fn setFocus(vm: *Vm, new: ObjectHandle) anyerror!void {
+    return setFocusEx(vm, new, false);
+}
+
+/// `run_now` runs the roll events synchronously — what a Tab does, where
+/// a programmatic `Selection.setFocus` leaves them queued.
+pub fn setFocusEx(vm: *Vm, new: ObjectHandle, run_now: bool) anyerror!void {
     const old = vm.focus;
+    // The HOVER follows the focus, and the roll events it fires are
+    // QUEUED here — synchronous only when the move came from a key
+    // (focus_tracker.rs:144-157). Before the focus itself changes, so a
+    // handler sees the old one, exactly as ruffle orders it.
+    // Note there is no "same object" shortcut: re-focusing what is
+    // already focused still rolls out and back over it.
+    if (vm.host.focus_roll) |f| {
+        const t = if (new != 0) targetOf(vm, new) else null;
+        f(vm.host.ctx.?, if (t) |tt| @ptrCast(tt.obj) else null, run_now);
+    }
     if (old == new) return;
     vm.focus = new;
     // The highlight follows the focus (focus_tracker.rs update_highlight).

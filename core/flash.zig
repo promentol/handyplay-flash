@@ -590,7 +590,23 @@ pub const Player = struct {
             .goto_label = hostGotoLabel,
             .set_playing = hostSetPlaying,
             .next_prev = hostNextPrev,
+            .focus_roll = hostFocusRoll,
         };
+    }
+
+    /// The focus moved, so the hover moves with it. The roll events are
+    /// queued like any other, which is why a programmatic `setFocus`
+    /// shows them only after the calling script finishes.
+    fn hostFocusRoll(ctx: *anyopaque, obj: ?*anyopaque, run_now: bool) void {
+        const self: *Player = @ptrCast(@alignCast(ctx));
+        const c = self.cur_ctx orelse return;
+        const target: ?*display.display_object.DisplayObject =
+            if (obj) |o| @ptrCast(@alignCast(o)) else null;
+        const old = self.hovered;
+        self.hovered = target;
+        if (old) |o| display.mouse.dispatch(c, o, .roll_out) catch {};
+        if (target) |t| display.mouse.dispatch(c, t, .roll_over) catch {};
+        if (run_now) self.drainActions(c) catch {};
     }
 
     fn hostGotoFrame(ctx: *anyopaque, clip: *anyopaque, frame: u16, play: bool) void {
@@ -944,16 +960,11 @@ pub const Player = struct {
             if (current) |t| t.obj else null;
         const target = display.tab.next(&order, cur_obj, reverse) orelse return;
 
-        // Tabbing also moves the HOVER, with the roll events that implies.
-        const old_hovered = self.hovered;
-        if (old_hovered != target) {
-            self.hovered = target;
-            if (old_hovered) |o| try self.sendMouse(&ctx, o, .roll_out);
-            try self.sendMouse(&ctx, target, .roll_over);
-            try self.drainActions(&ctx);
-        }
+        // `setFocus` moves the hover and queues the roll events; a KEY
+        // move runs them before the focus handlers, unlike a programmatic
+        // one (focus_tracker.rs:150-157).
         const handle = try avm1.stage_object.handleOf(self.vm, target);
-        try avm1.stage_object.setFocus(self.vm, handle);
+        try avm1.stage_object.setFocusEx(self.vm, handle, true);
         try self.drainActions(&ctx);
         self.retireDead(&ctx);
     }

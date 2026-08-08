@@ -183,6 +183,7 @@ root_global_parent
 sandbox_type_local_file
 sandbox_type_local_network
 selection_asbroadcaster
+selection_handlers
 set_interval
 set_target_2_swf5
 set_target_2_swf6
