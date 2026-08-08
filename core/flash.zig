@@ -18,6 +18,10 @@ pub const avm1 = struct {
     pub const text_binding = @import("avm1/text_binding.zig");
 };
 
+pub const bitmap = struct {
+    pub const pixels = @import("bitmap/pixels.zig");
+};
+
 pub const display = struct {
     pub const library = @import("display/library.zig");
     pub const display_object = @import("display/display_object.zig");
@@ -1306,6 +1310,7 @@ test {
     _ = @import("avm1/globals/style_sheet.zig");
     _ = @import("avm1/globals/filters.zig");
     _ = @import("avm1/text_binding.zig");
+    _ = @import("bitmap/pixels.zig");
     _ = @import("text/format.zig");
     _ = @import("text/spans.zig");
     _ = @import("text/html.zig");
