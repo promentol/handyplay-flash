@@ -182,6 +182,9 @@ pub const EditText = struct {
     /// Null when the field is not focused: AVM1 clears the selection on
     /// focus loss, and every index query answers -1 without one.
     selection: ?Selection = null,
+    /// Where the last click landed. A drag selects from HERE to wherever
+    /// the pointer is now, so the anchor has to outlive the press.
+    click_anchor: ?usize = null,
 
     /// The object this field's `variable` resolved to, or null while the
     /// field is on the unbound list.
@@ -714,13 +717,17 @@ pub const EditText = struct {
         }
         const box = closest orelse return null;
 
+        // The layout can lag the text by one edit; a box that now points
+        // past the end contributes nothing rather than panicking.
+        const hi = @min(box.end, self.text.items.len);
+        const lo = @min(box.start, hi);
         var finder: IndexFinder = .{ .want = x - box.bounds.x };
-        _ = box.font.evaluate(self.text.items[box.start..@min(box.end, self.text.items.len)], .{
+        _ = box.font.evaluate(self.text.items[lo..hi], .{
             .height = box.size,
             .letter_spacing = box.letter_spacing,
             .kerning = box.kerning,
         }, &finder) catch {};
-        return box.start + finder.index;
+        return lo + finder.index;
     }
 
     pub fn setFormatRange(

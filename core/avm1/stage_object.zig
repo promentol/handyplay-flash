@@ -1444,6 +1444,21 @@ pub fn highlightVisible(vm: *Vm) bool {
     return vm.stage_focus_rect;
 }
 
+/// Extend a field's selection to the pointer. Called while the pointer
+/// is DOWN on it: the anchor is where the click landed and the caret
+/// follows the drag, so dragging right to left leaves `to` below `from`.
+pub fn dragSelect(vm: *Vm, obj: *DisplayObject) void {
+    if (obj.kind != .edit_text) return;
+    const et = obj.kind.edit_text;
+    if (!et.selectable) return;
+    const anchor = et.click_anchor orelse return;
+    const t: Target = .{ .obj = obj, .clip = null };
+    syncField(vm, t);
+    const p = localMouse(vm, t);
+    const idx = et.positionToIndex(.{ twipsFromPixels(p[0]), twipsFromPixels(p[1]) }) orelse return;
+    et.setSelection(.{ .from = anchor, .to = idx });
+}
+
 /// The field that currently has the focus, or null.
 pub fn focusedField(vm: *Vm) ?*@import("../display/edit_text.zig").EditText {
     if (vm.focus == 0) return null;
@@ -1469,11 +1484,13 @@ pub fn focusByMousePress(vm: *Vm, obj: ?*DisplayObject) anyerror!void {
         // mouse focus does not select the field.
         const et = obj.?.kind.edit_text;
         if (et.selectable) {
+            syncField(vm, .{ .obj = obj.?, .clip = null });
             const t: Target = .{ .obj = obj.?, .clip = null };
             const p = localMouse(vm, t);
             const idx = et.positionToIndex(.{ twipsFromPixels(p[0]), twipsFromPixels(p[1]) }) orelse
                 et.text.items.len;
             et.setSelection(@import("../display/edit_text.zig").Selection.at(idx));
+            et.click_anchor = idx;
         }
         return;
     }

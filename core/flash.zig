@@ -737,6 +737,10 @@ pub const Player = struct {
         // (player.rs:1384), and an unmoved pointer leaves the hover — a
         // Tab may own it — untouched. The broadcast above still fires.
         const moved = self.vm.mouse_x != before[0] or self.vm.mouse_y != before[1];
+        // Dragging inside a pressed text field extends its selection.
+        if (self.pressed) |p| {
+            if (!p.removed) avm1.stage_object.dragSelect(self.vm, p);
+        }
         try self.updateMouseState(moved, false);
     }
 
