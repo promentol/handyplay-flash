@@ -30,6 +30,7 @@ const text_layout = @import("../display/text_layout.zig");
 const bitmap_decode = @import("../bitmap/decode.zig");
 const bitmap_data = @import("../bitmap/data.zig");
 const bitmap_pixels = @import("../bitmap/pixels.zig");
+const bitmap_ops = @import("../bitmap/operations.zig");
 
 pub const Error = std.mem.Allocator.Error || error{OutOfMemory};
 
@@ -217,6 +218,84 @@ pub const Renderer = struct {
         return gop.value_ptr;
     }
 
+    /// One source texel, in Flash's PREMULTIPLIED storage form.
+    fn sourceTexel(src: BitmapSource, img: ?*const bitmap_decode.Image, i: usize) bitmap_pixels.Color {
+        return switch (src) {
+            .live => |bd| bd.data[i],
+            .character => blk: {
+                const im = img.?;
+                const c = bitmap_pixels.Color.rgba(
+                    im.rgba[i * 4 + 0],
+                    im.rgba[i * 4 + 1],
+                    im.rgba[i * 4 + 2],
+                    im.rgba[i * 4 + 3],
+                );
+                break :blk if (im.premultiplied) c else c.toPremultiplied(true);
+            },
+        };
+    }
+
+    /// Flash BLITS a bitmap that lands square on the pixel grid, and its
+    /// blend is not the rasteriser's: it composites PREMULTIPLIED values
+    /// with a truncating divide, where a pattern fill un-premultiplies
+    /// into straight RGBA, blends, and un-premultiplies again. The two
+    /// disagree by a unit, which a tolerance-zero image test sees.
+    ///
+    /// Returns false when any of the conditions fail, and the caller
+    /// falls back to the general path.
+    fn blitBitmap(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        src: BitmapSource,
+        size: [2]u32,
+        t: Transform,
+        cx: swf.reader.ColorTransform,
+    ) bool {
+        // One device pixel per texel, axis-aligned, on whole pixels, with
+        // nothing else the canvas would have to apply.
+        if (t.b != 0 or t.c != 0) return false;
+        if (t.a * 20 != 1 or t.d * 20 != 1) return false;
+        if (@floor(t.tx) != t.tx or @floor(t.ty) != t.ty) return false;
+        if (!cx.isIdentity()) return false;
+        if (ctx.clip_mask != null or ctx.alpha != 0xFF) return false;
+        if (ctx.blendMode != .src_over) return false;
+
+        const img: ?*const bitmap_decode.Image = switch (src) {
+            .character => |id| self.decodedBitmap(id) orelse return false,
+            .live => null,
+        };
+        const dst_w: i64 = ctx.surface.width;
+        const dst_h: i64 = ctx.surface.height;
+        const ox: i64 = @intFromFloat(t.tx);
+        const oy: i64 = @intFromFloat(t.ty);
+
+        var y: i64 = 0;
+        while (y < size[1]) : (y += 1) {
+            const dy = oy + y;
+            if (dy < 0 or dy >= dst_h) continue;
+            var x: i64 = 0;
+            while (x < size[0]) : (x += 1) {
+                const dx = ox + x;
+                if (dx < 0 or dx >= dst_w) continue;
+                const s = sourceTexel(src, img, @intCast(y * @as(i64, size[0]) + x));
+                if (s.a == 0) continue;
+                const slot = &ctx.pixels[@intCast(dy * dst_w + dx)];
+                if (s.a == 255) {
+                    slot.* = s.toArgb();
+                    continue;
+                }
+                // The surface holds STRAIGHT colour, so a translucent
+                // destination converts around the blend. The stage is
+                // opaque, where both conversions are the identity.
+                const d = bitmap_pixels.Color.fromArgb(slot.*);
+                const under = if (d.a == 255) d else d.toPremultiplied(true);
+                const out = bitmap_ops.blendOver(under, s);
+                slot.* = (if (out.a == 255) out else out.toUnmultiplied()).toArgb();
+            }
+        }
+        return true;
+    }
+
     /// A bitmap placed DIRECTLY on the display list — no shape, no fill
     /// style. Flash draws it as its own pixel rectangle at one twip-scaled
     /// pixel per texel, which is the same job as a bitmap fill over a
@@ -230,6 +309,7 @@ pub const Renderer = struct {
         cx: swf.reader.ColorTransform,
     ) Error!void {
         const size = self.sizeOfSource(src) orelse return;
+        if (self.blitBitmap(ctx, src, size, t, cx)) return;
         const pat = try self.pattern(src, false, smoothing) orelse return;
         pat.setTransform(t.a * 20, t.b * 20, t.c * 20, t.d * 20, t.tx, t.ty);
 

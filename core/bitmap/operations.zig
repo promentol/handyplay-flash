@@ -130,8 +130,7 @@ pub fn scroll(bd: *BitmapData, dx: i32, dy: i32) void {
 pub const ColorTransform = struct {
     /// 8.8 FIXED multipliers and i16 adds, exactly as a SWF carries them.
     /// Script hands over f64s and Flash snaps them to this grid before
-    /// doing anything, so a multiplier of 1.3 really is 332/256 — using
-    /// the f64 straight is visibly wrong across a gradient.
+    /// doing anything, so a multiplier of 1.3 really is 332/256.
     mult: [4]i16 = .{ 256, 256, 256, 256 },
     add: [4]i16 = .{ 0, 0, 0, 0 },
 
@@ -180,6 +179,18 @@ fn fixed8(n: f64) i16 {
 /// The multiply happens at 16-bit precision and only the FINAL value
 /// saturates, which is what lets a huge multiplier and a huge negative
 /// offset cancel into a sane colour.
+///
+/// This is ruffle's model, and it is not quite Flash's. Flash's COLOUR
+/// multiplier behaves as though 1.0 were 255/256 rather than 1 — rows 1,
+/// 6 and 10 of `bitmap_data_colortransform`'s recorded image want
+/// `floor(v * mult * 255 / 256)` and get one less than this everywhere —
+/// but its "precision" row (a multiplier of 127.99609375 against an
+/// offset of -16255) wants an intermediate that NEITHER grid produces, so
+/// the real rule is something else again. Fixed8 lands within one unit on
+/// most rows and four on the worst, inside the dir's tolerance of five;
+/// the 255 grid is within one on most rows and SIXTY on the precision
+/// one, which is not. Do not "fix" this without a model that explains
+/// every row.
 fn chan(v: u8, mult: i16, add: i16) u8 {
     const n: i32 = (@as(i32, mult) * @as(i32, v)) >> 8;
     const sum = std.math.clamp(n +| @as(i32, add), -32768, 32767);
@@ -606,7 +617,7 @@ pub fn hitTestBitmapData(
 
 /// Composite `source` over `self` in PREMULTIPLIED space — the standard
 /// source-over, with the per-channel divide by 255 truncating.
-fn blendOver(under: Color, over: Color) Color {
+pub fn blendOver(under: Color, over: Color) Color {
     const inv: u16 = 255 - @as(u16, over.a);
     return Color.rgba(
         over.r +% @as(u8, @intCast((@as(u16, under.r) * inv) / 255)),
