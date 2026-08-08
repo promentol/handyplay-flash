@@ -1363,9 +1363,19 @@ pub fn setFocus(vm: *Vm, new: ObjectHandle) anyerror!void {
     return setFocusEx(vm, new, false);
 }
 
+/// What moved the focus. Only a KEY or a script selects the whole text of
+/// the field it lands on; a MOUSE places a caret instead (ruffle
+/// `update_edittext_selection`, deliberately not called by
+/// `set_by_mouse`).
+pub const FocusCause = enum { script, key, mouse };
+
 /// `run_now` runs the roll events synchronously — what a Tab does, where
 /// a programmatic `Selection.setFocus` leaves them queued.
 pub fn setFocusEx(vm: *Vm, new: ObjectHandle, run_now: bool) anyerror!void {
+    return setFocusBy(vm, new, run_now, if (run_now) .key else .script);
+}
+
+pub fn setFocusBy(vm: *Vm, new: ObjectHandle, run_now: bool, cause: FocusCause) anyerror!void {
     const old = vm.focus;
     // The HOVER follows the focus, and the roll events it fires are
     // QUEUED here — synchronous only when the move came from a key
@@ -1377,8 +1387,20 @@ pub fn setFocusEx(vm: *Vm, new: ObjectHandle, run_now: bool) anyerror!void {
         const t = if (new != 0) targetOf(vm, new) else null;
         f(vm.host.ctx.?, if (t) |tt| @ptrCast(tt.obj) else null, run_now);
     }
-    if (old == new) return;
+    if (old == new) {
+        // The selection is refreshed even when the focus did not move —
+        // re-focusing a field re-selects all of it.
+        selectAllOnFocus(vm, new, cause);
+        return;
+    }
     vm.focus = new;
+    // Losing focus clears the selection, whatever moved it. This happens
+    // BEFORE the handlers run, as it does in ruffle's set_internal.
+    if (old != 0) {
+        if (targetOf(vm, old)) |t| {
+            if (t.obj.kind == .edit_text) t.obj.kind.edit_text.setSelection(null);
+        }
+    }
     // The highlight follows the focus (focus_tracker.rs update_highlight).
     vm.focus_highlight = new != 0;
 
@@ -1393,6 +1415,43 @@ pub fn setFocusEx(vm: *Vm, new: ObjectHandle, run_now: bool) anyerror!void {
             S("onSetFocus"),
             &.{ old_v, new_v },
         ) catch {};
+    }
+    selectAllOnFocus(vm, new, cause);
+}
+
+fn selectAllOnFocus(vm: *Vm, new: ObjectHandle, cause: FocusCause) void {
+    if (cause == .mouse or new == 0) return;
+    const t = targetOf(vm, new) orelse return;
+    if (t.obj.kind != .edit_text) return;
+    const et = t.obj.kind.edit_text;
+    et.setSelection(.{ .from = 0, .to = et.text.items.len });
+}
+
+/// The field that currently has the focus, or null.
+pub fn focusedField(vm: *Vm) ?*@import("../display/edit_text.zig").EditText {
+    if (vm.focus == 0) return null;
+    const t = targetOf(vm, vm.focus) orelse return null;
+    if (t.obj.kind != .edit_text) return null;
+    return t.obj.kind.edit_text;
+}
+
+/// A click focuses only a field that is editable or selectable; anything
+/// else clears the focus, but only when what was focused was itself
+/// mouse-focusable (ruffle `update_focus_on_mouse_press`).
+pub fn focusByMousePress(vm: *Vm, obj: ?*DisplayObject) anyerror!void {
+    const focusable = blk: {
+        const o = obj orelse break :blk false;
+        if (o.kind != .edit_text) break :blk false;
+        const et = o.kind.edit_text;
+        break :blk !et.read_only or et.selectable;
+    };
+    if (focusable) {
+        const h = try handleOf(vm, obj.?);
+        try setFocusBy(vm, h, false, .mouse);
+        return;
+    }
+    if (focusedField(vm)) |et| {
+        if (!et.read_only or et.selectable) try setFocusBy(vm, 0, false, .mouse);
     }
 }
 

@@ -42,27 +42,45 @@ pub fn install(vm: *Vm) !void {
     try vm.objects.putWithAttrs(vm.globals, S("Selection"), .{ .object = sel }, decl.hidden, false);
 }
 
-/// The three index queries all report -1 until there is a focused TEXT
-/// FIELD to ask (M4-D); ruffle returns exactly that when the focus is not
-/// an EditText, so the stub is the real answer for every other case.
+/// All three index queries answer -1 unless the focus is a TEXT FIELD
+/// with a selection. AVM1 clears a field's selection when it loses focus,
+/// so an unfocused field has none even if it was selected a moment ago.
 fn getBeginIndex(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = .{ p, this, args };
-    return .{ .number = -1 };
+    _ = .{ this, args };
+    const et = stage_object.focusedField(vmOf(p)) orelse return .{ .number = -1 };
+    const sel = et.selection orelse return .{ .number = -1 };
+    return .{ .number = @floatFromInt(sel.start()) };
 }
 
 fn getEndIndex(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = .{ p, this, args };
-    return .{ .number = -1 };
+    _ = .{ this, args };
+    const et = stage_object.focusedField(vmOf(p)) orelse return .{ .number = -1 };
+    const sel = et.selection orelse return .{ .number = -1 };
+    return .{ .number = @floatFromInt(sel.end()) };
 }
 
+/// The CARET is `to` — where the selection ended, which may be either
+/// edge depending on which way it was dragged.
 fn getCaretIndex(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = .{ p, this, args };
-    return .{ .number = -1 };
+    _ = .{ this, args };
+    const et = stage_object.focusedField(vmOf(p)) orelse return .{ .number = -1 };
+    const sel = et.selection orelse return .{ .number = -1 };
+    return .{ .number = @floatFromInt(sel.to) };
 }
 
-/// Needs a focused EditText to do anything (M4-D).
+/// `setSelection(start, end)` on the focused field. A missing `end` means
+/// "to the end"; both clamp at zero below and at the text length above.
 fn setSelection(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = .{ p, this, args };
+    _ = this;
+    const vm = vmOf(p);
+    if (args.len == 0) return .undefined_value;
+    const et = stage_object.focusedField(vm) orelse return .undefined_value;
+    const start = @max(value_mod.toInt32(try vm.toNumber(args[0])), 0);
+    const end = if (args.len > 1)
+        @max(value_mod.toInt32(try vm.toNumber(args[1])), 0)
+    else
+        std.math.maxInt(i32);
+    et.setSelection(.{ .from = @intCast(start), .to = @intCast(end) });
     return .undefined_value;
 }
 

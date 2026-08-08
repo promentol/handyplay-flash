@@ -173,7 +173,10 @@ fn getText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     const et = etOf(vm, this) orelse return .undefined_value;
-    return .{ .string = et.text.items };
+    // A COPY: an AVM1 string is immutable, and handing out the field's
+    // own buffer would let a later edit rewrite a value already stored
+    // in a variable.
+    return .{ .string = try vm.arena().dupe(u16, et.text.items) };
 }
 
 fn setText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -197,7 +200,7 @@ fn getHtmlText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const et = etOf(vm, this) orelse return .undefined_value;
     // A field that is not HTML reports its PLAIN text here; only an HTML
     // one serialises (ruffle `html_text`).
-    if (!et.html) return .{ .string = et.text.items };
+    if (!et.html) return .{ .string = try vm.arena().dupe(u16, et.text.items) };
     return .{ .string = try et.htmlText(vm.arena()) };
 }
 
@@ -534,7 +537,7 @@ fn getVariable(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const et = etOf(vm, this) orelse return .undefined_value;
     const v = et.variable orelse return .null_value;
-    return .{ .string = v };
+    return .{ .string = try vm.arena().dupe(u16, v) };
 }
 
 fn setVariable(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -573,7 +576,7 @@ fn getRestrict(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const et = etOf(vm, this) orelse return .undefined_value;
     const v = et.restrict orelse return .null_value;
-    return .{ .string = v };
+    return .{ .string = try vm.arena().dupe(u16, v) };
 }
 
 /// The docs say an empty restrict forbids everything; AVM1 treats it as
@@ -809,14 +812,20 @@ fn replaceText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return .undefined_value;
 }
 
-/// With no selection model yet (D10) the caret sits at 0, which is also
-/// where ruffle inserts when a field has never been focused.
+/// `replaceSel(text)` swaps the SELECTION for `text` and leaves the caret
+/// after it. A field that has never been focused has no selection, and
+/// then the insertion goes at position zero.
 fn replaceSel(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    const et = etOf(vm, this) orelse return .undefined_value;
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    if (t.obj.kind != .edit_text) return .undefined_value;
+    const et = t.obj.kind.edit_text;
     const gpa = gpaOf(vm) orelse return .undefined_value;
     const s = try vm.toStringValue(arg(args, 0));
-    try et.replaceRange(gpa, 0, 0, s);
+    const sel = et.selection orelse edit_text_mod.Selection.at(0);
+    try et.replaceRange(gpa, sel.start(), sel.end(), s);
+    et.setSelection(edit_text_mod.Selection.at(sel.start() + s.len));
+    try text_binding.propagate(vm, t.obj);
     return .undefined_value;
 }
 

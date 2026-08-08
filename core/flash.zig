@@ -80,6 +80,9 @@ pub const Player = struct {
     instance_counter: u32 = 0,
     /// DoInitAction runs once, before frame 1 (see `runInitActions`).
     init_actions_done: bool = false,
+    /// The host clipboard, as far as a text field is concerned. Owned by
+    /// the player because Cut and Paste must see the same one.
+    clipboard: std.ArrayList(u16) = .empty,
     /// Fixed timestep (ms/frame) from the SWF header, clamped 0.01–120 fps.
     frame_ms: f64,
     acc_ms: f64 = 0,
@@ -109,11 +112,13 @@ pub const Player = struct {
         scale_factor: f64 = 1.0,
     };
 
-    pub fn create(gpa: std.mem.Allocator, file_bytes: []const u8) LoadError!*Player {
+    pub fn create(gpa: std.mem.Allocator, file_bytes: []const u8) anyerror!*Player {
         return createWith(gpa, file_bytes, .{});
     }
 
-    pub fn createWith(gpa: std.mem.Allocator, file_bytes: []const u8, opts: Options) LoadError!*Player {
+    /// `anyerror` rather than `LoadError`: frame 1 runs here, and a
+    /// script on it can fail in any of the ways a later frame can.
+    pub fn createWith(gpa: std.mem.Allocator, file_bytes: []const u8, opts: Options) anyerror!*Player {
         const self = try gpa.create(Player);
         errdefer gpa.destroy(self);
         var movie = try swf.movie.load(gpa, file_bytes);
@@ -186,6 +191,7 @@ pub const Player = struct {
 
     pub fn destroy(self: *Player) void {
         const gpa = self.gpa;
+        self.clipboard.deinit(gpa);
         self.vm.destroy();
         self.root.deinit(gpa);
         self.canvas.deinit();
@@ -888,7 +894,15 @@ pub const Player = struct {
             }
         }
 
-        for (events[0..n]) |e| try self.sendMouse(ctx, e.obj, e.ev);
+        for (events[0..n]) |e| {
+            try self.sendMouse(ctx, e.obj, e.ev);
+            // A PRESS moves the focus: onto the pressed object if it can
+            // take focus by mouse, off whatever had it otherwise (ruffle
+            // `update_focus_on_mouse_press`, fired per press event).
+            if (e.ev == .press and !e.obj.removed) {
+                try avm1.stage_object.focusByMousePress(self.vm, e.obj);
+            }
+        }
     }
 
 
@@ -941,6 +955,60 @@ pub const Player = struct {
             try self.dispatchInput(swf.place.ClipEvent.MOUSE_UP, "onMouseUp", self.vm.mouse_object);
         }
         try self.updateMouseState(false, true);
+    }
+
+    /// Text typed into the focused field. Nothing happens without one.
+    pub fn textInput(self: *Player, typed: []const u16) !void {
+        var ctx = self.makeContext();
+        defer ctx.deinit(self.gpa);
+        self.cur_ctx = &ctx;
+        self.vm.display_ctx = @ptrCast(&ctx);
+        defer {
+            self.cur_ctx = null;
+            self.vm.display_ctx = null;
+        }
+        const t = self.focusedFieldTarget() orelse return;
+        const changed = try t.obj.kind.edit_text.textInput(self.gpa, typed);
+        if (changed) try self.afterFieldEdit(t.obj);
+        try self.drainActions(&ctx);
+        self.retireDead(&ctx);
+    }
+
+    /// One editing command (arrow keys, backspace, cut/paste …).
+    pub fn textControl(self: *Player, code: display.edit_text.Control) !void {
+        var ctx = self.makeContext();
+        defer ctx.deinit(self.gpa);
+        self.cur_ctx = &ctx;
+        self.vm.display_ctx = @ptrCast(&ctx);
+        defer {
+            self.cur_ctx = null;
+            self.vm.display_ctx = null;
+        }
+        const t = self.focusedFieldTarget() orelse return;
+        const changed = try t.obj.kind.edit_text.textControl(self.gpa, code, &self.clipboard);
+        if (changed) try self.afterFieldEdit(t.obj);
+        try self.drainActions(&ctx);
+        self.retireDead(&ctx);
+    }
+
+    fn focusedFieldTarget(self: *Player) ?avm1.stage_object.Target {
+        if (self.vm.focus == 0) return null;
+        const t = avm1.stage_object.targetOf(self.vm, self.vm.focus) orelse return null;
+        if (t.obj.kind != .edit_text) return null;
+        return t;
+    }
+
+    /// An edit made by the USER pushes the variable binding and then
+    /// broadcasts `onChanged` from the field itself.
+    fn afterFieldEdit(self: *Player, obj: *display.display_object.DisplayObject) !void {
+        try avm1.text_binding.propagate(self.vm, obj);
+        const h = try avm1.stage_object.handleOf(self.vm, obj);
+        _ = avm1.singletons.broadcast(
+            self.vm,
+            .{ .object = h },
+            avm1.strings.ascii("onChanged"),
+            &.{.{ .object = h }},
+        ) catch {};
     }
 
     /// `code` is a Flash key code (the Windows virtual-key numbering);

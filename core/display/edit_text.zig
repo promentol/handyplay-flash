@@ -23,6 +23,81 @@ const Tag = swf.font_text.EditText;
 /// field to its content and pin a different edge.
 pub const AutoSize = enum { none, left, center, right };
 
+/// A selection, or just a caret when `from == to`. `from` is where the
+/// user STARTED and `to` is where the caret is now, so `from` may be the
+/// larger of the two — a right-to-left drag.
+pub const Selection = struct {
+    from: usize,
+    to: usize,
+
+    pub fn at(pos: usize) Selection {
+        return .{ .from = pos, .to = pos };
+    }
+
+    pub fn start(self: Selection) usize {
+        return @min(self.from, self.to);
+    }
+
+    pub fn end(self: Selection) usize {
+        return @max(self.from, self.to);
+    }
+
+    pub fn isCaret(self: Selection) bool {
+        return self.from == self.to;
+    }
+
+    pub fn clamped(self: Selection, len: usize) Selection {
+        return .{ .from = @min(self.from, len), .to = @min(self.to, len) };
+    }
+};
+
+/// The editing commands the host can send to the focused field. The
+/// names are ruffle's `TextControlCode`, which is in turn the set the
+/// conformance corpus's `input.json` uses.
+pub const Control = enum {
+    move_left,
+    move_left_word,
+    move_left_line,
+    move_left_document,
+    move_right,
+    move_right_word,
+    move_right_line,
+    move_right_document,
+    select_left,
+    select_left_word,
+    select_left_line,
+    select_left_document,
+    select_right,
+    select_right_word,
+    select_right_line,
+    select_right_document,
+    select_all,
+    copy,
+    paste,
+    cut,
+    backspace,
+    backspace_word,
+    enter,
+    delete,
+    delete_word,
+
+    /// The commands that CHANGE the text; a read-only field ignores
+    /// exactly these and honours the rest.
+    pub fn isEdit(self: Control) bool {
+        return switch (self) {
+            .paste, .cut, .enter, .backspace, .backspace_word, .delete, .delete_word => true,
+            else => false,
+        };
+    }
+
+    fn isSelect(self: Control) bool {
+        return switch (self) {
+            .select_left, .select_left_word, .select_left_line, .select_left_document, .select_right, .select_right_word, .select_right_line, .select_right_document, .select_all => true,
+            else => false,
+        };
+    }
+};
+
 /// `gridFitType`. Purely reported today — nothing rasterises differently.
 pub const GridFit = enum { none, pixel, subpixel };
 
@@ -102,6 +177,10 @@ pub const EditText = struct {
     /// then `wordWrap` then `autoSize` again must not bake the first
     /// answer in (ruffle `apply_autosize_bounds`).
     autosize_lazy_bounds: ?Rectangle = null,
+
+    /// Null when the field is not focused: AVM1 clears the selection on
+    /// focus loss, and every index query answers -1 without one.
+    selection: ?Selection = null,
 
     /// The object this field's `variable` resolved to, or null while the
     /// field is on the unbound list.
@@ -316,6 +395,170 @@ pub const EditText = struct {
     /// — `htmlText` on a plain field reports the generated tags.
     pub fn htmlText(self: *const EditText, arena: std.mem.Allocator) ![]const u16 {
         return html_mod.serialize(arena, self.text.items, self.spans.list.items);
+    }
+
+    pub fn setSelection(self: *EditText, sel: ?Selection) void {
+        self.selection = if (sel) |x| x.clamped(self.text.items.len) else null;
+    }
+
+    /// How many more characters `maxChars` allows, counting the selection
+    /// about to be replaced as already free.
+    fn availableChars(self: *const EditText) usize {
+        if (self.max_chars == 0) return std.math.maxInt(usize);
+        const text_len: i64 = @intCast(self.text.items.len);
+        const sel_len: i64 = if (self.selection) |s| @intCast(s.end() - s.start()) else 0;
+        const room = @max(self.max_chars, 0) - (text_len - sel_len);
+        return if (room <= 0) 0 else @intCast(room);
+    }
+
+    /// Type `input` over the selection. Control characters other than a
+    /// newline never make it in, a single-line field drops newlines
+    /// entirely, and `restrict` filters what is left.
+    ///
+    /// Returns whether the text actually changed, so the caller knows
+    /// whether to fire `onChanged` and push the variable binding.
+    pub fn textInput(self: *EditText, gpa: std.mem.Allocator, input: []const u16) !bool {
+        if (self.read_only or self.availableChars() == 0) return false;
+        const sel = self.selection orelse return false;
+
+        var filtered: std.ArrayList(u16) = .empty;
+        defer filtered.deinit(gpa);
+        for (input) |c| {
+            const newline = c == '\n' or c == '\r';
+            if (newline and !self.multiline) continue;
+            if (c < 0x20 and !newline) continue;
+            if (!self.allows(c)) continue;
+            try filtered.append(gpa, if (newline) '\r' else c);
+        }
+        if (filtered.items.len == 0) return false;
+        const room = self.availableChars();
+        const text = filtered.items[0..@min(filtered.items.len, room)];
+        try self.replaceRange(gpa, sel.start(), sel.end(), text);
+        self.setSelection(Selection.at(sel.start() + text.len));
+        return true;
+    }
+
+    /// `restrict`: a space-free pattern of allowed characters, with `-`
+    /// ranges, `^` switching to DENY for everything after it, and `\` as
+    /// the escape (ruffle `EditTextRestrict`).
+    fn allows(self: *const EditText, c: u16) bool {
+        const r = self.restrict orelse return true;
+        var allowed = false;
+        var saw_allow_rule = false;
+        var denying = false;
+        var i: usize = 0;
+        while (i < r.len) {
+            if (r[i] == '^') {
+                denying = !denying;
+                i += 1;
+                continue;
+            }
+            var lo = r[i];
+            if (lo == '\\' and i + 1 < r.len) {
+                i += 1;
+                lo = r[i];
+            }
+            i += 1;
+            var hi = lo;
+            if (i + 1 < r.len and r[i] == '-') {
+                i += 1;
+                hi = r[i];
+                if (hi == '\\' and i + 1 < r.len) {
+                    i += 1;
+                    hi = r[i];
+                }
+                i += 1;
+            }
+            if (!denying) saw_allow_rule = true;
+            if (c >= @min(lo, hi) and c <= @max(lo, hi)) {
+                if (denying) return false;
+                allowed = true;
+            }
+        }
+        // With only DENY rules, everything not denied is allowed.
+        return allowed or !saw_allow_rule;
+    }
+
+    /// Apply an editing command. Returns whether the TEXT changed.
+    pub fn textControl(self: *EditText, gpa: std.mem.Allocator, code: Control, clipboard: *std.ArrayList(u16)) !bool {
+        if (self.read_only and code.isEdit()) return false;
+        const sel = self.selection orelse return false;
+        if (code.isSelect() and !self.selectable) return false;
+        const len = self.text.items.len;
+
+        switch (code) {
+            .enter => return self.textInput(gpa, &[_]u16{'\r'}),
+            .move_left, .move_left_word, .move_left_line, .move_left_document => {
+                const pos = if (sel.isCaret()) self.newPosition(code, sel.to) else sel.start();
+                self.setSelection(Selection.at(pos));
+            },
+            .move_right, .move_right_word, .move_right_line, .move_right_document => {
+                const pos = if (sel.isCaret() and sel.to < len)
+                    self.newPosition(code, sel.to)
+                else
+                    sel.end();
+                self.setSelection(Selection.at(pos));
+            },
+            .select_left, .select_left_word, .select_left_line, .select_left_document => {
+                if (sel.to > 0) self.setSelection(.{ .from = sel.from, .to = self.newPosition(code, sel.to) });
+            },
+            .select_right, .select_right_word, .select_right_line, .select_right_document => {
+                if (sel.to < len) self.setSelection(.{ .from = sel.from, .to = self.newPosition(code, sel.to) });
+            },
+            .select_all => self.setSelection(.{ .from = 0, .to = len }),
+            .copy => {
+                clipboard.clearRetainingCapacity();
+                try clipboard.appendSlice(gpa, self.text.items[sel.start()..sel.end()]);
+            },
+            .paste => {
+                // An EMPTY clipboard pastes nothing AND leaves the
+                // selection intact; a clipboard with no allowed
+                // characters still deletes it.
+                if (clipboard.items.len == 0) return false;
+                return self.textInput(gpa, clipboard.items);
+            },
+            .cut => {
+                clipboard.clearRetainingCapacity();
+                try clipboard.appendSlice(gpa, self.text.items[sel.start()..sel.end()]);
+                try self.replaceRange(gpa, sel.start(), sel.end(), &.{});
+                self.setSelection(Selection.at(if (self.selectable) sel.start() else self.text.items.len));
+                return true;
+            },
+            .backspace, .backspace_word, .delete, .delete_word => {
+                if (!sel.isCaret()) {
+                    try self.replaceRange(gpa, sel.start(), sel.end(), &.{});
+                    self.setSelection(Selection.at(sel.start()));
+                    return true;
+                }
+                if (code == .backspace or code == .backspace_word) {
+                    if (sel.start() == 0) return false;
+                    const start = self.newPosition(code, sel.start());
+                    try self.replaceRange(gpa, start, sel.start(), &.{});
+                    self.setSelection(Selection.at(start));
+                    return true;
+                }
+                if (sel.end() >= len) return false;
+                const end = self.newPosition(code, sel.start());
+                try self.replaceRange(gpa, sel.start(), end, &.{});
+                return true;
+            },
+        }
+        return false;
+    }
+
+    fn newPosition(self: *const EditText, code: Control, pos: usize) usize {
+        const t = self.text.items;
+        return switch (code) {
+            .select_right, .move_right, .delete => @min(pos + 1, t.len),
+            .select_left, .move_left, .backspace => if (pos > 0) pos - 1 else 0,
+            .select_right_word, .move_right_word, .delete_word => nextWord(t, pos),
+            .select_left_word, .move_left_word, .backspace_word => prevWord(t, pos),
+            .select_right_line, .move_right_line => nextLine(t, pos),
+            .select_left_line, .move_left_line => prevLine(t, pos),
+            .select_right_document, .move_right_document => t.len,
+            .select_left_document, .move_left_document => 0,
+            else => pos,
+        };
     }
 
     pub fn setFormatRange(
@@ -534,6 +777,37 @@ fn utf16(gpa: std.mem.Allocator, s: []const u8) ![]u16 {
 
 fn px(t: anytype) f64 {
     return @as(f64, @floatFromInt(t)) / @as(f64, swf.reader.TWIPS_PER_PX);
+}
+
+fn isWordChar(c: u16) bool {
+    return (c >= '0' and c <= '9') or (c >= 'A' and c <= 'Z') or
+        (c >= 'a' and c <= 'z') or c == '_' or c > 127;
+}
+
+fn nextWord(t: []const u16, pos: usize) usize {
+    var i = pos;
+    while (i < t.len and !isWordChar(t[i])) i += 1;
+    while (i < t.len and isWordChar(t[i])) i += 1;
+    return i;
+}
+
+fn prevWord(t: []const u16, pos: usize) usize {
+    var i = pos;
+    while (i > 0 and !isWordChar(t[i - 1])) i -= 1;
+    while (i > 0 and isWordChar(t[i - 1])) i -= 1;
+    return i;
+}
+
+fn nextLine(t: []const u16, pos: usize) usize {
+    var i = pos;
+    while (i < t.len and t[i] != '\r' and t[i] != '\n') i += 1;
+    return i;
+}
+
+fn prevLine(t: []const u16, pos: usize) usize {
+    var i = pos;
+    while (i > 0 and t[i - 1] != '\r' and t[i - 1] != '\n') i -= 1;
+    return i;
 }
 
 fn twips(v: f64) i32 {

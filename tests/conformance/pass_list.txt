@@ -85,6 +85,7 @@ edittext_bullet
 edittext_default_format
 edittext_default_format_empty
 edittext_default_format_font_style
+edittext_focus_selection
 edittext_font_size
 edittext_html_align_swf7
 edittext_html_align_swf8
@@ -96,13 +97,17 @@ edittext_html_roundtrip
 edittext_html_swf6
 edittext_html_swf7
 edittext_html_swf8
+edittext_input
+edittext_input_newlines
 edittext_leading
 edittext_letter_spacing
 edittext_margins
 edittext_newline_stripping
 edittext_newlines
 edittext_password
+edittext_programmatic_focus
 edittext_scroll
+edittext_tab_focus
 edittext_tab_stops
 edittext_text_height_leading
 edittext_underline
@@ -223,6 +228,7 @@ rewind_depth
 root_global_parent
 sandbox_type_local_file
 sandbox_type_local_network
+selection
 selection_asbroadcaster
 selection_handlers
 set_interval

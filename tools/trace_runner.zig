@@ -140,6 +140,17 @@ fn feedUntilWait(player: *flash.Player, events: []const std.json.Value, start: u
         } else if (std.mem.eql(u8, name, "KeyUp")) {
             const k = keyOf(ev);
             player.keyUp(k[0], k[1]) catch {};
+        } else if (std.mem.eql(u8, name, "TextControl")) {
+            if (controlOf(ev)) |c| player.textControl(c) catch {};
+        } else if (std.mem.eql(u8, name, "TextInput")) {
+            const codepoint = ev.object.get("codepoint");
+            if (codepoint) |cp| {
+                if (cp == .string and cp.string.len > 0) {
+                    var buf: [8]u16 = undefined;
+                    const n = std.unicode.utf8ToUtf16Le(&buf, cp.string) catch 0;
+                    if (n > 0) player.textInput(buf[0..n]) catch {};
+                }
+            }
         } else if (std.mem.eql(u8, name, "FocusLost")) {
             player.windowFocus(false) catch {};
         } else if (std.mem.eql(u8, name, "FocusGained")) {
@@ -200,6 +211,44 @@ fn keyOf(ev: std.json.Value) [2]i32 {
         },
         else => return .{ 0, 0 },
     }
+}
+
+/// `{"type":"TextControl","code":"MoveRight"}` — ruffle's
+/// `TextControlCode` variant names, verbatim.
+fn controlOf(ev: std.json.Value) ?flash.display.edit_text.Control {
+    const code = ev.object.get("code") orelse return null;
+    if (code != .string) return null;
+    const table = .{
+        .{ "MoveLeft", .move_left },
+        .{ "MoveLeftWord", .move_left_word },
+        .{ "MoveLeftLine", .move_left_line },
+        .{ "MoveLeftDocument", .move_left_document },
+        .{ "MoveRight", .move_right },
+        .{ "MoveRightWord", .move_right_word },
+        .{ "MoveRightLine", .move_right_line },
+        .{ "MoveRightDocument", .move_right_document },
+        .{ "SelectLeft", .select_left },
+        .{ "SelectLeftWord", .select_left_word },
+        .{ "SelectLeftLine", .select_left_line },
+        .{ "SelectLeftDocument", .select_left_document },
+        .{ "SelectRight", .select_right },
+        .{ "SelectRightWord", .select_right_word },
+        .{ "SelectRightLine", .select_right_line },
+        .{ "SelectRightDocument", .select_right_document },
+        .{ "SelectAll", .select_all },
+        .{ "Copy", .copy },
+        .{ "Paste", .paste },
+        .{ "Cut", .cut },
+        .{ "Backspace", .backspace },
+        .{ "BackspaceWord", .backspace_word },
+        .{ "Enter", .enter },
+        .{ "Delete", .delete },
+        .{ "DeleteWord", .delete_word },
+    };
+    inline for (table) |e| {
+        if (std.mem.eql(u8, code.string, e[0])) return e[1];
+    }
+    return null;
 }
 
 fn namedKeyCode(name: []const u8) i32 {
