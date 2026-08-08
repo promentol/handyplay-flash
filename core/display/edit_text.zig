@@ -12,6 +12,7 @@ const swf = @import("../swf/swf.zig");
 const format_mod = @import("../text/format.zig");
 const library = @import("library.zig");
 const text_layout = @import("text_layout.zig");
+const font_mod = @import("font.zig");
 const spans_mod = @import("../text/spans.zig");
 const html_mod = @import("../text/html.zig");
 
@@ -427,8 +428,8 @@ pub const EditText = struct {
             const newline = c == '\n' or c == '\r';
             if (newline and !self.multiline) continue;
             if (c < 0x20 and !newline) continue;
-            if (!self.allows(c)) continue;
-            try filtered.append(gpa, if (newline) '\r' else c);
+            const kept = self.toAllowed(c) orelse continue;
+            try filtered.append(gpa, if (newline) '\r' else kept);
         }
         if (filtered.items.len == 0) return false;
         const room = self.availableChars();
@@ -438,45 +439,103 @@ pub const EditText = struct {
         return true;
     }
 
-    /// `restrict`: a space-free pattern of allowed characters, with `-`
-    /// ranges, `^` switching to DENY for everything after it, and `\` as
-    /// the escape (ruffle `EditTextRestrict`).
+    /// A character as `restrict` will take it — CONVERTING its case when
+    /// only the other case is allowed. That is why pasting "aAbB" into a
+    /// field restricted to "bc" yields "bb", not "b".
+    fn toAllowed(self: *const EditText, c: u16) ?u16 {
+        if (self.restrict == null) return c;
+        if (self.allows(c)) return c;
+        const upper = if (c >= 'a' and c <= 'z') c - 32 else c;
+        if (upper != c and self.allows(upper)) return upper;
+        const lower = if (c >= 'A' and c <= 'Z') c + 32 else c;
+        if (lower != c and self.allows(lower)) return lower;
+        return null;
+    }
+
+    /// `restrict` as Flash actually parses it: a token stream of chars,
+    /// `^` and `-`, folded into ALLOW and DENY interval lists.
+    ///
+    /// The corner cases are the whole point of the corpus dir:
+    ///
+    ///   - `\\` escapes the NEXT character whatever it is (`\\a` is `a`),
+    ///     and a trailing backslash is ignored;
+    ///   - `^` SWITCHES between allowing and denying rather than only
+    ///     starting a deny list, and a leading one means "all, except";
+    ///   - `-z` is `\0-z`, `a-` is just `a`, and an inverted `z-a` is
+    ///     just `z`.
     fn allows(self: *const EditText, c: u16) bool {
         const r = self.restrict orelse return true;
-        var allowed = false;
-        var saw_allow_rule = false;
-        var denying = false;
+        var allowed: [64][2]u16 = undefined;
+        var na: usize = 0;
+        var denied: [64][2]u16 = undefined;
+        var nd: usize = 0;
+        var cur: [64][2]u16 = undefined;
+        var nc: usize = 0;
+        var last: ?u16 = null;
+        var allowing = true;
+
         var i: usize = 0;
         while (i < r.len) {
-            if (r[i] == '^') {
-                denying = !denying;
-                i += 1;
-                continue;
-            }
-            var lo = r[i];
-            if (lo == '\\' and i + 1 < r.len) {
-                i += 1;
-                lo = r[i];
-            }
+            const t = r[i];
             i += 1;
-            var hi = lo;
-            if (i + 1 < r.len and r[i] == '-') {
+            if (t == '\\') {
+                if (i >= r.len) break;
+                const e = r[i];
                 i += 1;
-                hi = r[i];
-                if (hi == '\\' and i + 1 < r.len) {
-                    i += 1;
-                    hi = r[i];
+                if (nc < cur.len) {
+                    cur[nc] = .{ e, e };
+                    nc += 1;
                 }
-                i += 1;
-            }
-            if (!denying) saw_allow_rule = true;
-            if (c >= @min(lo, hi) and c <= @max(lo, hi)) {
-                if (denying) return false;
-                allowed = true;
+                last = e;
+            } else if (t == '^') {
+                if (allowing) {
+                    if (nc == 0 and na == 0) {
+                        allowed[0] = .{ 0, 0xFFFF };
+                        na = 1;
+                    } else {
+                        na = append(&allowed, na, cur[0..nc]);
+                    }
+                } else {
+                    nd = append(&denied, nd, cur[0..nc]);
+                }
+                nc = 0;
+                allowing = !allowing;
+                last = null;
+            } else if (t == '-') {
+                var start: u16 = 0;
+                if (last) |lc| {
+                    if (nc > 0) nc -= 1;
+                    start = lc;
+                }
+                var end = start;
+                if (i < r.len) {
+                    if (r[i] == '\\' and i + 1 < r.len) {
+                        end = r[i + 1];
+                        i += 2;
+                    } else if (r[i] != '^' and r[i] != '-') {
+                        end = r[i];
+                        i += 1;
+                    }
+                }
+                if (nc < cur.len) {
+                    cur[nc] = .{ start, @max(end, start) };
+                    nc += 1;
+                }
+                last = null;
+            } else {
+                if (nc < cur.len) {
+                    cur[nc] = .{ t, t };
+                    nc += 1;
+                }
+                last = t;
             }
         }
-        // With only DENY rules, everything not denied is allowed.
-        return allowed or !saw_allow_rule;
+        if (allowing) {
+            na = append(&allowed, na, cur[0..nc]);
+        } else {
+            nd = append(&denied, nd, cur[0..nc]);
+        }
+        return inAny(allowed[0..na], c) and !inAny(denied[0..nd], c);
     }
 
     /// Apply an editing command. Returns whether the TEXT changed.
@@ -484,6 +543,10 @@ pub const EditText = struct {
         if (self.read_only and code.isEdit()) return false;
         const sel = self.selection orelse return false;
         if (code.isSelect() and !self.selectable) return false;
+        // Neither Copy nor Cut touches a PASSWORD field at all — Cut does
+        // not even delete — and neither does anything with no selection
+        // to act on (ruffle `is_text_control_applicable`).
+        if ((code == .copy or code == .cut) and (self.password or sel.isCaret())) return false;
         const len = self.text.items.len;
 
         switch (code) {
@@ -559,6 +622,44 @@ pub const EditText = struct {
             .select_left_document, .move_left_document => 0,
             else => pos,
         };
+    }
+
+    /// Map a point in the FIELD's own space (twips) to a character
+    /// index: the nearest line by y, the nearest box on it by x, then the
+    /// glyph whose half-width the point has passed.
+    ///
+    /// Null when the field has no text boxes at all, which the caller
+    /// treats as "caret at the end".
+    pub fn positionToIndex(self: *const EditText, local: [2]i32) ?usize {
+        const lines = self.layout.lines;
+        if (lines.len == 0) return null;
+        const x = local[0] - self.bounds.xmin - GUTTER;
+        const y = local[1] - self.bounds.ymin - GUTTER;
+
+        var line = lines[0];
+        for (lines) |l| {
+            line = l;
+            if (y < l.bounds.y + l.bounds.h + l.leading) break;
+        }
+
+        var closest: ?text_layout.Box = null;
+        for (line.boxes) |b| {
+            if (b.is_bullet) continue;
+            if (x >= b.bounds.x or closest == null) {
+                closest = b;
+            } else {
+                break;
+            }
+        }
+        const box = closest orelse return null;
+
+        var finder: IndexFinder = .{ .want = x - box.bounds.x };
+        _ = box.font.evaluate(self.text.items[box.start..@min(box.end, self.text.items.len)], .{
+            .height = box.size,
+            .letter_spacing = box.letter_spacing,
+            .kerning = box.kerning,
+        }, &finder) catch {};
+        return box.start + finder.index;
     }
 
     pub fn setFormatRange(
@@ -777,6 +878,34 @@ fn utf16(gpa: std.mem.Allocator, s: []const u8) ![]u16 {
 
 fn px(t: anytype) f64 {
     return @as(f64, @floatFromInt(t)) / @as(f64, swf.reader.TWIPS_PER_PX);
+}
+
+/// The last glyph the point has reached, rounded to the nearer edge.
+const IndexFinder = struct {
+    want: i32,
+    index: usize = 0,
+
+    pub fn glyph(self: *IndexFinder, p: font_mod.Placed) !void {
+        if (self.want < p.x) return;
+        self.index = if (self.want > p.x + @divTrunc(p.advance, 2)) p.index + 1 else p.index;
+    }
+};
+
+fn append(dst: *[64][2]u16, n: usize, src: []const [2]u16) usize {
+    var k = n;
+    for (src) |iv| {
+        if (k >= dst.len) break;
+        dst[k] = iv;
+        k += 1;
+    }
+    return k;
+}
+
+fn inAny(intervals: []const [2]u16, c: u16) bool {
+    for (intervals) |iv| {
+        if (c >= iv[0] and c <= iv[1]) return true;
+    }
+    return false;
 }
 
 fn isWordChar(c: u16) bool {

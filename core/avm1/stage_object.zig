@@ -1448,6 +1448,16 @@ pub fn focusByMousePress(vm: *Vm, obj: ?*DisplayObject) anyerror!void {
     if (focusable) {
         const h = try handleOf(vm, obj.?);
         try setFocusBy(vm, h, false, .mouse);
+        // The click also places the CARET — that is the whole reason a
+        // mouse focus does not select the field.
+        const et = obj.?.kind.edit_text;
+        if (et.selectable) {
+            const t: Target = .{ .obj = obj.?, .clip = null };
+            const p = localMouse(vm, t);
+            const idx = et.positionToIndex(.{ twipsFromPixels(p[0]), twipsFromPixels(p[1]) }) orelse
+                et.text.items.len;
+            et.setSelection(@import("../display/edit_text.zig").Selection.at(idx));
+        }
         return;
     }
     if (focusedField(vm)) |et| {

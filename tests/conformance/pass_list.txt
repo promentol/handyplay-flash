@@ -105,8 +105,12 @@ edittext_margins
 edittext_newline_stripping
 edittext_newlines
 edittext_password
+edittext_password_copy
 edittext_paste_empty
+edittext_place_caret
 edittext_programmatic_focus
+edittext_restrict
+edittext_restrict_paste
 edittext_scroll
 edittext_tab_focus
 edittext_tab_stops
