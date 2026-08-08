@@ -9,8 +9,12 @@ array_constructor
 array_enumerate
 array_properties
 array_prototyping
+array_reverse
+array_shift
 array_slice
+array_splice
 array_trivial
+array_unshift
 as1_constructor_v6
 as1_constructor_v7
 as2_oop

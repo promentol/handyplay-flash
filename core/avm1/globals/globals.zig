@@ -511,6 +511,27 @@ fn arrPop(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return v;
 }
 
+/// Delete the element and then set it, so the property lands at the END
+/// of the object's property list. Array reordering is OBSERVABLE through
+/// `for..in`, which walks that list, and every Flash array mutator moves
+/// elements this way rather than overwriting in place.
+fn arrayReset(vm: *Vm, h: ObjectHandle, index: u32, v: Value) !void {
+    _ = vm.objects.deleteOwn(h, try arrayKey(vm, index), vm.case_sensitive);
+    try vm.arraySet(h, index, v);
+}
+
+fn arrayDelete(vm: *Vm, h: ObjectHandle, index: u32) !void {
+    _ = vm.objects.deleteOwn(h, try arrayKey(vm, index), vm.case_sensitive);
+}
+
+fn arrayKey(vm: *Vm, index: u32) !strings.AvmString {
+    var buf: [12]u8 = undefined;
+    const ascii = std.fmt.bufPrint(&buf, "{d}", .{index}) catch unreachable;
+    const wide = try vm.arena().alloc(u16, ascii.len);
+    for (ascii, wide) |c, *w| w.* = c;
+    return wide;
+}
+
 fn arrShift(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
@@ -520,13 +541,10 @@ fn arrShift(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const first = try indexGet(vm, this.object, 0);
     var i: u32 = 1;
     while (i < len) : (i += 1) {
-        try vm.arraySet(this.object, i - 1, try indexGet(vm, this.object, i));
+        const v = try indexGet(vm, this.object, i);
+        try arrayReset(vm, this.object, i - 1, v);
     }
-    var buf: [12]u8 = undefined;
-    const key = std.fmt.bufPrint(&buf, "{d}", .{len - 1}) catch unreachable;
-    var wide: [12]u16 = undefined;
-    for (key, 0..) |c, k| wide[k] = c;
-    _ = vm.objects.deleteOwn(this.object, wide[0..key.len], vm.case_sensitive);
+    try arrayDelete(vm, this.object, len - 1);
     try vm.setArrayLength(this.object, len - 1);
     return first;
 }
@@ -570,12 +588,13 @@ fn arrUnshift(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const len = vm.arrayLength(this.object);
     const n: u32 = @intCast(args.len);
     if (n > 0) {
-        // Shift right, back to front.
+        // Shift right, back to front, each element deleted and re-set.
         var i: u32 = len;
         while (i > 0) : (i -= 1) {
-            try vm.arraySet(this.object, i - 1 + n, try indexGet(vm, this.object, i - 1));
+            const v = try indexGet(vm, this.object, i - 1);
+            try arrayReset(vm, this.object, i - 1 + n, v);
         }
-        for (args, 0..) |v, k| try vm.arraySet(this.object, @intCast(k), v);
+        for (args, 0..) |v, k| try arrayReset(vm, this.object, @intCast(k), v);
     }
     try vm.setArrayLength(this.object, len + n);
     return .{ .number = @floatFromInt(len + n) };
@@ -589,52 +608,84 @@ fn arrReverse(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     if (len < 2) return this;
     var i: u32 = 0;
     while (i < len / 2) : (i += 1) {
+        const upper = len - 1 - i;
         const a = try indexGet(vm, this.object, i);
-        const b = try indexGet(vm, this.object, len - 1 - i);
+        const b = try indexGet(vm, this.object, upper);
+        // BOTH deleted before either is set, so the pair moves to the
+        // end of the property list together.
+        try arrayDelete(vm, this.object, i);
+        try arrayDelete(vm, this.object, upper);
         try vm.arraySet(this.object, i, b);
-        try vm.arraySet(this.object, len - 1 - i, a);
+        try vm.arraySet(this.object, upper, a);
     }
     return this;
 }
 
+/// `splice(start, deleteCount, …items)`.
+///
+/// Three ways to get UNDEFINED rather than an array back, all of them
+/// checked before anything is moved: no `start` at all, an explicit
+/// `undefined` for either of the first two arguments, or a negative
+/// delete count. A missing `deleteCount` means "to the end", which is
+/// not the same as passing undefined.
 fn arrSplice(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    if (this != .object or args.len == 0) return .undefined_value;
+    if (this != .object) return .undefined_value;
+    if (args.len == 0 or args[0] == .undefined_value) return .undefined_value;
+
     const len: i64 = @intCast(vm.arrayLength(this.object));
-    var start: i64 = @intFromFloat(@trunc(try vm.toNumber(args[0])));
+    var start: i64 = value_mod.toInt32(try vm.toNumber(args[0]));
     if (start < 0) start = @max(0, len + start);
     start = @min(start, len);
-    var delete_count: i64 = if (args.len > 1)
-        @intFromFloat(@trunc(try vm.toNumber(args[1])))
-    else
-        len - start;
-    delete_count = @max(0, @min(delete_count, len - start));
-    // Removed elements come back as a new array.
+
+    var delete_count: i64 = undefined;
+    if (args.len > 1) {
+        if (args[1] == .undefined_value) return .undefined_value;
+        delete_count = @min(@as(i64, value_mod.toInt32(try vm.toNumber(args[1]))), len - start);
+    } else {
+        delete_count = len - start;
+    }
+    if (delete_count < 0) return .undefined_value;
+
     const removed = try vm.newArray();
     var i: i64 = 0;
     while (i < delete_count) : (i += 1) {
         try vm.arraySet(removed, @intCast(i), try indexGet(vm, this.object, @intCast(start + i)));
     }
+    try vm.setArrayLength(removed, @intCast(delete_count));
+
     const inserted: i64 = @intCast(if (args.len > 2) args.len - 2 else 0);
-    const new_len = len - delete_count + inserted;
-    // Copy the tail into place (grow: back-to-front; shrink: front-to-back).
+    // Growing walks BACKWARDS and shrinking forwards, so a move never
+    // lands on a slot it still has to read.
     if (inserted > delete_count) {
         var k: i64 = len - 1;
         while (k >= start + delete_count) : (k -= 1) {
-            try vm.arraySet(this.object, @intCast(k + inserted - delete_count), try indexGet(vm, this.object, @intCast(k)));
+            try spliceMove(vm, this.object, k, k - delete_count + inserted);
         }
-    } else if (inserted < delete_count) {
+    } else {
         var k: i64 = start + delete_count;
         while (k < len) : (k += 1) {
-            try vm.arraySet(this.object, @intCast(k + inserted - delete_count), try indexGet(vm, this.object, @intCast(k)));
+            try spliceMove(vm, this.object, k, k - delete_count + inserted);
         }
     }
+
     var j: i64 = 0;
     while (j < inserted) : (j += 1) {
         try vm.arraySet(this.object, @intCast(start + j), args[@intCast(2 + j)]);
     }
-    try vm.setArrayLength(this.object, @intCast(@max(0, new_len)));
+    try vm.setArrayLength(this.object, @intCast(@max(0, len - delete_count + inserted)));
     return .{ .object = removed };
+}
+
+/// A HOLE stays a hole: moving an absent element deletes the
+/// destination rather than writing undefined into it.
+fn spliceMove(vm: *Vm, h: ObjectHandle, from: i64, to: i64) !void {
+    const key = try arrayKey(vm, @intCast(from));
+    if (vm.objects.hasOwn(h, key, vm.case_sensitive)) {
+        try vm.arraySet(h, @intCast(to), try indexGet(vm, h, @intCast(from)));
+    } else {
+        try arrayDelete(vm, h, @intCast(to));
+    }
 }
 
 fn arrSort(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
