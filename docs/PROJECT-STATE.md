@@ -1,6 +1,6 @@
 # handyflash — Project State & Handover
 
-**Authoritative snapshot. Last updated: 2026-08-08 (M4 workstream B close).**
+**Authoritative snapshot. Last updated: 2026-08-09 (workstream L close — loaders).**
 Read this first if you are picking up the project with no prior context.
 For executing the next milestone, then read `docs/M4-SPEC.md`.
 
@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D and E complete (**453/680**, images **8/26**); F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**522/680**, images **12/26**); F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -67,6 +67,19 @@ UTF-16 parser. Everything but `load`/`sendAndLoad`, which need I/O.
 **Filters today**: every class, every property coercion, and
 PlaceObject3's filter list decoded and readable — but only
 `ColorMatrixFilter` is actually APPLIED (M7 owns the kernels).
+**Loading today**: a movie can fetch. `loadVariables`, `LoadVars`,
+`XML.load`/`sendAndLoad`, `loadMovie`/`loadMovieNum`, `unloadMovie`,
+`MovieClipLoader` with its full event sequence, `XMLSocket`, and
+`flash.net.FileReference`/`FileReferenceList`. A loaded SWF brings its
+OWN library, version and timeline; `_level1` and up are real, ticking
+and rendering above the root; a GIF/JPEG/PNG loaded into a clip becomes
+its only child. `core/` still does no I/O — every one of those goes
+through `Player.Options.load_file` and completes at the END of the tick,
+which is exactly why `LoadVars.loaded` reads false right after `load()`
+returns.
+**ExternalInterface today**: the whole marshalling surface (`_toXML`,
+`_toAS`, `_escapeXML`, `_jsQuoteString` and friends). The bridge itself
+needs a browser and is not here.
 
 ---
 
@@ -164,6 +177,9 @@ handyflash/
 │   │                         date.zig · singletons.zig · selection.zig
 │   │                         text_field.zig · text_format.zig · text_snapshot.zig
 │   │                         style_sheet.zig · filters.zig · bitmap_data.zig
+│   │                         loader.zig (LoadVars + the form codec +
+│   │                         MovieClipLoader) · socket.zig (XMLSocket) ·
+│   │                         file_reference.zig · external.zig
 │   ├── bitmap/               PIXELS — no display, no interpreter
 │   │   ├── pixels.zig        Color, the premultiply pair (a LOOKUP TABLE
 │   │   │                     going back), Lehmer RNG, version size limits
@@ -467,30 +483,36 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
-**Workstreams A, B, C, D and E are CLOSED at 453/680, with every bitmap
-dir in the corpus passing both harnesses.** Pick up F (PlaceObject3 blend
-modes and clipDepth masks) next — `Renderer.blendModeFromSwf` already has
-the mapping F needs, because `BitmapData.draw` takes the same numbering.
-`docs/M4-SPEC.md` §4, §5, §6 and §7 list, by name and cause, every dir
-those five workstreams could not reach; do not re-derive them.
+**Workstreams A, B, C, D, E and L are CLOSED at 522/680** (images
+12/26), with every bitmap dir and all but six loader dirs passing. Pick
+up F (PlaceObject3 blend modes and clipDepth masks) next —
+`Renderer.blendModeFromSwf` already has the mapping F needs, because
+`BitmapData.draw` takes the same numbering. `docs/M4-SPEC.md` §4, §5, §6
+and §7 list, by name and cause, every dir those workstreams could not
+reach; do not re-derive them.
 
-**What the remaining 227 failures actually are.** They cluster hard, and
-none is a near-miss of one or two lines that does not need a subsystem:
+**What the remaining 158 failures actually are:**
 
 | cluster | dirs | what it needs |
 |---|---:|---|
 | `sound*` | 15 | M6 |
-| `file*`, `mcl*`, `loadmovie*`, `xml_load`, `xml_socket*` | 42 | a host I/O seam — `core/` does no I/O |
-| `movieclip*` | 14 | mixed; several need a loaded child movie |
-| `external*` | 7 | ExternalInterface |
+| `movieclip*` | 11 | mixed; several need cross-movie prototypes |
 | `amf*` | 6 | AMF / SharedObject serialisation |
-| the tail | ~140 | one dir at a time, each its own semantics |
+| `localconnection*`, `netconnection*`, `netstream*` | 7 | subsystems of their own |
+| `external_interface` | 1 | the harness's simulated JS bridge |
+| the loader tail | 6 | named below |
+| the rest | ~110 | one dir at a time, each its own semantics |
 
-**The loader seam is the biggest single unlock**: 42 dirs across five
-clusters are waiting on the same thing, and none of them can be reached
-from `core/` as it stands.
+**The loader tail, by name**, so nobody re-derives it:
+`loadmovie_replace_root` and `mcl_loadclip_replace_root` (loading into
+`_level0` REPLACES the root movie, and the stage box with it);
+`loadmovie_registerclass` (registerClass across movies);
+`mcl_events_swf_version` and `loadmovienum_cross_version_prototype` (a
+per-clip `_url`, plus a per-VERSION prototype set — ruffle keeps one set
+per version group, we keep one); `unload` and `unload_nested_child`
+(removal timing, not loading).
 
-Seven things to know before you start:
+Eight things to know before you start:
 
 1. **Filters are DECODED but not APPLIED.** `core/swf/filters.zig` parses
    PlaceObject3's list and `core/avm1/globals/filters.zig` has the whole
@@ -512,11 +534,10 @@ Seven things to know before you start:
    through it; real Flash does not (`super_edge_cases`). If something
    later looks wrong around `__proto__` chains through clips, this is the
    first suspect — it is deliberately marked in both call sites.
-4. **The one dir workstream A could not reach**, so nobody re-derives it:
-   `interface_implements_op` needs `MovieClipLoader.loadClip` of an
-   external SWF plus cross-movie AVM1 (loader subsystem — and `core/`
-   does no I/O, so it needs a host seam). Its sibling
-   `clone_sprite_edittext` is now down to one thing: `filters` are
+4. **The one dir workstream A could not reach** is reachable now:
+   `interface_implements_op` needed `MovieClipLoader.loadClip` of an
+   external SWF plus cross-movie AVM1, and workstream L built both. Its
+   sibling `clone_sprite_edittext` is down to one thing: `filters` are
    reported as an empty array and never stored, so a field cannot carry
    one.
 5. **The action queue is now three FIFO buckets** (Initialize, Construct,
@@ -529,7 +550,16 @@ Seven things to know before you start:
    algorithm, not ES3.** Both look like sloppiness and are not — the
    corpus fails either one if it is "corrected". See the workstream-B
    notes at the end of `docs/AVM1.md`.
-7. **A device font is a HOST input, never a built-in.** `Options.device_font`
+7. **Everything asynchronous lands at the END of the tick**, in
+   `Player.finishTick` — ruffle's `executor.run()`, which its harness
+   calls after `run_frame` and the timers. Loads, socket traffic and file
+   dialogs all resolve there, and the one-tick lag that produces is
+   OBSERVABLE: `loadvariables2` polls on an interval precisely because
+   the data is not there when `loadVariables` returns, and `onLoadInit`
+   is a whole tick behind `onLoadComplete` because the loaded movie has
+   to run its own first frame in between. Do not "fix" it by resolving
+   inline.
+8. **A device font is a HOST input, never a built-in.** `Options.device_font`
    takes TTF bytes; with none, a face the movie did not embed measures
    zero, which is what a machine without it installed does. The four
    corpus dirs that need one declare `with_default_font`, and the harness

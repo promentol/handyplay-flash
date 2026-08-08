@@ -653,3 +653,81 @@ SWF7 its arity is checked before it runs.
 **`toUpperCase`/`toLowerCase` use Flash's own tables**
 (`core/avm1/case_tables.zig`), which are not Unicode's. Case folding for
 PROPERTY LOOKUP stays ASCII-only — a different rule.
+
+## Workstream L — loading (453 → 522)
+
+**`core/` still does no I/O.** A load is a `runtime.FetchRequest` posted
+to the Player through `Host.fetch`; the Player asks the frontend through
+`Options.load_file` and applies the answer. Everything asynchronous —
+loads, socket traffic, file dialogs — resolves in `Player.finishTick`,
+which is ruffle's `executor.run()`: after the frame, after the timers.
+
+**That one-tick lag is behaviour, not an artefact.** `loadvariables2`
+polls on a `setInterval` precisely because the data is not there when
+`loadVariables` returns; `LoadVars.loaded` reads false until a later
+tick; and `onLoadInit` trails `onLoadComplete` by a whole tick because
+the loaded movie has to run its own first frame in between. Resolving a
+load inline breaks all three.
+
+**The GetURL2 flag byte is documented backwards.** SWF19 lists the
+layout reversed; the real one is bits 0-1 = send method, bit 6 =
+LoadTarget, bit 7 = LoadVariables. A real `loadVariables(url, clip)`
+emits 0xC0 — both high flags — which the spec's layout reads as a
+nonexistent method 3. The static `GetURL` and `GetURL2` also disagree on
+their level test: `len > 6` for the static form, `len >= 6` for the
+dynamic one, so a bare `"_level"` is a window name to one and level 0 to
+the other.
+
+**Five statements share the GetURL2 opcode** and which one you wrote is
+recovered from two flag bits plus the SHAPE of the target. The subtle
+rule is the LoadVariables demotion: with neither `is_target_sprite` nor
+a `_levelN` target, a `loadVariables` whose target resolves to anything
+other than the movie's own root is not a load at all — Flash opens the
+URL in the browser instead.
+
+**Two different percent-encodings.** `escape()` spares only
+alphanumerics and writes a space as `%20`; a request BODY is
+`application/x-www-form-urlencoded`, which spares `*-._` as well and
+writes a space as `+`. `LoadVars.toString` uses the first and
+`sendAndLoad` the second, and the corpus checks both byte for byte.
+
+**A loaded SWF brings its own library, version and timeline.**
+`MovieClip.movie` names it and `executeFrame`/`runGoto` swap it into the
+walk context for the duration of the subtree, so a nested sprite inside
+a loaded movie resolves ITS characters. Levels are parentless clips with
+a `level_id`; they tick and render above the root, NEWEST FIRST — ruffle
+has no tree walk here at all, it iterates one global list that every new
+clip is prepended to.
+
+**`unloadMovie` empties a clip in place rather than removing it.**
+Children retire with their `onUnload` fired, the clip fires its own, and
+then `reset_for_movie_load` clears every flag but `_lockroot` — which is
+what revives it, and what leaves `_level1` still naming something after
+`unloadMovieNum(1)`.
+
+**A fetch that succeeds but brings no SWF is still a SUCCESS.** Ruffle
+sniffs the content type and substitutes an empty "error movie" for
+anything unrecognised; only a fetch FAILURE reaches `onLoadError`. An
+image becomes the clip's one child at depth 1.
+
+**MovieClipLoader events go through `broadcastMessage`**, the method, not
+straight down `_listeners` — content replaces it to intercept the whole
+stream. `FileReference` is the other way round: ruffle's
+`broadcast_internal` walks the list directly. The inits fire in REVERSE
+load order.
+
+**XMLSocket frames on NUL and nothing else.** Segmentation is the
+receiver's job: one delivery of `"One\0Two\0Three\0"` is three `onData`
+calls, and `"Hello"` followed later by `"World!\0"` is one.
+
+**FileReference's three sequences differ on purpose.** A DNS failure
+never reports `onOpen`, because nothing ever opened. An HTTP failure
+does — and then still reports `onProgress` AFTER the error. An upload's
+`onProgress` counts the bytes it sent.
+
+**Player warnings share the trace sink.** Flash prints them with a
+"Warning: " prefix and ruffle's harness has `log_warnings` on by
+default, so they are expected output. They must stay quiet during a GOTO
+replay: ruffle aggregates a goto into a placement delta and never
+re-places a depth it already filled, while our correctness-first replay
+does (`Context.replaying`).

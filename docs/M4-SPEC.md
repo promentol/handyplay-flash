@@ -870,3 +870,40 @@ the windowed player (backgrounded, no timeout, user confirms).
    workstream list annotated with what shipped vs deferred.
 5. Committed on main in reviewable increments (one workstream ≈ one
    commit, message style per `git log`).
+
+---
+
+## 12. Workstream L — loading (added after §7; 453 → 522)
+
+Not in the original plan: the milestone table had loaders as "a host I/O
+seam" and nothing more. It turned out to be six sub-workstreams and 69
+dirs, and it is CLOSED apart from the six named below.
+
+| phase | what shipped | dirs |
+|---|---|---:|
+| L1 | the seam (`Options.load_file`), `loadVariables`, `LoadVars`, `getURL`, the GetURL2 flag-order fix | 10 |
+| L2 | `XML.load` / `sendAndLoad` / `getBytesLoaded` | 2 |
+| L3 | cross-movie `loadMovie`, `_levelN`, `unloadMovie`, flashvars | 14 |
+| L4 | `MovieClipLoader` + images loaded into a clip | 15 traces, 4 images |
+| L5 | `XMLSocket`, `flash.net.FileReference`/`FileReferenceList` | 17 |
+| — | `flash.external.ExternalInterface` (marshalling) | 6 |
+
+**Not reached, and why** — do not re-derive these:
+
+- `loadmovie_replace_root`, `mcl_loadclip_replace_root` — loading into
+  `_level0` REPLACES the root movie, and the stage box with it. That is
+  a Player-level operation (rebuild the canvas, re-seed `_root`,
+  preserve the old root's properties across the swap), not a clip one.
+- `loadmovie_registerclass` — `Object.registerClass` has to reach across
+  movies, so the registry cannot stay keyed on the root library's ids.
+- `mcl_events_swf_version`, `loadmovienum_cross_version_prototype` — a
+  per-clip `_url` (ours is one `vm.movie_url`), and a per-VERSION
+  prototype set: ruffle keeps one set per version group so a SWF6 movie
+  and a SWF8 movie see DIFFERENT `MovieClip.prototype` objects, which is
+  exactly what those two dirs check.
+- `unload`, `unload_nested_child` — removal TIMING, not loading. Flash
+  keeps a removed clip resolvable until the end of the frame; we retire
+  it immediately, and both dirs read the clip back right after removing
+  it.
+- `external_interface` — needs the harness's simulated JS bridge and its
+  Rust-`Debug` value dump (`String("x")`, `Object({...})`).
