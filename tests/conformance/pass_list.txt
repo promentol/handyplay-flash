@@ -68,6 +68,7 @@ define_function2
 define_function_case_sensitive
 delete
 depth_replacement_audio_unloading
+device_font_spacing
 display_object_properties
 divide_swf4
 do_init_action
@@ -88,6 +89,7 @@ edittext_default_format_empty
 edittext_default_format_font_style
 edittext_focus_selection
 edittext_font_size
+edittext_hscroll
 edittext_html_align_swf7
 edittext_html_align_swf8
 edittext_html_color
@@ -147,6 +149,7 @@ get_bytes_total
 getproperty
 getproperty_swf4
 getproperty_swf5
+gettextextent
 goto_advance1
 goto_advance2
 goto_both_ways1

@@ -24,6 +24,7 @@
 const std = @import("std");
 const swf = @import("../swf/swf.zig");
 const library = @import("library.zig");
+const device_font = @import("device_font.zig");
 
 const SwfFont = swf.font_text.Font;
 const Glyph = swf.font_text.Glyph;
@@ -40,8 +41,11 @@ pub const Placed = struct {
     /// Index into the string that produced it — stable even for the
     /// characters that had no glyph.
     index: usize,
-    /// Null when the font has no glyph for this character.
+    /// Null when the font has no glyph for this character, and also for
+    /// every DEVICE glyph — those carry a face index instead.
     glyph: ?*const Glyph,
+    /// The device face's glyph index, when this came from one.
+    device_glyph: ?i32 = null,
     /// Pen position at the START of this glyph, relative to the line.
     x: i32,
     /// How far the pen moves after it; zero for a missing glyph.
@@ -63,10 +67,18 @@ pub const Params = struct {
 /// zero, which is exactly what Flash does with no font to fall back on.
 pub const Font = struct {
     swf_font: ?*const SwfFont,
+    /// The host's face, used when the movie embedded nothing usable. Both
+    /// arms speak EM units, so everything below is one branch deep.
+    device: ?*device_font.DeviceFont = null,
 
     pub const empty: Font = .{ .swf_font = null };
 
+    pub fn isNone(self: Font) bool {
+        return self.swf_font == null and self.device == null;
+    }
+
     pub fn scale(self: Font) f32 {
+        if (self.device) |d| return @floatCast(d.units_per_em);
         const f = self.swf_font orelse return 1024.0;
         return scaleOf(f);
     }
@@ -74,12 +86,14 @@ pub const Font = struct {
     /// EM-square ascent, or 0 without layout data. Flash reports a
     /// fontless field as zero-tall, not as some default.
     pub fn ascentEm(self: Font) i32 {
+        if (self.device) |d| return d.ascent;
         const f = self.swf_font orelse return 0;
         const l = f.layout orelse return 0;
         return l.ascent;
     }
 
     pub fn descentEm(self: Font) i32 {
+        if (self.device) |d| return d.descent;
         const f = self.swf_font orelse return 0;
         const l = f.layout orelse return 0;
         return l.descent;
@@ -95,9 +109,20 @@ pub const Font = struct {
     }
 
     pub fn hasKerning(self: Font) bool {
+        // A device font's kerning is always consulted — ruffle enables it
+        // regardless of the format's `kerning` flag for device faces.
+        if (self.device != null) return true;
         const f = self.swf_font orelse return false;
         const l = f.layout orelse return false;
         return l.kerning.len > 0;
+    }
+
+    /// A device glyph has no `Glyph` struct behind it — it is identified
+    /// by its face index instead, which is what `Placed.device_glyph`
+    /// carries.
+    pub fn deviceGlyph(self: Font, code: u16) ?i32 {
+        const d = self.device orelse return null;
+        return d.glyphIndex(code);
     }
 
     pub fn glyphFor(self: Font, code: u16) ?*const Glyph {
@@ -117,6 +142,11 @@ pub const Font = struct {
     }
 
     pub fn kerning(self: Font, left: u16, right: u16) i32 {
+        if (self.device) |d| {
+            const a = d.glyphIndex(left) orelse return 0;
+            const b = d.glyphIndex(right) orelse return 0;
+            return d.kerning(a, b);
+        }
         const f = self.swf_font orelse return 0;
         const l = f.layout orelse return 0;
         for (l.kerning) |k| {
@@ -132,9 +162,36 @@ pub const Font = struct {
     /// measurement and drawing share one loop.
     pub fn evaluate(self: Font, text: []const u16, params: Params, ctx: anytype) !i32 {
         const sc = self.scale();
-        const kern_on = self.hasKerning() and params.kerning;
+        // A DEVICE face always kerns; an embedded one only when the
+        // format asks and the tag carries a table.
+        const kern_on = self.hasKerning() and (self.device != null or params.kerning);
         var x: i32 = 0;
         for (text, 0..) |c, i| {
+            if (self.device) |d| {
+                const gi = d.glyphIndex(c);
+                if (gi == null) {
+                    try ctx.glyph(Placed{ .index = i, .glyph = null, .x = x, .advance = 0, .scale = 0 });
+                    continue;
+                }
+                var adv = d.advance(gi.?);
+                if (kern_on and i + 1 < text.len) adv += self.kerning(c, text[i + 1]);
+                // Device advances are rounded to a whole PIXEL before the
+                // letter spacing is added, and the spacing cannot make an
+                // advance negative (ruffle font.rs:906-916).
+                const unspaced = roundToPixel(scaled(adv, params.height, sc));
+                const spaced = unspaced + roundToPixelTiesEven(params.letter_spacing);
+                const twips = if (spaced > 0) spaced else unspaced;
+                try ctx.glyph(Placed{
+                    .index = i,
+                    .glyph = null,
+                    .device_glyph = gi,
+                    .x = x,
+                    .advance = twips,
+                    .scale = @as(f32, @floatFromInt(params.height)) / sc,
+                });
+                x += twips;
+                continue;
+            }
             const g = self.glyphFor(c);
             if (g == null) {
                 // A missing character still gets a callback, with no
@@ -177,6 +234,18 @@ const Measurer = struct {
     }
 };
 
+fn roundToPixel(t: i32) i32 {
+    const px = @divTrunc(t + (if (t < 0) @as(i32, -10) else 10), 20);
+    return px * 20;
+}
+
+fn roundToPixelTiesEven(t: i32) i32 {
+    const q = @divTrunc(t, 20);
+    const r = @mod(t, 20);
+    if (r == 10) return (q + @rem(q, 2)) * 20;
+    return roundToPixel(t);
+}
+
 fn scaled(em: i32, height: i32, scale: f32) i32 {
     const s = @as(f32, @floatFromInt(height)) / scale;
     return @intFromFloat(@as(f32, @floatFromInt(em)) * s);
@@ -186,12 +255,16 @@ fn scaled(em: i32, height: i32, scale: f32) i32 {
 /// as a tiebreak, and only among EMBEDDED fonts. `embedded` false means
 /// the field asked for a device font, which never resolves here.
 pub fn resolve(lib: *const library.Library, name: []const u16, bold: bool, italic: bool, embedded: bool) Font {
-    if (!embedded) return .empty;
-    if (name.len == 0) return .empty;
+    const device: Font = .{ .swf_font = null, .device = lib.device_font };
+    // `embedFonts` false means the field asked for a DEVICE font and the
+    // embedded table is not even consulted.
+    if (!embedded) return device;
+    if (name.len == 0) return device;
     var buf: [256]u8 = undefined;
-    if (name.len > buf.len) return .empty;
+    if (name.len > buf.len) return device;
     for (name, 0..) |c, i| buf[i] = if (c < 128) @intCast(c) else '?';
-    return .{ .swf_font = lib.fontByName(buf[0..name.len], bold, italic) };
+    const found = lib.fontByName(buf[0..name.len], bold, italic) orelse return device;
+    return .{ .swf_font = found };
 }
 
 // --- Tests -----------------------------------------------------------------

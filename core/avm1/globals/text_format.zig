@@ -502,8 +502,10 @@ fn getTextExtent(p: *anyopaque, this: Value, args: []const Value) anyerror!Value
     const descent = face.descent(size);
     const leading = twipsOf(tf.leading orelse 0);
 
+    // NO prototype: the metrics bag is `Object::new_without_proto`, so it
+    // has no `toString` to reach and traces as "[type Object]" while its
+    // `__proto__` reads undefined.
     const h = try vm.objects.create();
-    vm.objects.get(h).proto = .{ .object = vm.object_proto };
     try setNum(vm, h, "ascent", ascent);
     try setNum(vm, h, "descent", descent);
     try setNum(vm, h, "width", et.layout.bounds.w);

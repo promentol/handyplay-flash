@@ -19,6 +19,11 @@
 # in particular the [approximations] path below.
 set -u
 CORPUS="${CORPUS:-reference/ruffle/tests/tests/swfs/avm1}"
+# The DEVICE font the `with_default_font` dirs need. Ruffle bundles a Noto
+# Sans subset (raw deflate despite the .gz) and its own harness registers
+# exactly this file; the corpus was recorded on a machine with a real
+# system font, which is why those dirs carry an epsilon.
+DEVICE_FONT="${DEVICE_FONT:-reference/ruffle/core/assets/notosans.subset.ttf.gz}"
 BIN=./zig-out/bin/trace_runner
 OUT="${1:?usage: sweep.sh <results-file> [jobs]}"
 JOBS="${2:-8}"
@@ -59,8 +64,17 @@ one() {
         *@) vp="${vp}1" ;;
     esac
     [ -n "$vp" ] && vp="--viewport $vp"
+    # [player_options] with_default_font — the dir needs a DEVICE font,
+    # a face the movie did not embed. Flash used a real system font when
+    # the expected output was recorded; ruffle approximates it with a
+    # Noto Sans subset and these dirs all carry an [approximations]
+    # epsilon to absorb the difference. We hand the same file over.
+    df=""
+    if grep -q '^with_default_font *= *true' "$toml" 2>/dev/null && [ -f "$DEVICE_FONT" ]; then
+        df="--device-font $DEVICE_FONT"
+    fi
     # shellcheck disable=SC2086
-    timeout 20 "$BIN" "$swf" --frames "$n" $inp $vp >"$T" 2>/dev/null
+    timeout 20 "$BIN" "$swf" --frames "$n" $inp $vp $df >"$T" 2>/dev/null
     if grep -q '^bare_numbers *= *true' "$toml" 2>/dev/null; then
         eps=$(sed -n 's/^epsilon *= *\([0-9.eE+-]*\).*/\1/p' "$toml" | head -1)
         [ -n "$eps" ] || eps=2.220446049250313e-16

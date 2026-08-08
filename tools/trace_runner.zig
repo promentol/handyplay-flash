@@ -31,6 +31,7 @@ pub fn main(init: std.process.Init) !u8 {
     var swf_path: ?[]const u8 = null;
     var input_path: ?[]const u8 = null;
     var frames: u32 = 1;
+    var device_font_path: ?[]const u8 = null;
     var viewport_w: u32 = 0;
     var viewport_h: u32 = 0;
     var scale_factor: f64 = 1.0;
@@ -44,6 +45,10 @@ pub fn main(init: std.process.Init) !u8 {
             i += 1;
             if (i >= args.len) return 2;
             input_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--device-font")) {
+            i += 1;
+            if (i >= args.len) return 2;
+            device_font_path = args[i];
         } else if (std.mem.eql(u8, args[i], "--viewport")) {
             i += 1;
             if (i >= args.len) return 2;
@@ -63,9 +68,24 @@ pub fn main(init: std.process.Init) !u8 {
     // `_url` is the path Flash loaded from. Ruffle's test harness serves
     // each corpus SWF from the root of a virtual filesystem, so the
     // expected output says "/test.swf" — mirror that with the basename.
+    // A DEVICE font, for the dirs whose toml says `with_default_font`.
+    // `core/` does no I/O, so the bytes are read here. A `.gz` is
+    // inflated — but as RAW deflate, with no gzip wrapper: ruffle's own
+    // asset carries the extension and not the header.
+    var device_font: ?[]const u8 = null;
+    if (device_font_path) |fp| {
+        const raw = try std.Io.Dir.cwd().readFileAlloc(io, fp, gpa, .limited(16 << 20));
+        device_font = if (std.mem.endsWith(u8, fp, ".gz"))
+            try gunzip(gpa, raw)
+        else
+            raw;
+    }
+    defer if (device_font) |d| gpa.free(d);
+
     const url = try std.fmt.allocPrint(arena, "/{s}", .{std.fs.path.basename(path)});
     const player = flash.Player.createWith(gpa, bytes, .{
         .url = url,
+        .device_font = device_font,
         .viewport_width = viewport_w,
         .viewport_height = viewport_h,
         .scale_factor = scale_factor,
@@ -163,6 +183,17 @@ fn feedUntilWait(player: *flash.Player, events: []const std.json.Value, start: u
         }
     }
     return i;
+}
+
+fn gunzip(gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
+    defer gpa.free(raw);
+    var reader = std.Io.Reader.fixed(raw);
+    var window: [1 << 16]u8 = undefined;
+    var decompress = std.compress.flate.Decompress.init(&reader, .raw, &window);
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    _ = try decompress.reader.streamRemaining(&out.writer);
+    return out.toOwnedSlice();
 }
 
 /// `WIDTHxHEIGHT@SCALE`, the shape the conformance script passes through

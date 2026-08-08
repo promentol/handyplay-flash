@@ -130,6 +130,91 @@ pub fn getMetrics(self: *const SmFont) Metrics {
     };
 }
 
+// --- UNSCALED access (handyflash) -------------------------------------------
+//
+// The canvas path works in CSS pixels at a fixed `size_px`. A SWF text
+// field instead needs the face in EM units, because the size varies per
+// span and the engine scales per glyph exactly as it does for an embedded
+// DefineFont. These four expose the font's own units.
+
+pub const VMetrics = struct {
+    ascent: i32,
+    descent: i32,
+    line_gap: i32,
+    units_per_em: f64,
+};
+
+pub fn vMetricsUnscaled(self: *const SmFont) VMetrics {
+    var ascent: c_int = 0;
+    var descent: c_int = 0;
+    var line_gap: c_int = 0;
+    c.stbtt_GetFontVMetrics(self.info(), &ascent, &descent, &line_gap);
+    // stb has no unitsPerEm accessor; the EM-to-pixel scale for one pixel
+    // IS its reciprocal.
+    const per_px: f64 = @floatCast(c.stbtt_ScaleForMappingEmToPixels(self.info(), 1.0));
+    return .{
+        .ascent = @intCast(ascent),
+        .descent = @intCast(descent),
+        .line_gap = @intCast(line_gap),
+        .units_per_em = if (per_px > 0) 1.0 / per_px else 1000.0,
+    };
+}
+
+pub fn glyphAdvanceUnscaled(self: *const SmFont, glyph: i32) i32 {
+    var adv: c_int = 0;
+    var lsb: c_int = 0;
+    c.stbtt_GetGlyphHMetrics(self.info(), glyph, &adv, &lsb);
+    return @intCast(adv);
+}
+
+pub fn glyphKernUnscaled(self: *const SmFont, g1: i32, g2: i32) i32 {
+    return @intCast(c.stbtt_GetGlyphKernAdvance(self.info(), g1, g2));
+}
+
+/// One contour point of a glyph outline, in FONT UNITS with y UP.
+pub const Vertex = struct {
+    pub const Kind = enum { move, line, quad, cubic };
+    kind: Kind,
+    x: i32,
+    y: i32,
+    cx: i32 = 0,
+    cy: i32 = 0,
+    cx1: i32 = 0,
+    cy1: i32 = 0,
+};
+
+/// The glyph's outline. The caller owns the returned slice.
+pub fn glyphOutline(
+    self: *const SmFont,
+    allocator: std.mem.Allocator,
+    glyph: i32,
+) std.mem.Allocator.Error![]Vertex {
+    var verts: [*c]c.stbtt_vertex = null;
+    const n = c.stbtt_GetGlyphShape(self.info(), glyph, &verts);
+    if (n <= 0 or verts == null) return &.{};
+    defer c.stbtt_FreeShape(self.info(), verts);
+    const out = try allocator.alloc(Vertex, @intCast(n));
+    var i: usize = 0;
+    while (i < @as(usize, @intCast(n))) : (i += 1) {
+        const v = verts[i];
+        out[i] = .{
+            .kind = switch (v.type) {
+                c.STBTT_vmove => .move,
+                c.STBTT_vline => .line,
+                c.STBTT_vcurve => .quad,
+                else => .cubic,
+            },
+            .x = v.x,
+            .y = v.y,
+            .cx = v.cx,
+            .cy = v.cy,
+            .cx1 = v.cx1,
+            .cy1 = v.cy1,
+        };
+    }
+    return out;
+}
+
 pub fn glyphIndexFor(self: *const SmFont, codepoint: u32) i32 {
     return c.stbtt_FindGlyphIndex(self.info(), @intCast(codepoint));
 }

@@ -26,6 +26,7 @@ pub const display = struct {
     pub const button = @import("display/button.zig");
     pub const text = @import("display/text.zig");
     pub const edit_text = @import("display/edit_text.zig");
+    pub const device_font = @import("display/device_font.zig");
     pub const font = @import("display/font.zig");
     pub const text_layout = @import("display/text_layout.zig");
     pub const mouse = @import("display/mouse.zig");
@@ -83,6 +84,8 @@ pub const Player = struct {
     /// The host clipboard, as far as a text field is concerned. Owned by
     /// the player because Cut and Paste must see the same one.
     clipboard: std.ArrayList(u16) = .empty,
+    /// The parsed device face, owned here and pointed at by the library.
+    device_face: ?*display.device_font.DeviceFont = null,
     /// Fixed timestep (ms/frame) from the SWF header, clamped 0.01–120 fps.
     frame_ms: f64,
     acc_ms: f64 = 0,
@@ -110,6 +113,11 @@ pub const Player = struct {
         viewport_width: u32 = 0,
         viewport_height: u32 = 0,
         scale_factor: f64 = 1.0,
+        /// A TTF for every face the movie did NOT embed. `core/` does no
+        /// I/O, so the host reads the file and hands the bytes over; with
+        /// none, an unembedded face measures zero and draws nothing,
+        /// which is what a machine without the font installed does.
+        device_font: ?[]const u8 = null,
     };
 
     pub fn create(gpa: std.mem.Allocator, file_bytes: []const u8) anyerror!*Player {
@@ -159,6 +167,15 @@ pub const Player = struct {
         // AFTER the struct literal above: `Renderer.init` runs inside it,
         // where `&self.movie` is not yet a valid pointer (same reason the
         // root placement is fixed up separately).
+        if (opts.device_font) |ttf| {
+            const face = try gpa.create(display.device_font.DeviceFont);
+            face.* = display.device_font.DeviceFont.init(gpa, ttf) catch {
+                gpa.destroy(face);
+                return error.InvalidFont;
+            };
+            self.device_face = face;
+            self.movie.lib.device_font = face;
+        }
         self.renderer.lib = &self.movie.lib;
         self.renderer.swf_version = self.movie.swf_version;
         self.renderer.display_gpa = gpa;
@@ -193,6 +210,10 @@ pub const Player = struct {
 
     pub fn destroy(self: *Player) void {
         const gpa = self.gpa;
+        if (self.device_face) |f| {
+            f.deinit();
+            gpa.destroy(f);
+        }
         self.clipboard.deinit(gpa);
         self.vm.destroy();
         self.root.deinit(gpa);
@@ -1231,6 +1252,7 @@ test {
     _ = @import("display/text.zig");
     _ = @import("display/edit_text.zig");
     _ = @import("display/font.zig");
+    _ = @import("display/device_font.zig");
     _ = @import("display/text_layout.zig");
     _ = @import("render/canvas.zig");
     _ = @import("render/shape_utils.zig");

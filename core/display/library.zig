@@ -62,6 +62,11 @@ pub const Bitmap = union(enum) {
 
 pub const Library = struct {
     characters: std.AutoHashMapUnmanaged(u16, Character) = .empty,
+    /// The host's fallback face, or null. Every face the movie did not
+    /// embed resolves to it; with none registered they resolve to
+    /// nothing and measure zero, which is what a machine without the
+    /// font installed does.
+    device_font: ?*@import("device_font.zig").DeviceFont = null,
     /// CSMTextSettings by character id. Kept beside the characters rather
     /// than folded into them: the tag can precede or follow its target.
     csm: std.AutoHashMapUnmanaged(u16, swf.font_text.CsmTextSettings) = .empty,

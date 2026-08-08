@@ -21,6 +21,11 @@
 # not match Flash there, so output.txt is a target nobody currently hits.
 set -u
 CORPUS="${CORPUS:-reference/ruffle/tests/tests/swfs/avm1}"
+# The DEVICE font the `with_default_font` dirs need. Ruffle bundles a Noto
+# Sans subset (raw deflate despite the .gz) and its own harness registers
+# exactly this file; the corpus was recorded on a machine with a real
+# system font, which is why those dirs carry an epsilon.
+DEVICE_FONT="${DEVICE_FONT:-reference/ruffle/core/assets/notosans.subset.ttf.gz}"
 BIN=./zig-out/bin/trace_runner
 LIST=tests/conformance/pass_list.txt
 TMP=$(mktemp)
@@ -31,6 +36,18 @@ frames_for() {
     n=$(sed -n 's/^num_frames *= *\([0-9]*\).*/\1/p; s/^num_ticks *= *\([0-9]*\).*/\1/p' "$1" 2>/dev/null | head -1)
     [ -n "$n" ] || n=1
     echo "$n"
+}
+
+# [player_options] with_default_font — the dir needs a DEVICE font, a
+# face the movie did not embed. Flash used a real system font when the
+# expected output was recorded; ruffle approximates it with a Noto Sans
+# subset, and those dirs all carry an [approximations] epsilon to absorb
+# the difference. We hand the same file over.
+device_font_for() {
+    if grep -q '^with_default_font *= *true' "$CORPUS/$1/test.toml" 2>/dev/null &&
+       [ -f "$DEVICE_FONT" ]; then
+        echo "--device-font $DEVICE_FONT"
+    fi
 }
 
 have_approx() {
@@ -129,7 +146,7 @@ run_one() {
     # normalizes them (framework/src/runner/trace.rs:14), so we must too.
     exp="$TMP.exp"; tr -d '\r' <"$CORPUS/$d/output.txt" >"$exp"
     # shellcheck disable=SC2086
-    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") >"$TMP" 2>/dev/null || return 1
+    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") $(device_font_for "$d") >"$TMP" 2>/dev/null || return 1
     if have_approx "$toml"; then
         # `approx`'s defaults are f64::EPSILON for both knobs.
         approx_cmp "$TMP" "$exp" \
@@ -190,7 +207,7 @@ case "${1:-}" in
     have_approx "$toml" && verdict="$verdict (approximate)"
     # Re-run with stderr merged so panics show up in the diff.
     # shellcheck disable=SC2086
-    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") >"$TMP" 2>&1
+    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") $(device_font_for "$d") >"$TMP" 2>&1
     echo "--- $verdict: ours vs expected ($d):"
     tr -d '\r' <"$CORPUS/$d/output.txt" >"$TMP.exp"
     diff "$TMP" "$TMP.exp" | head -40
