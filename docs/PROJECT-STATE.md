@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B and C complete (**254/680**); D–F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B and C complete (**257/680**); D–F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -46,7 +46,7 @@ real mouse and keyboard input.
 **Interactive today**: buttons draw, hit-test and react — rollOver,
 press, release, releaseOutside, drag in and out, keyPress, and the state
 changes that go with them; clips with mouse handlers behave the same way.
-Focus, `Selection`, and Tab ordering work. 254 of Ruffle's 680 scorable
+Focus, `Selection`, and Tab ordering work. 257 of Ruffle's 680 scorable
 conformance dirs pass.
 
 ---
@@ -415,7 +415,7 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697**.
 
-**Workstreams A, B and C are CLOSED at 254/680.** Pick up D (text) next:
+**Workstreams A, B and C are CLOSED at 257/680.** Pick up D (text) next:
 it is now by far the largest cluster, and it is what a surprising number
 of already-close dirs are waiting on — every remaining `focus_*`,
 `tab_ordering_*` and `selection*` failure is a TEXT FIELD standing in for

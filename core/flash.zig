@@ -232,7 +232,7 @@ pub const Player = struct {
         // Ruffle re-picks at the end of EVERY update, not just on pointer
         // events (player.rs:2386) — a clip that moves, hides or is removed
         // under a stationary pointer changes the hover all by itself.
-        try self.updateMouseState(false);
+        try self.updateMouseState(false, false);
         self.vm.now_ms += self.frame_ms;
         self.vm.budget = 5_000_000;
         self.vm.halted = false;
@@ -668,9 +668,15 @@ pub const Player = struct {
 
     pub fn mouseMove(self: *Player, x: f64, y: f64) !void {
         if (self.movie.swf_version < 9) self.resetHighlight();
+        const before = [2]f64{ self.vm.mouse_x, self.vm.mouse_y };
         self.setMousePosition(x, y);
         try self.dispatchInput(swf.place.ClipEvent.MOUSE_MOVE, "onMouseMove", self.vm.mouse_object);
-        try self.updateMouseState(false);
+        // A move to where the pointer already IS does not count as one:
+        // ruffle compares the mapped position with the previous
+        // (player.rs:1384), and an unmoved pointer leaves the hover — a
+        // Tab may own it — untouched. The broadcast above still fires.
+        const moved = self.vm.mouse_x != before[0] or self.vm.mouse_y != before[1];
+        try self.updateMouseState(moved, false);
     }
 
     /// Re-pick and fire whatever the delta implies. Ruffle's
@@ -692,7 +698,9 @@ pub const Player = struct {
             self.cur_ctx = null;
             self.vm.display_ctx = null;
         }
-        try avm1.stage_object.setFocus(self.vm, 0);
+        // `reset_focus`, not a plain `set`: the roll events it queues run
+        // BEFORE the focus handlers (focus_tracker.rs:95-97).
+        try avm1.stage_object.setFocusEx(self.vm, 0, true);
         try self.drainActions(&ctx);
         self.retireDead(&ctx);
     }
@@ -703,7 +711,7 @@ pub const Player = struct {
         self.vm.focus_highlight = false;
     }
 
-    pub fn updateMouseState(self: *Player, changed_left: bool) !void {
+    pub fn updateMouseState(self: *Player, moved: bool, changed_left: bool) !void {
         var ctx = self.makeContext();
         defer ctx.deinit(self.gpa);
         self.cur_ctx = &ctx;
@@ -712,7 +720,7 @@ pub const Player = struct {
             self.cur_ctx = null;
             self.vm.display_ctx = null;
         }
-        try self.deriveMouseEvents(&ctx, changed_left);
+        try self.deriveMouseEvents(&ctx, moved, changed_left);
         try self.drainActions(&ctx);
         self.retireDead(&ctx);
     }
@@ -740,6 +748,7 @@ pub const Player = struct {
     fn deriveMouseEvents(
         self: *Player,
         ctx: *display.movie_clip.Context,
+        moved: bool,
         changed_left: bool,
     ) !void {
         const M = display.mouse;
@@ -767,8 +776,19 @@ pub const Player = struct {
             if (p.removed) self.pressed = null;
         }
 
+        // Nothing moved, no button changed, and something is already
+        // hovered: leave it alone. Tab sets the hover too, and an idle
+        // pick must not roll straight back out of it (ruffle
+        // player.rs:1538 `skip_mouse_hover`). An object that has gone
+        // INVISIBLE is the exception — that hover is cancelled even when
+        // the pointer never moved.
+        var skip_hover = !moved and !changed_left and self.hovered != null;
+        if (self.hovered) |h| {
+            if (!h.visible) skip_hover = false;
+        }
+
         const cur_over = self.hovered;
-        if (cur_over != new_over) {
+        if (!skip_hover and cur_over != new_over) {
             if (left_down) {
                 // Dragging: only the DRAG pair fires, and not at all while
                 // an AVM1 `startDrag` is in progress.
@@ -806,7 +826,7 @@ pub const Player = struct {
                 }
             }
         }
-        self.hovered = new_over;
+        if (!skip_hover) self.hovered = new_over;
 
         if (changed_left) {
             if (left_down) {
@@ -888,7 +908,7 @@ pub const Player = struct {
         } else {
             try self.dispatchInput(swf.place.ClipEvent.MOUSE_UP, "onMouseUp", self.vm.mouse_object);
         }
-        try self.updateMouseState(true);
+        try self.updateMouseState(false, true);
     }
 
     /// `code` is a Flash key code (the Windows virtual-key numbering);
@@ -914,7 +934,7 @@ pub const Player = struct {
         } else if (!handled and (code == 13 or code == 32 or char == 32)) {
             try self.activateFocus();
         }
-        try self.updateMouseState(false);
+        try self.updateMouseState(false, false);
     }
 
     /// Enter or Space on a highlighted focused object presses AND
@@ -989,7 +1009,7 @@ pub const Player = struct {
         self.vm.last_key_code = code;
         self.vm.last_key_char = char;
         try self.dispatchInput(swf.place.ClipEvent.KEY_UP, "onKeyUp", self.vm.key_object);
-        try self.updateMouseState(false);
+        try self.updateMouseState(false, false);
     }
 
     fn dispatchInput(

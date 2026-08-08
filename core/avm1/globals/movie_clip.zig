@@ -116,12 +116,17 @@ pub fn setTabIndex(p: *anyopaque, this: Value, args: []const Value) anyerror!Val
     const vm = vmOf(p);
     const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
     const v = arg(args, 0);
+    // Only a BOOLEAN or a NUMBER is coerced; a string or an object sets
+    // i32::MIN outright, and undefined/null unset it (ruffle
+    // globals/movie_clip.rs set_tab_index). -1 is ruffle's spelling of
+    // "unset" and never survives as a value.
     t.obj.tab_index = switch (v) {
         .undefined_value, .null_value => null,
-        else => blk: {
+        .boolean, .number => blk: {
             const n = value_mod.toInt32(try vm.toNumber(v));
             break :blk if (n == -1) null else n;
         },
+        else => std.math.minInt(i32),
     };
     return .undefined_value;
 }

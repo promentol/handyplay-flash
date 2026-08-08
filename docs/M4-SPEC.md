@@ -368,7 +368,7 @@ list is the 43 still-failing dirs that touch only workstream-B API.
 | The runner has no `viewport_dimensions` player option, so the screen and a noScale stage report the movie's own size | `capabilities_resolution`, `stage_scale_mode` |
 | Genuinely open in B, small and unfinished | `goto_frame` and `goto_frame2` (out-of-range and scene-offset goto), `rewind_depth` (goto rewind vs script depths), `as_broadcaster_undef` (undefined listeners), `object_prototypes` (a watcher on `__proto__` — our `__proto__` write bypasses the watcher path), `object_string_coerce_swf5/6` (one string coercion happens twice somewhere in Add), `watch_recursion_swf7` and `watch_recursion_double_swf7` (the exact nesting depth), `issue_2084`, `this_scoping` (`with(mc)` scoping), `removed_clip_halts_script` (a script must stop when its own base clip is removed) |
 
-## 5. Events: ClipActions + buttons (workstream C) — ✅ CLOSED (254/680)
+## 5. Events: ClipActions + buttons (workstream C) — ✅ CLOSED (257/680)
 
 Everything below shipped. The plan lives in the git log (`C0`..`C7`); the
 semantics worth keeping are in `docs/AVM1.md`'s "Workstream C notes" and at
@@ -414,6 +414,17 @@ reached and exactly why.
   conformance scripts, feeding the screen resolution, the noScale stage
   size (with `Stage.onResize`), the pointer mapping and `_xmouse`.
 - Also closed here: every leftover §4 listed as "genuinely open in B".
+- **The local mouse chain**, step for step: the pointer goes out to whole
+  DEVICE PIXELS and back, and every hop rounds to integer twips. `_xmouse`
+  is a whole number on an unscaled clip however fractional its position is,
+  and a clip scaled to zero reports the device pixel count read as twips
+  (its matrix is singular; the fallback is the identity).
+- **Two hover rules that only show up next to the keyboard**: an idle pick
+  leaves an existing hover alone (Tab sets the hover too, and it must not
+  roll straight back out), and a `MouseMove` to the position the pointer is
+  already at is not a move. `FocusLost` runs its roll events synchronously,
+  ahead of the focus handlers, where a script's `setFocus` leaves them
+  queued.
 
 **Not reached, and why.**
 
@@ -422,9 +433,7 @@ reached and exactly why.
 | EditText (§D) — the object under test IS a text field | `focus_mouse`, `focus_mouse_focusable`, `focus_mouse_rollout`, `focus_keyboard_press`, `focus_remove`, `focus_visibility_change`, `selection`, `mouse_wheel_enabled`, `asfunction`, `tab_ordering_automatic_basic`, `tab_ordering_children`, `tab_ordering_custom_basic`, `tab_ordering_custom_i32_vs_u32`, `tab_ordering_custom_m1`, `tab_ordering_events`, `tab_ordering_reverse`, `tab_ordering_tabbable`, `tab_ordering_movieclip_enabled_default` |
 | TextInput events, which the harness does not replay and we do not consume | `button_keypress_vs_textinput` |
 | The LOADER (M5) | `root_button_mode`, `focusrect_property_swf5/6/7` |
-| Ruffle composes the mouse chain in 16.16 FIXED POINT (twips→pixels is 3277/65536, every step floors); our f64 version lands a pixel out for a clip a hair below an integer position | `mouse_pos`, `mouse_pos_with_scale_factor` |
-| `tabIndex` is a native slot for us, so it neither enumerates nor reads back as the u32 Flash reports for a negative value | `tab_ordering_properties` |
-| The exact interleaving of a Key listener against the roll events a Tab fires | `tab_ordering_events_mouse` |
+| A TextField stores `tabIndex` as u32 and declares it ENUMERABLE, unlike Button and MovieClip — this dir's button and movie-clip sections match exactly, only its two text sections do not | `tab_ordering_properties` |
 
 ## 6. Static text + fonts (workstream D)
 

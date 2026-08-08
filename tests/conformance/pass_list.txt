@@ -147,6 +147,8 @@ mouse_events
 mouse_events_visible_enabled
 mouse_hover_events_while_dragging
 mouse_listeners
+mouse_pos
+mouse_pos_with_scale_factor
 movieclip_begin_gradient_fill
 movieclip_default_state
 movieclip_get_instance_at_depth
@@ -216,6 +218,7 @@ swf7_case_sensitive
 tab_ordering_automatic_order_grid
 tab_ordering_automatic_order_same_position
 tab_ordering_custom_duplicate_index
+tab_ordering_events_mouse
 target_clip_removed
 target_clip_swf5
 target_clip_swf6

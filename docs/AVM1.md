@@ -277,7 +277,14 @@ re-derived:
   into the object's space, which is why it reads as a whole number on an
   unscaled clip however fractional the clip's position is. A clip scaled to
   zero has a singular matrix and falls back to the identity, so it reports
-  the device pixel count read as twips.
+  the device pixel count read as twips. Do the chain hop by hop —
+  collapsing it into one multiply loses the intermediate roundings and
+  lands a pixel out.
+- **An idle pick does not disturb an existing hover** (ruffle
+  `skip_mouse_hover`), and a `MouseMove` to where the pointer already is
+  is not a move. Both matter because Tab sets the hover as well as the
+  focus, and the next idle tick would otherwise roll straight back out of
+  it.
 
 All other codes in 0x00–0x9F are INVALID (open-flash `_index.md`); on decode we
 skip by length (>=0x80) or treat as End-adjacent no-op, matching Flash's
