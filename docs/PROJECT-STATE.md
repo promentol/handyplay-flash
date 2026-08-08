@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D and E complete (**385/680**, images **8/26**); F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D and E complete (**386/680**, images **8/26**); F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -59,8 +59,11 @@ transform, channel copy, merge, threshold, compare, hit-test, colour
 bounds, pixel dissolve, both forms of `copyPixels`, `paletteMap`, plus
 `attachBitmap`, `beginBitmapFill`, `loadBitmap` and `draw` — including
 Perlin noise, a ColorMatrixFilter through `applyFilter`, and blend modes.
-385 of Ruffle's 680 scorable conformance dirs pass, and 8 of its 26
+386 of Ruffle's 680 scorable conformance dirs pass, and 8 of its 26
 runnable image comparisons; EVERY bitmap dir in the corpus passes both.
+**Filters today**: every class, every property coercion, and
+PlaceObject3's filter list decoded and readable — but only
+`ColorMatrixFilter` is actually APPLIED (M7 owns the kernels).
 
 ---
 
@@ -461,7 +464,7 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
-**Workstreams A, B, C, D and E are CLOSED at 385/680, with every bitmap
+**Workstreams A, B, C, D and E are CLOSED at 386/680, with every bitmap
 dir in the corpus passing both harnesses.** Pick up F (PlaceObject3 blend
 modes and clipDepth masks) next — `Renderer.blendModeFromSwf` already has
 the mapping F needs, because `BitmapData.draw` takes the same numbering.
@@ -470,13 +473,13 @@ those five workstreams could not reach; do not re-derive them.
 
 Seven things to know before you start:
 
-1. **`bitmap_filters` is NOT a bitmap dir**, whatever its name says, and
-   it has been measured so nobody re-derives it: of 87 differing lines,
-   16 need PlaceObject3's filter list decoded (M7) and 71 are workstream
-   D's filter property coercions — `angle` normalising to -1 rather than
-   359, a bevel `type` defaulting to `full`, and the
-   `colors`/`alphas`/`ratios` length rules. It is the only scorable dir
-   with "bitmap" in its name that does not pass.
+1. **Filters are DECODED but not APPLIED.** `core/swf/filters.zig` parses
+   PlaceObject3's list and `core/avm1/globals/filters.zig` has the whole
+   AVM1 property surface, so a script reads back exactly what the tag
+   carried — but nothing draws a blur or a glow. The one filter that IS
+   applied is `ColorMatrixFilter`, through `BitmapData.applyFilter`,
+   because it is a per-pixel function rather than a convolution. M7 owns
+   the kernels; the decode half is done and should not be redone.
 2. **§A4/§A5 record diagnoses that turned out to be WRONG** and the real
    causes next to them. In particular: `default_names` was NOT
    action-queue priority (our FIFO matches Flash — it was the loop

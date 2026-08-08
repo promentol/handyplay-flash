@@ -479,3 +479,57 @@ then premultiplied. The fourth column multiplies alpha as it stands
 while the other three take colour divided BY that alpha, so a fully
 transparent pixel contributes nothing but its own alpha. Every other
 filter reports -1, which is what Flash reports for one it cannot build.
+
+## Filters (workstream E follow-on)
+
+`flash.filters` and PlaceObject3's filter list. Everything DECODES and
+round-trips; nothing is APPLIED except `ColorMatrixFilter` through
+`BitmapData.applyFilter`, because that one is a per-pixel function rather
+than a convolution. M7 owns the kernels.
+
+**An angle keeps the sign of its remainder.** -1 stays -1; only whole
+turns come off, so 361 is 1 and 366 is 6. It is `@rem`, not `@mod`.
+
+**A bevel `type` is matched CASE-SENSITIVELY** against "inner" and
+"outer", and everything else — including "INNER" and the number 0 — is
+`full`, not the constructor's own default of `inner`.
+`DisplacementMapFilter.mode` works the same way with `wrap` as the
+fallback.
+
+**`ColorMatrixFilter.matrix` has three answers.** `null` and `undefined`
+leave the matrix ALONE; any other non-object wipes it to twenty NaNs; an
+object is read element by element with NaN past its `length`. Entries
+round through f32, which shows in the traced values. The constructor's
+default is the 4x5 identity.
+
+**A gradient filter holds ONE list, not three arrays.** Sixteen (colour,
+alpha, ratio) records plus a count, with `colors`, `alphas` and `ratios`
+as views onto the first `count`. Writing `colors` resizes it but leaves
+the alphas already sitting in those slots; writing `alphas` never
+resizes it and fills past the end with OPAQUE; writing `ratios` can only
+make it SHORTER. A string resizes it too — it has a `length` and no
+elements, so the entries read as zero.
+
+**A convolution matrix is variable length** and only ever GROWN to
+`matrixX * matrixY` — shrinking a dimension leaves the entries behind,
+and the next growth reuses them. `matrixX`/`matrixY` clamp to 0..15.
+
+**`mapPoint` needs BOTH coordinates as OWN properties** or it is the
+origin, and a non-object resets it rather than being ignored.
+`mapBitmap` silently keeps the previous bitmap when handed anything that
+is not one. `scaleX`/`scaleY` clamp to ±65535 through f32.
+
+**`clone` is ENUMERABLE**, unlike almost every other native method: a
+`for..in` over a filter lists it alongside the properties.
+
+**`MovieClip.filters` copies in BOTH directions.** The array is fresh and
+so is every filter in it, so neither mutating what you read nor holding
+on to what you assigned reaches the object; anything in the assigned
+array that is not a filter is dropped rather than stored. Until a script
+assigns a list, the property reports what the PLACEMENT carried.
+
+**The tag disagrees with its own spec.** SWF19 has BevelFilter's two
+colours the wrong way round — Flash writes HIGHLIGHT first.
+`hideObject` is the INVERSE of the composite-source bit. A bevel or
+gradient pass count is four bits, not five, because `onTop` took one.
+A blur's is five bits shifted up by three.

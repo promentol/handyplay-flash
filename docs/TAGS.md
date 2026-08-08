@@ -16,7 +16,7 @@ is rejected (`error.Avm2Unsupported`).
 | 1 | ShowFrame | 1 | M1/M2 | parse | frame boundary |
 | 4 | PlaceObject | 1 | M1/M2 | parse | positional only |
 | 26 | PlaceObject2 | 3 | M1/M2 | parse | **the workhorse**: move/character/matrix/cxform/ratio/name/clipDepth/ClipActions |
-| 70 | PlaceObject3 | 8 | M1/M7 | parse | filters oos initially; ClassName condition inverted (errata) |
+| 70 | PlaceObject3 | 8 | M1/M7 | parse | filter list DECODED (readable via `MovieClip.filters`) but not applied; ClassName condition inverted (errata) |
 | 5 | RemoveObject | 1 | M1/M2 | parse | id + depth |
 | 28 | RemoveObject2 | 3 | M1/M2 | parse | depth only |
 | 9 | SetBackgroundColor | 1 | M1/M2 | parse | |

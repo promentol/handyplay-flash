@@ -569,7 +569,7 @@ Nothing else in the cluster is outstanding. The four dirs that needed a
 DEVICE font, the two that needed `flash.filters`, the IME one, drag
 selection, click-to-caret and `TextField.StyleSheet` all shipped.
 
-## 7. Bitmaps (workstream E) — ✅ CLOSED (385/680, images 8/26)
+## 7. Bitmaps (workstream E) — ✅ CLOSED (386/680, images 8/26)
 
 **This section used to describe only half of E, and not the half the
 corpus measures.** It was entirely about decoding `DefineBits*` and
@@ -682,13 +682,11 @@ an off-screen draw path; `DisplayObject.Kind` gained `attached_bitmap`.
 trace sweep and the image one. What is left is named below with what it
 would actually take.
 
-- **`bitmap_filters` is not an E dir**, and measuring it says so: of its
-  87 differing lines, **16** need PlaceObject3's filter list decoded
-  (M7 — `docs/TAGS.md` still has tag 70's filters out of scope) and the
-  other **71** are workstream D's filter PROPERTY coercions: `angle`
-  normalising to -1 rather than 359, a bevel `type` defaulting to `full`
-  rather than `inner`, and the `colors`/`alphas`/`ratios` triple's
-  length-matching rules. Neither half is bitmap work.
+- **`bitmap_filters` was not an E dir** and is now done anyway: its 16
+  tag-sourced lines needed PlaceObject3's filter list decoded and its 71
+  others were workstream D's property coercions. Both shipped — see the
+  "Filters" notes in `docs/AVM1.md`. Filters are still not APPLIED;
+  M7 owns the kernels.
 - **`bitmap_data_thorough/{copyPixels,paletteMap,perlinNoise,pixelDissolve}`
   are recorded `known_failure`** — ruffle does not match them either and
   the harness excludes them, so no implementation can move the score. All
