@@ -66,6 +66,7 @@ bitmapdata_channels
 bitmapdata_hittest_threshold
 bitor
 biturshift
+biturshift_swf8
 bitxor
 button_children
 button_goto
@@ -322,6 +323,7 @@ string_relational_compare
 stylesheet_transform
 super_edge_cases
 swf4_bool
+swf4_function_calls
 swf5_encoding
 swf6_string_as_bool
 swf7_case_sensitive

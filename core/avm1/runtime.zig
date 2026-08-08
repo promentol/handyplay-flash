@@ -1025,6 +1025,14 @@ pub const Vm = struct {
 
     fn callAvm1(self: *Vm, callee: ObjectHandle, f: object_mod.Avm1Function, this: Value, args: []const Value) anyerror!Value {
         const activation = @import("activation.zig");
+        // Inside a function body the effective version is AT LEAST 5,
+        // even in a SWF4 movie: `DefineFunction` is a SWF5 construct, and
+        // its body gets SWF5 semantics — `1 == 1` is `true` rather than
+        // `1`, and `4 / 0` is Infinity rather than `#ERROR#`. Ruffle
+        // spells it `base_clip.swf_version().max(5)`.
+        const outer_version = self.swf_version;
+        if (self.swf_version < 5) self.swf_version = 5;
+        defer self.swf_version = outer_version;
         // Consume the pending super depth: it belongs to THIS frame only.
         const depth = self.super_depth;
         self.super_depth = 0;

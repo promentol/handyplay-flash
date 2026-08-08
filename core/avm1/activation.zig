@@ -1467,9 +1467,18 @@ pub const Activation = struct {
                 const v = value_mod.toInt32(a) >> shift;
                 try self.push(.{ .number = @floatFromInt(v) });
             },
+            // SWF8 and SWF9 ONLY: the shift is unsigned but the result
+            // is a signed i32, so `4294967295 >>> 0` is -1 there and
+            // 4294967295 at every other version. Two corpus dirs run the
+            // same source at 8 and at 17 to pin it.
             .right_unsigned => {
-                const v = value_mod.toUint32(a) >> shift;
-                try self.push(.{ .number = @floatFromInt(v) });
+                const u = value_mod.toUint32(a) >> shift;
+                const signed = self.vm.swf_version >= 8 and self.vm.swf_version <= 9;
+                const n: f64 = if (signed)
+                    @floatFromInt(@as(i32, @bitCast(u)))
+                else
+                    @floatFromInt(u);
+                try self.push(.{ .number = n });
             },
         }
     }
