@@ -34,6 +34,11 @@ pub const Context = struct {
     /// duration of its subtree, which is how a `loadMovie` child finds its
     /// characters instead of the root's.
     movie: *const swf.movie.Movie,
+    /// The ROOT movie, never swapped. `movieOf` falls back to this rather
+    /// than to `movie`: a script running inside a loaded SWF can still
+    /// call `_root.attachMovie`, and that has to find the root's exports
+    /// even though the walk context is pointing elsewhere.
+    root_movie: *const swf.movie.Movie,
     /// Set by SetBackgroundColor during execution.
     background_color: ?swf.reader.Color = null,
     /// Actions queued this tick, drained by the Player AFTER every clip has
@@ -276,7 +281,7 @@ pub const MovieClip = struct {
         while (cur) |c| : (cur = c.parent) {
             if (c.movie) |m| return m;
         }
-        return ctx.movie;
+        return ctx.root_movie;
     }
 
     pub fn deinit(self: *MovieClip, gpa: std.mem.Allocator) void {
@@ -1081,7 +1086,7 @@ test "timeline: place, sprite instantiation, remove, implicit stop, goto replay"
     var movie = try makeMovie(gpa);
     defer movie.deinit();
     var counter: u32 = 0;
-    var ctx: Context = .{ .gpa = gpa, .movie = &movie, .instance_counter = &counter };
+    var ctx: Context = .{ .gpa = gpa, .movie = &movie, .root_movie = &movie, .instance_counter = &counter };
     defer ctx.deinit(gpa);
 
     var root = MovieClip.init(movie.frames);
@@ -1138,7 +1143,7 @@ test "single-frame clip implicitly stops; multi-frame loops" {
     var movie = try makeMovie(gpa);
     defer movie.deinit();
     var counter: u32 = 0;
-    var ctx: Context = .{ .gpa = gpa, .movie = &movie, .instance_counter = &counter };
+    var ctx: Context = .{ .gpa = gpa, .movie = &movie, .root_movie = &movie, .instance_counter = &counter };
     defer ctx.deinit(gpa);
     var root = MovieClip.init(movie.frames);
     defer root.deinit(gpa);

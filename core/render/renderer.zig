@@ -1122,7 +1122,7 @@ test "render a placed square shape through the full pipeline" {
     defer movie.deinit();
 
     var counter: u32 = 0;
-    var ctx_: movie_clip.Context = .{ .gpa = gpa, .movie = &movie, .instance_counter = &counter };
+    var ctx_: movie_clip.Context = .{ .gpa = gpa, .movie = &movie, .root_movie = &movie, .instance_counter = &counter };
     defer ctx_.deinit(gpa);
     var root = movie_clip.MovieClip.init(movie.frames);
     defer root.deinit(gpa);

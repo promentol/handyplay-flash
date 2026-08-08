@@ -818,7 +818,7 @@ fn loadBitmap(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
     const vm = vmOf(p);
     const name = try vm.toStringValue(arg(args, 0));
-    const id = try stage.exportedCharacter(vm, name) orelse return .undefined_value;
+    const id = try stage.exportedCharacter(vm, null, name) orelse return .undefined_value;
     const ctx = stage.displayCtxOf(vm) orelse return .undefined_value;
     const ch = ctx.movie.lib.characters.get(id) orelse return .undefined_value;
     const bmp = switch (ch) {

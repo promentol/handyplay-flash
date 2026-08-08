@@ -275,6 +275,7 @@ loadmovie
 loadmovie_fail
 loadmovie_flashvars
 loadmovie_method
+loadmovie_registerclass
 loadmovie_var_persistence
 loadmovienum
 loadvariables
@@ -296,6 +297,7 @@ mcl_as_broadcaster
 mcl_getprogress
 mcl_loadclip
 mcl_loadclip_properties
+mcl_loadclip_replace_root
 mcl_mislabeled_target
 mcl_target_gif87a
 mcl_target_gif89a
@@ -356,6 +358,7 @@ remove_movie_clip
 removed_base_clip_tell_target
 removed_clip_halts_script
 removed_target_clip_scope
+resolve_different_root
 rewind_depth
 root_button_mode
 root_global_parent

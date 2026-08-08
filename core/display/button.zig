@@ -330,7 +330,7 @@ test "state records instantiate, swap by character, and are reused by depth" {
     var movie = try makeShapeMovie(gpa);
     defer movie.deinit();
     var counter: u32 = 0;
-    var ctx: Context = .{ .gpa = gpa, .movie = &movie, .instance_counter = &counter };
+    var ctx: Context = .{ .gpa = gpa, .movie = &movie, .root_movie = &movie, .instance_counter = &counter };
     defer ctx.deinit(gpa);
 
     var records = [_]swf.button.ButtonRecord{

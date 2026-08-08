@@ -620,7 +620,7 @@ fn attachMovie(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
     const clip = t.clip orelse return .undefined_value;
     const export_name = try vm.toStringValue(arg(args, 0));
-    const char_id = try stage.exportedCharacter(vm, export_name) orelse return .undefined_value;
+    const char_id = try stage.exportedCharacter(vm, clip, export_name) orelse return .undefined_value;
     const name = try vm.toStringValue(arg(args, 1));
     const depth = stage.biasDepth(try depthArg(vm, arg(args, 2)));
     if (!stage.depthPlaceable(depth)) return .undefined_value;

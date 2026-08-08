@@ -711,6 +711,10 @@ pub const Player = struct {
             bytes.len
         else
             0;
+        // A loaded movie's `#initclip` blocks run at PRELOAD, before its
+        // own frame 1 — which is what lets it `Object.registerClass` the
+        // symbols its own timeline is about to place.
+        if (loaded) |m| try self.runMovieInitActions(ctx, mc, m);
         // FLASHVARS: the loaded URL's query string lands on the clip as
         // plain, enumerable variables — visible to the incoming movie's
         // own frame 1, and to nobody else (corpus loadmovie_flashvars
@@ -877,6 +881,7 @@ pub const Player = struct {
         return .{
             .gpa = self.gpa,
             .movie = &self.movie,
+            .root_movie = &self.movie,
             .instance_counter = &self.instance_counter,
             .class_lookup = hostRegisteredClass,
             .class_lookup_user = @ptrCast(self),
@@ -1062,7 +1067,48 @@ pub const Player = struct {
         }
     }
 
+    /// The `DoInitAction` blocks of a movie loaded at runtime, run once
+    /// with the target clip as the base — the loaded movie's own preload
+    /// phase, which is where `#initclip` lives.
+    fn runMovieInitActions(
+        self: *Player,
+        ctx: *display.movie_clip.Context,
+        mc: *MovieClipT,
+        movie: *const swf.movie.Movie,
+    ) !void {
+        const clip_obj = try self.clipObject(mc);
+        const outer = ctx.movie;
+        ctx.movie = movie;
+        defer ctx.movie = outer;
+        for (movie.frames) |frame| {
+            for (frame.controls) |control| {
+                if (control != .init_action) continue;
+                self.runBytecode(clip_obj, control.init_action.code);
+            }
+        }
+    }
+
+    /// Point the walk context at the movie the base clip belongs to, for
+    /// the duration of one script. Everything a script does that touches
+    /// a LIBRARY — `attachMovie`, `loadBitmap`, a text field resolving a
+    /// font — has to look in the clip's own movie, and inside a loaded
+    /// SWF that is not the root's. Returns the movie to put back.
+    fn enterClipMovie(self: *Player, clip_obj: avm1.runtime.ObjectHandle) ?*const swf.movie.Movie {
+        const ctx = self.cur_ctx orelse return null;
+        const mc = avm1.stage_object.clipOfHandle(self.vm, clip_obj) orelse return null;
+        const prev = ctx.movie;
+        ctx.movie = mc.movieOf(ctx);
+        return prev;
+    }
+
+    fn leaveClipMovie(self: *Player, prev: ?*const swf.movie.Movie) void {
+        const ctx = self.cur_ctx orelse return;
+        if (prev) |m| ctx.movie = m;
+    }
+
     fn runBytecode(self: *Player, clip_obj: avm1.runtime.ObjectHandle, code: []const u8) void {
+        const prev = self.enterClipMovie(clip_obj);
+        defer self.leaveClipMovie(prev);
         var act = avm1.activation.Activation.init(
             self.vm,
             code,
@@ -1077,6 +1123,8 @@ pub const Player = struct {
     /// if one is present. Absent handlers are the common case, so this
     /// must stay a cheap lookup miss.
     fn callClipHandler(self: *Player, clip_obj: avm1.runtime.ObjectHandle, name: []const u8) void {
+        const prev = self.enterClipMovie(clip_obj);
+        defer self.leaveClipMovie(prev);
         var buf: [24]u16 = undefined;
         for (name, 0..) |c, i| buf[i] = c;
         const wide = buf[0..name.len];
@@ -1285,10 +1333,14 @@ pub const Player = struct {
     fn hostRegisteredClass(user: *anyopaque, char_id: u16) u32 {
         const self: *Player = @ptrCast(@alignCast(user));
         if (char_id == 0 or self.vm.class_registry.items.len == 0) return 0;
-        var it = self.movie.lib.exports.iterator();
+        // The CURRENT walk's movie, not the root's: a character id only
+        // means anything inside the library it came from, and a loaded
+        // movie registers classes for its OWN exports.
+        const movie = if (self.cur_ctx) |c| c.movie else &self.movie;
+        var it = movie.lib.exports.iterator();
         while (it.next()) |e| {
             if (e.value_ptr.* != char_id) continue;
-            const wide = avm1.strings.fromSwf(self.vm.arena(), e.key_ptr.*, self.movie.swf_version) catch
+            const wide = avm1.strings.fromSwf(self.vm.arena(), e.key_ptr.*, movie.swf_version) catch
                 return 0;
             if (self.vm.registeredClass(wide)) |ctor| return ctor;
         }

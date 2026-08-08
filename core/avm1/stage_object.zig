@@ -1084,6 +1084,12 @@ pub fn createAt(
     init_object: Value,
 ) !?*DisplayObject {
     const ctx = displayCtx(vm) orelse return null;
+    // The character, and the class registered for it, both come from the
+    // PARENT's movie — a script inside a loaded SWF attaching onto
+    // `_root` must resolve both against the root's library.
+    const outer_movie = ctx.movie;
+    ctx.movie = parent.movieOf(ctx);
+    defer ctx.movie = outer_movie;
     // Occupying a depth replaces whatever is there (ruffle
     // replace_at_depth), unlike a timeline `.place` which refuses.
     try parent.removeAtDepth(ctx, depth);
@@ -1263,14 +1269,18 @@ pub fn removeDisplayObject(vm: *Vm, t: Target) !bool {
 
 /// ExportAssets name -> character id. The library stores the raw SWF bytes,
 /// so the UCS-2 argument comes back down to UTF-8 first.
-pub fn exportedCharacter(vm: *Vm, name: []const u16) !?u16 {
+pub fn exportedCharacter(vm: *Vm, owner: ?*MovieClip, name: []const u16) !?u16 {
     const ctx = displayCtx(vm) orelse return null;
+    // The TARGET clip's movie decides which library is searched — a
+    // script inside a loaded SWF calling `_root.attachMovie` must find
+    // the ROOT's exports, not its own.
+    const movie = if (owner) |c| c.movieOf(ctx) else ctx.movie;
     const utf8 = strings.toUtf8(vm.arena(), name) catch return null;
-    if (ctx.movie.lib.exports.get(utf8)) |id| return id;
+    if (movie.lib.exports.get(utf8)) |id| return id;
     // Export names are matched case-INSENSITIVELY at every SWF version
     // (ruffle instantiate_by_export_name passes case_sensitive = false),
     // so `attachMovie("cLiP", ...)` finds the asset exported as "clip".
-    var it = ctx.movie.lib.exports.iterator();
+    var it = movie.lib.exports.iterator();
     while (it.next()) |e| {
         if (std.ascii.eqlIgnoreCase(e.key_ptr.*, utf8)) return e.value_ptr.*;
     }
