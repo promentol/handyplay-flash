@@ -127,10 +127,24 @@ pub const NativeInfo = union(enum) {
 
 pub const ScriptObject = struct {
     proto: Value = .undefined_value,
+    /// In ruffle `__proto__` is not a synthesized accessor — it is a real
+    /// entry in the property map, inserted at construction with
+    /// DontEnum|DontDelete (script_object.rs:145). We keep the proto in a
+    /// field and carry only its ATTRIBUTES here, which is enough for the
+    /// one thing content can observe: `ASSetPropFlags` clearing DontDelete
+    /// makes `delete o.__proto__` succeed (corpus object_prototypes).
+    proto_attrs: Attributes = .{ .dont_enum = true, .dont_delete = true },
     props: std.ArrayList(Property) = .empty,
     native: NativeInfo = .none,
     /// Marks scope objects created by With (barrier rules differ slightly).
     is_with_scope: bool = false,
+    /// A scope node whose VALUES live on another object: `with (o)` pushes
+    /// a node onto the chain but every lookup, assignment and definition
+    /// inside it goes to `o` — including a clip's children and display
+    /// properties. Ruffle models this as `Scope { class: With, values: o }`
+    /// (scope.rs:26); we keep the node so the chain stays a list of nodes
+    /// nobody else aliases.
+    scope_values: ObjectHandle = 0,
     /// AS2 interfaces this PROTOTYPE implements, as their prototypes
     /// (ActionImplements). `instanceof` must walk these as well as the
     /// prototype chain.
@@ -203,17 +217,27 @@ pub const Objects = struct {
         return &o.props.items[i];
     }
 
+    /// A property plus the object that OWNS it. The owner matters for the
+    /// per-property recursion budget: ruffle keys it on the Property's
+    /// identity, so every instance inheriting one accessor shares a single
+    /// budget rather than getting one each.
+    pub const Located = struct { owner: ObjectHandle, prop: *Property };
+
     /// Find a property slot anywhere on the proto chain, for READING: a
     /// version-gated property is skipped and the search continues UP the
     /// chain, so a hidden own property lets the prototype's show through
     /// (ruffle filters inside get_local_stored, per object).
     pub fn findChained(self: *Objects, h: ObjectHandle, name: strings.AvmString, cs: bool) ?*Property {
+        return (self.findChainedLocated(h, name, cs) orelse return null).prop;
+    }
+
+    pub fn findChainedLocated(self: *Objects, h: ObjectHandle, name: strings.AvmString, cs: bool) ?Located {
         var current = h;
         var depth: u32 = 0;
         while (depth < 256) : (depth += 1) {
             if (depth == 255) self.chain_overflow = true;
             if (self.findOwn(current, name, cs)) |p| {
-                if (!versionHidden(p.attrs, self.swf_version)) return p;
+                if (!versionHidden(p.attrs, self.swf_version)) return .{ .owner = current, .prop = p };
             }
             const proto = self.get(current).proto;
             if (proto != .object) return null;
@@ -252,10 +276,14 @@ pub const Objects = struct {
     /// Same walk WITHOUT the version gate — writes must still find (and
     /// honour the accessors of) a gated slot rather than shadowing it.
     pub fn findChainedForWrite(self: *Objects, h: ObjectHandle, name: strings.AvmString, cs: bool) ?*Property {
+        return (self.findChainedForWriteLocated(h, name, cs) orelse return null).prop;
+    }
+
+    pub fn findChainedForWriteLocated(self: *Objects, h: ObjectHandle, name: strings.AvmString, cs: bool) ?Located {
         var current = h;
         var depth: u32 = 0;
         while (depth < 256) : (depth += 1) {
-            if (self.findOwn(current, name, cs)) |p| return p;
+            if (self.findOwn(current, name, cs)) |p| return .{ .owner = current, .prop = p };
             const proto = self.get(current).proto;
             if (proto != .object) return null;
             current = proto.object;
@@ -322,6 +350,18 @@ pub const Objects = struct {
     /// delete — false when absent or DontDelete.
     pub fn deleteOwn(self: *Objects, h: ObjectHandle, name: strings.AvmString, cs: bool) bool {
         const o = self.get(h);
+        // `__proto__` is a real (normally undeletable) map entry in ruffle;
+        // an object without a proto never had the entry at all.
+        const is_proto = if (cs)
+            strings.eql(name, strings.ascii("__proto__"))
+        else
+            strings.eqlIgnoreCase(name, strings.ascii("__proto__"));
+        if (is_proto) {
+            if (o.proto == .undefined_value) return false;
+            if (o.proto_attrs.dont_delete) return false;
+            o.proto = .undefined_value;
+            return true;
+        }
         const i = o.find(name, cs) orelse return false;
         if (o.props.items[i].attrs.dont_delete) return false;
         _ = o.props.orderedRemove(i);

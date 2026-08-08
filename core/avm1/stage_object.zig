@@ -910,6 +910,7 @@ pub fn createAt(
     // replace_at_depth), unlike a timeline `.place` which refuses.
     try parent.removeAtDepth(ctx, depth);
     const obj = try parent.instantiateAt(ctx, char_id, depth, 1) orelse return null;
+    obj.placed_by_script = true;
     try obj.setName(ctx.gpa, name);
     // Everything a clone inherits must be in place BEFORE the first frame
     // runs — that frame dispatches `load`, and the handler it dispatches
@@ -1056,10 +1057,16 @@ pub const FrameArg = union(enum) { number: i32, label: strings.AvmString };
 /// unless the whole string parses as a number, which is how
 /// `gotoAndPlay("3")` reaches frame 3 while `gotoAndPlay("3x")` looks for a
 /// label. ruffle globals/movie_clip.rs goto_frame:1109-1157.
+/// A NUMBER operand is a frame index only when it is a whole number:
+/// ruffle's arm is `Value::Number(n) if n.fract() == 0.0`, and everything
+/// else — including 4.123 — falls through to the variable-path branch,
+/// where the dot splits it into the target path "4" and the variable
+/// "123" and the goto quietly does nothing (corpus goto_frame2).
 pub fn frameArg(vm: *Vm, v: Value) !FrameArg {
     if (v == .number and std.math.isFinite(v.number) and @rem(v.number, 1) == 0) {
         return .{ .number = value_mod.toInt32(v.number) };
     }
+    if (v == .number) return .{ .label = try vm.toStringValue(v) };
     const s = try vm.toStringValue(v);
     if (strictFrameNumber(s)) |n| return .{ .number = n };
     return .{ .label = s };

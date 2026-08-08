@@ -280,7 +280,10 @@ fn bcRemoveListener(p: *anyopaque, this: Value, args: []const Value) anyerror!Va
 
 fn bcBroadcastMessage(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    if (args.len == 0 or args[0] == .undefined_value) return .undefined_value;
+    // A MISSING argument gives up (returns undefined); an argument that
+    // merely IS undefined coerces like any other value — "undefined" above
+    // SWF6, "" below it (ruffle as_broadcaster.rs:136, UndefinedAs::Some).
+    if (args.len == 0) return .undefined_value;
     const name = try vm.toStringValue(args[0]);
     _ = try broadcast(vm, this, name, if (args.len > 1) args[1..] else &.{});
     return .{ .boolean = true };
@@ -301,7 +304,13 @@ pub fn broadcast(vm: *Vm, target: Value, name: strings.AvmString, args: []const 
         // follow (ruffle: every member read on a removed display object is
         // undefined). Corpus string_paths_keyevents expects silence.
         if (stage_object.isRemovedClip(vm, listener.object)) continue;
-        const f = try vm.getProperty(listener.object, name, listener);
+        // An EMPTY method name calls the listener ITSELF as a function —
+        // `broadcastMessage("")`, and every broadcast below SWF7 whose
+        // event name coerced away (ruffle as_broadcaster.rs:160).
+        const f = if (name.len == 0)
+            listener
+        else
+            try vm.getProperty(listener.object, name, listener);
         if (!vm.isCallable(f)) continue;
         _ = vm.callFunction(f, listener, args) catch |e| {
             if (e == error.Avm1Thrown) vm.pending_throw = .undefined_value;

@@ -334,8 +334,13 @@ pub const MovieClip = struct {
 
     /// Record a goto target for applyPendingGoto (public: the host seam
     /// and later the interpreter use it for gotoAndPlay/Stop).
+    /// Only the LOWER bound is clamped. A goto past the last frame is not
+    /// an error and not a clamp: ruffle's `goto_frame` does `frame.max(1)`
+    /// and nothing else, so `run_goto` walks off the end of the tag stream
+    /// and the destination's actions simply never run (corpus goto_frame's
+    /// `gotoAndStop(999)` prints nothing for frame 6).
     pub fn gotoFrame(self: *MovieClip, target: u16) void {
-        self.pending_goto = @min(@max(target, 1), @as(u16, @intCast(self.frames.len)));
+        self.pending_goto = @max(target, 1);
     }
 
     /// Apply a pending goto: rewind + replay with actions suppressed
@@ -374,7 +379,7 @@ pub const MovieClip = struct {
             var i: usize = 0;
             while (i < self.children.items.len) {
                 const child = self.children.items[i];
-                if (child.place_frame > target) {
+                if (!survivesRewind(child, target)) {
                     _ = self.children.orderedRemove(i);
                     try retire(ctx, child);
                     continue;
@@ -383,14 +388,36 @@ pub const MovieClip = struct {
             }
             self.current_frame = 0;
         }
+        // Seeking past the last frame lands ON the last frame — but it
+        // never "hits the target", so the destination's actions do NOT run
+        // (ruffle movie_clip.rs:1698 clamped_frame, and the
+        // `hit_target_frame` branch at 1861: "gotoAndStop(9999) displays
+        // the final frame, but actions don't run!").
+        const clamped: u16 = @min(target, @as(u16, @intCast(self.frames.len)));
         var f: u16 = self.current_frame + 1;
-        while (f <= target) : (f += 1) {
+        while (f <= clamped) : (f += 1) {
             // Intermediate frames replay display state only; the
             // DESTINATION frame also runs its script (Flash: goto
             // executes the target frame's actions).
             try self.executeFrame(ctx, f, f == target);
         }
-        self.current_frame = target;
+        self.current_frame = clamped;
+    }
+
+    /// Script depths start here — `AVM_DEPTH_BIAS`, duplicated from
+    /// avm1/stage_object.zig because core/display never imports the VM.
+    const SCRIPT_DEPTH_BASE: i32 = 16384;
+
+    /// ruffle `survives_rewind`, AVM1 branch (movie_clip.rs:1897-1926).
+    /// Only objects at TIMELINE depths are candidates for removal at all,
+    /// which is why a script-created clip at depth 0 or above sails through
+    /// every rewind. Among the candidates, one the script itself created —
+    /// or moved there — goes unconditionally, and the rest survive exactly
+    /// when the replay will place them again.
+    fn survivesRewind(child: *DisplayObject, target: u16) bool {
+        if (child.depth >= SCRIPT_DEPTH_BASE) return true;
+        if (child.placed_by_script) return false;
+        return child.place_frame <= target;
     }
 
     pub fn childAtDepth(self: *MovieClip, depth: i32) ?*DisplayObject {

@@ -341,66 +341,62 @@ pub const Vm = struct {
 
     // --- coercions touching the object graph ------------------------------
 
-    pub const Hint = enum { number, string };
-
-    pub fn toPrimitive(self: *Vm, v: Value, hint: Hint) Error!Value {
-        if (v != .object) return v;
-        const h = v.object;
-        // Display objects are NOT coerced here — ruffle value.rs:203
-        // guards `to_primitive_num` with `as_display_object().is_none()`.
-        // Leaving the clip intact is what lets `"x " + mc` reach
-        // toStringValue's path special-case instead of Object.toString.
-        if (self.objects.get(h).native == .clip) return v;
-        const first: strings.AvmString = if (hint == .string) S("toString") else S("valueOf");
-        const second: strings.AvmString = if (hint == .string) S("valueOf") else S("toString");
-        const lookup_order = [2]strings.AvmString{ first, second };
-        for (lookup_order) |name| {
-            // getProperty, not getChained: a `super` view owns nothing and
-            // has no prototype of its own, so a raw chain walk finds no
-            // toString and `trace(super)` degrades to "[type Object]"
-            // instead of "[object Object]" (corpus clip_constructors).
-            const m = self.getProperty(h, name, v) catch Value.undefined_value;
-            if (self.isCallable(m)) {
-                const r = self.callFunction(m, v, &.{}) catch Value.undefined_value;
-                if (r.isPrimitive()) return r;
-            }
-        }
-        // Boxed primitives unwrap even without methods.
-        switch (self.objects.get(h).native) {
-            .boxed_number => |n| return .{ .number = n },
-            .boxed_string => |s| return .{ .string = s },
-            .boxed_bool => |b| return .{ .boolean = b },
-            else => {},
-        }
-        return .undefined_value;
+    /// `obj.name()` the way ruffle's `ExecutionReason::Special` calls run:
+    /// resolved through the prototype chain, `undefined` when the property
+    /// is not callable, and never propagating an error to the caller.
+    fn callSpecial(self: *Vm, v: Value, name: strings.AvmString) Error!Value {
+        // getProperty, not getChained: a `super` view owns nothing and has
+        // no prototype of its own, so a raw chain walk finds no toString
+        // and `trace(super)` degrades to "[type Object]" instead of
+        // "[object Object]" (corpus clip_constructors).
+        const m = self.getProperty(v.object, name, v) catch Value.undefined_value;
+        if (!self.isCallable(m)) return .undefined_value;
+        return self.callFunction(m, v, &.{}) catch Value.undefined_value;
     }
 
-    /// ruffle `Value::to_primitive` (value.rs:221) — the Add2 coercion,
-    /// which is NOT the same as ToPrimitive. It calls only `valueOf` and,
-    /// when that yields a non-primitive, falls back to the OBJECT ITSELF
-    /// rather than trying `toString`. That is load-bearing for ordering:
-    /// an operand's `toString` must fire in Add2's string phase, not here.
-    pub fn toPrimitiveAdd(self: *Vm, v: Value) Error!Value {
+    fn isDisplayValue(self: *Vm, v: Value) bool {
+        if (v != .object) return false;
+        return switch (self.objects.get(v.object).native) {
+            .clip, .display, .removed_display => true,
+            else => false,
+        };
+    }
+
+    /// ruffle `Value::to_primitive_num` (value.rs:198). NOT ES3's
+    /// ToPrimitive: an object calls ONLY `valueOf`, and whatever comes back
+    /// is the answer — including another object, which then coerces to NaN
+    /// or blocks a comparison. There is no `toString` fallback.
+    ///
+    /// Display objects are exempt (`as_display_object().is_none()`), which
+    /// is what lets `"x " + mc` reach toStringValue's path special-case.
+    pub fn toPrimitiveNum(self: *Vm, v: Value) Error!Value {
         if (v != .object) return v;
-        const h = v.object;
-        if (self.objects.get(h).native == .clip) return v;
-        if (self.objects.getChained(h, S("valueOf"), self.case_sensitive)) |m| {
-            if (self.isCallable(m)) {
-                const r = self.callFunction(m, v, &.{}) catch Value.undefined_value;
-                if (r.isPrimitive()) return r;
-            }
-        }
-        switch (self.objects.get(h).native) {
-            .boxed_number => |n| return .{ .number = n },
-            .boxed_string => |s| return .{ .string = s },
-            .boxed_bool => |b| return .{ .boolean = b },
+        switch (self.objects.get(v.object).native) {
+            .clip, .display, .removed_display => return v,
             else => {},
         }
-        return v;
+        return self.callSpecial(v, S("valueOf"));
+    }
+
+    /// ruffle `Value::to_primitive` (value.rs:221) — the Add2 coercion.
+    /// Calls `valueOf` (or `toString`, for a Date above SWF5) and, when
+    /// that yields a non-primitive, falls back to the OBJECT ITSELF rather
+    /// than trying the other method. That is load-bearing for ordering: the
+    /// operand's `toString` must fire in Add2's string phase, not here
+    /// (corpus object_string_coerce_swf5/swf6).
+    pub fn toPrimitiveAdd(self: *Vm, v: Value) Error!Value {
+        if (v != .object) return v;
+        const is_date = self.objects.get(v.object).native == .date;
+        const name: strings.AvmString = if (self.swf_version > 5 and is_date)
+            S("toString")
+        else
+            S("valueOf");
+        const r = try self.callSpecial(v, name);
+        return if (r.isPrimitive()) r else v;
     }
 
     pub fn toNumber(self: *Vm, v: Value) Error!f64 {
-        const p = try self.toPrimitive(v, .number);
+        const p = try self.toPrimitiveNum(v);
         return value_mod.toNumberPrimitive(p, self.swf_version);
     }
 
@@ -429,12 +425,16 @@ pub const Vm = struct {
                 switch (self.objects.get(h).native) {
                     .clip => |c| return @import("stage_object.zig").dotPathOf(self, c),
                     .display => |d| return @import("stage_object.zig").dotPathOfDisplay(self, d),
+                    // A String object never has toString() called on it.
+                    .boxed_string => |s| return s,
                     else => {},
                 }
-                // toString via the chain, else type-tagged default.
-                const p = try self.toPrimitive(v, .string);
-                if (p == .string) return p.string;
-                if (p != .undefined_value) return self.toStringValue(p);
+                // ruffle value.rs:327 — ONE call to `toString`. A result
+                // that is not a string (including an object, and including
+                // no callable toString at all) is the type tag; there is no
+                // valueOf fallback and no re-coercion of the result.
+                const r = try self.callSpecial(v, S("toString"));
+                if (r == .string) return r.string;
                 return switch (self.objects.get(h).native) {
                     .function => S("[type Function]"),
                     else => S("[type Object]"),
@@ -462,6 +462,9 @@ pub const Vm = struct {
     pub fn abstractEquals(self: *Vm, a: Value, b: Value) Error!bool {
         // Same-type fast paths.
         if (@as(std.meta.Tag(Value), a) == @as(std.meta.Tag(Value), b)) {
+            if (self.clipPath(a)) |pa| {
+                if (self.clipPath(b)) |pb| return strings.eql(pa, pb);
+            }
             return switch (a) {
                 .undefined_value, .null_value => true,
                 // PLAYER-SPECIFIC (ruffle): NaN == NaN is true in FP7+.
@@ -485,12 +488,12 @@ pub const Vm = struct {
         }
         // primitive vs object → ToPrimitive(object).
         if (a == .object and b != .object) {
-            const p = try self.toPrimitive(a, .number);
+            const p = try self.toPrimitiveNum(a);
             if (p == .object or p == .undefined_value) return false;
             return self.abstractEquals(p, b);
         }
         if (b == .object and a != .object) {
-            const p = try self.toPrimitive(b, .number);
+            const p = try self.toPrimitiveNum(b);
             if (p == .object or p == .undefined_value) return false;
             return self.abstractEquals(a, p);
         }
@@ -500,8 +503,13 @@ pub const Vm = struct {
     /// ES3 §11.8.5 abstract relational (Less2/Greater): returns
     /// undefined when incomparable (NaN involved).
     pub fn abstractLess(self: *Vm, a: Value, b: Value) Error!Value {
-        const pa = try self.toPrimitive(a, .number);
-        const pb = try self.toPrimitive(b, .number);
+        // A non-display object surviving `valueOf` makes the comparison
+        // false outright — `{} < {}` is false, not undefined (ruffle
+        // value.rs:496-503).
+        const pa = try self.toPrimitiveNum(a);
+        if (pa == .object and !self.isDisplayValue(pa)) return .{ .boolean = false };
+        const pb = try self.toPrimitiveNum(b);
+        if (pb == .object and !self.isDisplayValue(pb)) return .{ .boolean = false };
         if (pa == .string and pb == .string) {
             return .{ .boolean = strings.order(pa.string, pb.string) == .lt };
         }
@@ -511,9 +519,26 @@ pub const Vm = struct {
         return .{ .boolean = na < nb };
     }
 
+    /// Two MovieClip values compare by PATH, not by identity. Every stage
+    /// object pushed onto the AVM1 stack is wrapped in a path-based
+    /// `MovieClipReference` (ruffle activation.rs `stack_push`), and both
+    /// `==` and `===` compare those by path (value.rs:114). Distinct
+    /// objects normally have distinct paths, so this only shows up when a
+    /// goto rewind leaves two same-named instances alive at once — which
+    /// is exactly what corpus rewind_depth checks.
+    fn clipPath(self: *Vm, v: Value) ?strings.AvmString {
+        if (v != .object) return null;
+        const n = self.objects.get(v.object).native;
+        if (n != .clip) return null;
+        const p = @import("stage_object.zig").dotPathOf(self, n.clip) catch return null;
+        return if (p.len == 0) null else p;
+    }
+
     pub fn strictEquals(self: *Vm, a: Value, b: Value) bool {
-        _ = self;
         if (@as(std.meta.Tag(Value), a) != @as(std.meta.Tag(Value), b)) return false;
+        if (self.clipPath(a)) |pa| {
+            if (self.clipPath(b)) |pb| return strings.eql(pa, pb);
+        }
         return switch (a) {
             .undefined_value, .null_value => true,
             // PLAYER-SPECIFIC (same quirk as abstract equality): AVM1
@@ -539,16 +564,20 @@ pub const Vm = struct {
             start = p.object;
             recv = .{ .object = self.objects.get(h).native.super_obj.this };
         }
-        const slot = self.objects.findChained(start, name, self.case_sensitive) orelse
+        const loc = self.objects.findChainedLocated(start, name, self.case_sensitive) orelse
             return .undefined_value;
-        if (slot.getter != 0) {
-            if (self.enterPropertyCall(start, name)) |_| {
+        if (loc.prop.getter != 0) {
+            const getter = loc.prop.getter;
+            if (self.enterPropertyCall(loc.owner, name)) |_| {
                 defer self.leavePropertyCall();
-                return self.callFunction(.{ .object = slot.getter }, recv, &.{});
+                return self.callFunction(.{ .object = getter }, recv, &.{});
             }
-            return .undefined_value;
+            // Over the per-property limit Flash falls back to LOCAL
+            // resolution — the shadow data slot every write leaves behind
+            // even when a setter ran (ruffle object.rs:452-457).
+            return self.objects.findOwn(loc.owner, name, self.case_sensitive).?.value;
         }
-        return slot.value;
+        return loc.prop.value;
     }
 
     /// The prototype of `h` as the chain walk sees it. A `super` in the
@@ -597,6 +626,14 @@ pub const Vm = struct {
         _ = self.property_call_stack.pop();
     }
 
+    /// The watcher hook for callers that do their own storing — the
+    /// `__proto__` write is an engine action, not an ordinary put, but a
+    /// `watch("__proto__")` still sees it and can rewrite the value.
+    pub fn applyWatchers(self: *Vm, h: ObjectHandle, name: strings.AvmString, v: Value, this: Value) anyerror!Value {
+        if (self.objects.get(h).watchers.len == 0) return v;
+        return self.callWatcher(h, name, v, this);
+    }
+
     /// Run the watcher registered for `name` on `h`, if any, and return the
     /// value it wants stored — the callback's RETURN VALUE replaces the
     /// assignment, which is what lets a watcher veto or rewrite a write.
@@ -605,14 +642,15 @@ pub const Vm = struct {
         const w = (self.objects.get(h).findWatcher(name, self.case_sensitive) orelse return v).*;
         if (!self.isCallable(.{ .object = w.callback })) return v;
 
-        const key = propertyKey(h, name);
-        var same: usize = 0;
-        for (self.property_call_stack.items) |k| {
-            if (k == key) same += 1;
-        }
         // Over the limit the call is simply skipped and the plain write
-        // goes ahead; Flash does not report it.
-        if (same >= PROPERTY_RECURSION_LIMIT) return v;
+        // goes ahead unchanged; Flash does not report it (ruffle
+        // script_object.rs call_watcher swallows PropertyRecursionLimit).
+        // The watcher shares one budget with the property's getter and
+        // setter, and the frame must be PUSHED for the duration of the
+        // call — a watcher that rewrites its own property is exactly the
+        // recursion this counts (corpus watch_recursion_swf7).
+        if (self.enterPropertyCall(h, name) == null) return v;
+        defer self.leavePropertyCall();
 
         // The STORED value, not the getter's — ruffle calls `get_stored`.
         const old = self.objects.getChained(h, name, self.case_sensitive) orelse Value.undefined_value;
@@ -637,15 +675,37 @@ pub const Vm = struct {
             v_in
         else
             try self.callWatcher(h, name, v_in, this);
-        if (self.objects.findChainedForWrite(h, name, self.case_sensitive)) |slot| {
-            if (slot.setter != 0) {
-                if (self.enterPropertyCall(h, name)) |_| {
-                    defer self.leavePropertyCall();
-                    _ = try self.callFunction(.{ .object = slot.setter }, this, &.{v});
+        // An INHERITED virtual property intercepts the write entirely:
+        // the setter runs (a getter-only one just swallows it) and nothing
+        // is stored on the receiver. An OWN one is different — ruffle's
+        // `set_local` calls the setter and then stores the value anyway,
+        // leaving a shadow that a getter over the recursion limit reads
+        // back (ruffle object.rs:232-260, script_object.rs:317-329).
+        if (self.objects.findOwn(h, name, self.case_sensitive) == null) {
+            if (self.objects.findChainedForWriteLocated(h, name, self.case_sensitive)) |loc| {
+                if (loc.prop.getter != 0 or loc.prop.setter != 0) {
+                    const setter = loc.prop.setter;
+                    if (setter != 0) {
+                        if (self.enterPropertyCall(loc.owner, name)) |_| {
+                            defer self.leavePropertyCall();
+                            _ = try self.callFunction(.{ .object = setter }, this, &.{v});
+                        }
+                    }
+                    return;
                 }
-                return;
             }
-            if (slot.getter != 0) return; // getter-only: writes ignored
+            // The magic display properties are dispatched by the STORAGE
+            // primitive in ruffle (script_object.rs set_local:278-292), not
+            // by the interpreter, so `attachMovie(..., {_x: 10})` and every
+            // other engine-side write reaches `_x` rather than defining a
+            // plain property that shadows it (corpus issue_2084).
+            if (try @import("stage_object.zig").assignMember(self, h, name, v)) return;
+        } else if (self.objects.findOwn(h, name, self.case_sensitive).?.setter != 0) {
+            const setter = self.objects.findOwn(h, name, self.case_sensitive).?.setter;
+            if (self.enterPropertyCall(h, name)) |_| {
+                defer self.leavePropertyCall();
+                _ = try self.callFunction(.{ .object = setter }, this, &.{v});
+            }
         }
         try self.objects.put(h, name, v, self.case_sensitive);
     }

@@ -1244,6 +1244,10 @@ fn globalGetTimer(p: *anyopaque, this: Value, args: []const Value) anyerror!Valu
     return .{ .number = @trunc(vm.now_ms) };
 }
 
+fn eqName(a: strings.AvmString, b: strings.AvmString, cs: bool) bool {
+    return if (cs) strings.eql(a, b) else strings.eqlIgnoreCase(a, b);
+}
+
 /// ASSetPropFlags(obj, props, setFlags, clearFlags) — undocumented but
 /// ubiquitous. props: null = ALL properties, else a comma-separated name
 /// list (or a single name). Flag bits (ruffle property.rs Attribute):
@@ -1257,9 +1261,9 @@ fn globalAsSetPropFlags(p: *anyopaque, this: Value, args: []const Value) anyerro
     const set_bits: u16 = @intFromFloat(@max(0, @min(65535, try vm.toNumber(arg(args, 2)))));
     const clear_bits: u16 = @intFromFloat(@max(0, @min(65535, try vm.toNumber(arg(args, 3)))));
 
-    const apply = struct {
-        fn f(o: *object_mod.ScriptObject, idx: usize, set: u16, clear: u16) void {
-            var a = o.props.items[idx].attrs;
+    const applyAttrs = struct {
+        fn f(a0: object_mod.Attributes, set: u16, clear: u16) object_mod.Attributes {
+            var a = a0;
             if (set & 1 != 0) a.dont_enum = true;
             if (set & 2 != 0) a.dont_delete = true;
             if (set & 4 != 0) a.read_only = true;
@@ -1268,7 +1272,12 @@ fn globalAsSetPropFlags(p: *anyopaque, this: Value, args: []const Value) anyerro
             if (clear & 4 != 0) a.read_only = false;
             // Bits 3..15 are version gates — keep them verbatim.
             a.version_bits = (a.version_bits & ~clear) | (set & 0xFFF8);
-            o.props.items[idx].attrs = a;
+            return a;
+        }
+    }.f;
+    const apply = struct {
+        fn f(o: *object_mod.ScriptObject, idx: usize, set: u16, clear: u16) void {
+            o.props.items[idx].attrs = applyAttrs(o.props.items[idx].attrs, set, clear);
         }
     }.f;
 
@@ -1277,6 +1286,7 @@ fn globalAsSetPropFlags(p: *anyopaque, this: Value, args: []const Value) anyerro
     if (props == .null_value or props == .undefined_value) {
         var i: usize = 0;
         while (i < o.props.items.len) : (i += 1) apply(o, i, set_bits, clear_bits);
+        if (o.proto != .undefined_value) o.proto_attrs = applyAttrs(o.proto_attrs, set_bits, clear_bits);
         return .undefined_value;
     }
     const list = try vm.toStringValue(props);
@@ -1289,7 +1299,11 @@ fn globalAsSetPropFlags(p: *anyopaque, this: Value, args: []const Value) anyerro
             while (name.len > 0 and name[0] == ' ') name = name[1..];
             while (name.len > 0 and name[name.len - 1] == ' ') name = name[0 .. name.len - 1];
             if (name.len > 0) {
-                if (o.find(name, vm.case_sensitive)) |idx| apply(o, idx, set_bits, clear_bits);
+                if (o.find(name, vm.case_sensitive)) |idx| {
+                    apply(o, idx, set_bits, clear_bits);
+                } else if (o.proto != .undefined_value and eqName(name, S("__proto__"), vm.case_sensitive)) {
+                    o.proto_attrs = applyAttrs(o.proto_attrs, set_bits, clear_bits);
+                }
             }
             start = i + 1;
         }

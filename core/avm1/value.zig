@@ -62,7 +62,10 @@ pub fn toNumberPrimitive(v: Value, swf_version: u8) f64 {
         .boolean => |b| if (b) 1 else 0,
         .number => |n| n,
         .string => |s| stringToNumber(s, swf_version),
-        .object => std.math.nan(f64),
+        // SWF4 has no NaN to speak of: an object that survived `valueOf`
+        // reads as 0, which is what makes `{} / {}` the "#ERROR#" of a
+        // divide by zero rather than a NaN (ruffle value.rs:165).
+        .object => if (swf_version < 5) 0 else std.math.nan(f64),
     };
 }
 

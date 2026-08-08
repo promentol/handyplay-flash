@@ -15,6 +15,7 @@ as2_oop
 as2_super_via_manual_prototype
 as_broadcaster
 as_broadcaster_initialize
+as_broadcaster_undef
 as_set_prop_flags_version_swf5
 as_set_prop_flags_version_swf6
 as_set_prop_flags_version_swf7
@@ -82,6 +83,8 @@ goto_both_ways1
 goto_both_ways2
 goto_execution_order
 goto_execution_order2
+goto_frame
+goto_frame2
 goto_frame_number
 goto_label
 goto_methods
@@ -103,6 +106,7 @@ issue_2166
 issue_3169
 issue_3446
 issue_4377
+issue_710
 issue_768
 key_isToggled
 lessthan
@@ -128,12 +132,16 @@ movieclip_line_gradient_style
 movieclip_name_from_timeline
 movieclip_prototype_extension
 movieclip_setmask
+mutable_this
 named_shapes
 nan_scale
 nested_textfields_in_buttons
 netstream_play_flv_screen
 new_object_enumerate
 o
+object_prototypes
+object_string_coerce_swf5
+object_string_coerce_swf6
 on_construct
 primitive_instanceof
 property_invalid_base_clip
@@ -143,7 +151,9 @@ register_and_init_order
 register_class_return_value
 remove_movie_clip
 removed_base_clip_tell_target
+removed_clip_halts_script
 removed_target_clip_scope
+rewind_depth
 root_global_parent
 sandbox_type_local_file
 sandbox_type_local_network
@@ -151,6 +161,7 @@ set_interval
 set_target_2_swf5
 set_target_2_swf6
 set_target_2_swf7
+set_variable_scope
 shared_object_serialize_typed_objects
 single_frame
 slash_syntax
@@ -164,6 +175,7 @@ stage_object_properties_swf6
 stage_property_representation
 strictequals_swf6
 strictly_equals
+string_coercion
 string_paths_hidden
 string_paths_keyevents
 string_paths_timer
@@ -181,6 +193,7 @@ target_paths/swf4
 tell_target
 tell_target_invalid
 tell_target_invalid_swf6
+this_scoping
 this_swf7
 timeline_function_def
 timeout
@@ -197,9 +210,13 @@ undefined_to_string_swf6
 unload_clip_event
 use_hand_cursor
 variable_args
+virtual_property_recursion_double_swf7
+virtual_property_recursion_swf7
 watch
 watch_infinite_recursion
 watch_proto_recursion
+watch_recursion_double_swf7
+watch_recursion_swf7
 watch_textfield
 watch_virtual_property_proto
 with_return

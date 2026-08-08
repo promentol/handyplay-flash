@@ -24,7 +24,7 @@ CORPUS="${CORPUS:-reference/ruffle/tests/tests/swfs/avm1}"
 BIN=./zig-out/bin/trace_runner
 LIST=tests/conformance/pass_list.txt
 TMP=$(mktemp)
-trap 'rm -f "$TMP"' EXIT
+trap 'rm -f "$TMP" "$TMP.exp"' EXIT
 
 frames_for() {
     # num_frames or num_ticks from test.toml (default 1).
@@ -112,9 +112,11 @@ input_for() {
 run_one() {
     d="$1"
     swf="$CORPUS/$d/test.swf"
-    exp="$CORPUS/$d/output.txt"
     toml="$CORPUS/$d/test.toml"
-    [ -f "$swf" ] && [ -f "$exp" ] || return 2
+    [ -f "$swf" ] && [ -f "$CORPUS/$d/output.txt" ] || return 2
+    # A few expected files are CRLF in ruffle's tree; its own comparator
+    # normalizes them (framework/src/runner/trace.rs:14), so we must too.
+    exp="$TMP.exp"; tr -d '\r' <"$CORPUS/$d/output.txt" >"$exp"
     # shellcheck disable=SC2086
     "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") >"$TMP" 2>/dev/null || return 1
     if have_approx "$toml"; then
@@ -179,6 +181,7 @@ case "${1:-}" in
     # shellcheck disable=SC2086
     "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") >"$TMP" 2>&1
     echo "--- $verdict: ours vs expected ($d):"
-    diff "$TMP" "$CORPUS/$d/output.txt" | head -40
+    tr -d '\r' <"$CORPUS/$d/output.txt" >"$TMP.exp"
+    diff "$TMP" "$TMP.exp" | head -40
     ;;
 esac

@@ -47,6 +47,11 @@ pub const DisplayObject = struct {
     /// then skips the timeline's placement entirely, so a PlaceObject2 on
     /// a later frame can't undo a script's `_x`.
     transformed_by_script: bool = false,
+    /// Created by a SCRIPT (attachMovie / duplicateMovieClip /
+    /// createEmptyMovieClip), not by a PlaceObject tag. Ruffle's
+    /// PLACED_BY_AVM1_SCRIPT: such an object never survives a rewind that
+    /// finds it sitting at a TIMELINE depth (movie_clip.rs:1921-1926).
+    placed_by_script: bool = false,
     /// `kind` was heap-allocated by us and must be freed. False for the
     /// synthetic root placement, whose clip the Player owns.
     owns_kind: bool = true,

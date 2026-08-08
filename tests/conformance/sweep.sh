@@ -42,7 +42,10 @@ dirs() {
 
 one() {
     d="$2"
-    toml="$CORPUS/$d/test.toml"; exp="$CORPUS/$d/output.txt"; swf="$CORPUS/$d/test.swf"
+    toml="$CORPUS/$d/test.toml"; swf="$CORPUS/$d/test.swf"
+    # A few expected files are CRLF in ruffle's tree; its own comparator
+    # normalizes them (framework/src/runner/trace.rs:14), so we must too.
+    exp=$(mktemp); tr -d '\r' <"$CORPUS/$d/output.txt" >"$exp"
     n=$(sed -n 's/^num_frames *= *\([0-9]*\).*/\1/p; s/^num_ticks *= *\([0-9]*\).*/\1/p' \
         "$toml" 2>/dev/null | head -1)
     [ -n "$n" ] || n=1
@@ -76,7 +79,7 @@ one() {
     else
         cmp -s "$T" "$exp" && echo "PASS $d" >>"$1" || echo "FAIL $d" >>"$1"
     fi
-    rm -f "$T"
+    rm -f "$T" "$exp"
 }
 
 # Re-entry point for xargs (sh has no exported functions), so the whole

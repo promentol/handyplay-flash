@@ -296,22 +296,31 @@ pub const Activation = struct {
     /// own shot at the target path, and a scope only wins if the resolved
     /// object actually HAS the variable.
     fn getVariable(self: *Activation, name: strings.AvmString) !Value {
+        const hit = try self.getVariableHit(name) orelse return .undefined_value;
+        return hit.value;
+    }
+
+    /// getVariable, keeping the object a path resolved AGAINST — a call
+    /// through a path runs with that object as `this`, which is what makes
+    /// `"_root.mc.gotoAndStop"(4)` move mc (ruffle activation.rs:2769).
+    fn getVariableHit(self: *Activation, name: strings.AvmString) !?ScopeHit {
         const root = self.rootHandle();
         if (self.variableSeparator(name)) |sep| {
             const path = name[0..sep];
             const var_name = name[sep + 1 ..];
-            if (path.len == 0) return .undefined_value;
+            if (path.len == 0) return null;
             var cur = self.scope;
             while (cur != 0) {
                 const node = self.scopeObject(cur);
                 if (try self.resolveTargetPath(root, node, path, true, true)) |obj| {
                     if (try self.hasVariable(obj, var_name)) {
-                        return try self.memberGet(.{ .object = obj }, var_name);
+                        const v = try self.memberGet(.{ .object = obj }, var_name);
+                        return .{ .value = v, .owner = obj };
                     }
                 }
                 cur = self.vm.objects.get(cur).scope_parent;
             }
-            return .undefined_value;
+            return null;
         }
 
         // No trailing variable, but it can still be a slash path (SWF5+;
@@ -321,14 +330,14 @@ pub const Activation = struct {
             while (cur != 0) {
                 const node = self.scopeObject(cur);
                 if (try self.resolveTargetPath(root, node, name, false, false)) |obj| {
-                    return .{ .object = obj };
+                    return .{ .value = .{ .object = obj }, .owner = 0 };
                 }
                 cur = self.vm.objects.get(cur).scope_parent;
             }
         }
 
         // A plain old variable name: the scope chain, as normal.
-        return try self.scopeLookup(name) orelse .undefined_value;
+        return try self.scopeLookupHit(name);
     }
 
     /// Does `obj` expose `name` — as an own/inherited property, a display
@@ -374,6 +383,18 @@ pub const Activation = struct {
     /// children, `_parent`/`_root` and the display properties — timeline
     /// code says bare `_x` and bare `myClip`, not `this._x`.
     fn scopeLookup(self: *Activation, name: strings.AvmString) !?Value {
+        return (try self.scopeLookupHit(name) orelse return null).value;
+    }
+
+    /// A scope-chain hit plus the object that PROVIDED it. Ruffle returns
+    /// `CallableValue::Callable(locals_cell, v)` from every scope
+    /// resolution (scope.rs:145-150), and a bare `f()` calls with that
+    /// object as `this` — which is how `with (mc) { foo() }` runs foo with
+    /// `this` = mc. `owner` is 0 for the two hits that have no scope
+    /// object behind them: the `this` keyword and the _global fallback.
+    const ScopeHit = struct { value: Value, owner: ObjectHandle };
+
+    fn scopeLookupHit(self: *Activation, name: strings.AvmString) !?ScopeHit {
         const cs = self.vm.case_sensitive;
         // `this` is resolved BEFORE the scope chain from SWF5 on
         // (ruffle Activation::resolve:2925-2936). Timeline code has no
@@ -390,22 +411,27 @@ pub const Activation = struct {
                 strings.eql(name, S("this"))
             else
                 strings.eqlIgnoreCase(name, S("this"));
-            if (hit) return self.this;
+            if (hit) return .{ .value = self.this, .owner = 0 };
         }
         var cur = self.scope;
         while (cur != 0) {
             const node = self.scopeObject(cur);
             // Same three-step order as memberGet, per scope object.
             if (self.vm.objects.getOwn(node, name, cs) != null) {
-                return try self.vm.getProperty(node, name, .{ .object = node });
+                const v = try self.vm.getProperty(node, name, .{ .object = node });
+                return .{ .value = v, .owner = node };
             }
-            if (try stage.resolveMember(self.vm, node, name)) |v| return v;
+            if (try stage.resolveMember(self.vm, node, name)) |v| {
+                return .{ .value = v, .owner = node };
+            }
             if (self.vm.objects.getChained(node, name, cs) != null) {
-                return try self.vm.getProperty(node, name, .{ .object = node });
+                const v = try self.vm.getProperty(node, name, .{ .object = node });
+                return .{ .value = v, .owner = node };
             }
             cur = self.vm.objects.get(cur).scope_parent;
         }
-        return self.vm.objects.getChained(self.vm.globals, name, cs);
+        const g = self.vm.objects.getChained(self.vm.globals, name, cs) orelse return null;
+        return .{ .value = g, .owner = 0 };
     }
 
     /// Vm.scopeSet's counterpart to `scopeLookup`: a bare `_x = 10` in
@@ -507,8 +533,14 @@ pub const Activation = struct {
             // Whatever is assigned is STORED, even a number: `obj.__proto__
             // = 123` reads back as 123 with typeof "number". Only an object
             // participates in the chain walk, which already checks
-            // (corpus object_prototypes).
-            self.vm.objects.get(h).proto = v;
+            // (corpus object_prototypes). Ruffle reaches this through the
+            // ordinary property machinery, so a `watch("__proto__")` fires
+            // and may rewrite the value on its way past.
+            // Compute BEFORE taking the pointer: the watcher can create
+            // objects, and `objects.get` hands out a pointer into a list
+            // that reallocates when it grows.
+            const stored = try self.vm.applyWatchers(h, name, v, target);
+            self.vm.objects.get(h).proto = stored;
             return;
         }
         // A display property name writes through to the clip; anything
@@ -623,7 +655,7 @@ pub const Activation = struct {
                 const with_scope = try self.vm.newScope(self.scope);
                 self.vm.objects.get(with_scope).is_with_scope = true;
                 if (target == .object) {
-                    self.vm.objects.get(with_scope).proto = target;
+                    self.vm.objects.get(with_scope).scope_values = target.object;
                 }
                 const flow = try self.runSlice(w.body, with_scope);
                 if (flow != .next) return flow;
@@ -1081,19 +1113,37 @@ pub const Activation = struct {
             .call_function => {
                 const name = try self.popString();
                 const args = try self.popArgs();
-                const f = try self.scopeLookup(name) orelse Value.undefined_value;
+                const hit = try self.getVariableHit(name);
+                const f = if (hit) |h| h.value else Value.undefined_value;
+                // The scope object that provided the name is `this` for the
+                // call (ruffle CallableValue::Callable) — inside a `with`
+                // that is the with target, not the enclosing `this`.
+                const call_this: Value = if (hit) |h|
+                    (if (h.owner != 0) Value{ .object = h.owner } else self.this)
+                else
+                    self.this;
                 // A bare `super(...)` reaches here when the compiler kept
                 // it as a named variable rather than a register.
                 const r = if (isSuper(self.vm, f))
                     try self.vm.callSuper(f.object, args)
                 else
-                    try self.vm.callFunction(f, self.this, args);
+                    try self.vm.callFunction(f, call_this, args);
                 try self.push(r);
+                if (self.baseClipGone()) return .{ .return_value = .undefined_value };
             },
             .call_method => {
                 const name_v = self.pop();
                 const target = self.pop();
                 const args = try self.popArgs();
+                // A method call on undefined/null pushes undefined and
+                // continues WITHOUT the removed-base-clip check below —
+                // which is why `blah.f()` on a removed clip runs the next
+                // statement but `obj.f()` does not (ruffle
+                // action_call_method's early return, activation.rs:823).
+                if (target == .undefined_value or target == .null_value) {
+                    try self.push(.undefined_value);
+                    return .next;
+                }
                 // ruffle action_call_method: undefined ⇒ "", otherwise
                 // COERCE (an object whose toString yields "" also selects
                 // the call-as-function path).
@@ -1124,17 +1174,24 @@ pub const Activation = struct {
                     break :blk try self.vm.callFunction(m, target, args);
                 };
                 try self.push(result);
+                if (self.baseClipGone()) return .{ .return_value = .undefined_value };
             },
             .new_object => {
                 const name = try self.popString();
                 const args = try self.popArgs();
                 const ctor = self.vm.scopeGet(self.scope, name) orelse Value.undefined_value;
                 try self.push(try self.vm.construct(ctor, args));
+                if (self.baseClipGone()) return .{ .return_value = .undefined_value };
             },
             .new_method => {
                 const name_v = self.pop();
                 const target = self.pop();
                 const args = try self.popArgs();
+                // Same early return as CallMethod — see there.
+                if (target == .undefined_value or target == .null_value) {
+                    try self.push(.undefined_value);
+                    return .next;
+                }
                 const name: strings.AvmString = if (name_v == .undefined_value)
                     S("")
                 else
@@ -1144,6 +1201,7 @@ pub const Activation = struct {
                 else
                     try self.memberGet(target, name);
                 try self.push(try self.vm.construct(ctor, args));
+                if (self.baseClipGone()) return .{ .return_value = .undefined_value };
             },
             .return_op => return .{ .return_value = self.pop() },
             .throw => {
@@ -1303,9 +1361,7 @@ pub const Activation = struct {
                     }
                 }
                 // The called frame may have removed us.
-                if (self.base_clip != 0 and stage.targetOf(self.vm, self.base_clip) == null) {
-                    return .{ .return_value = .undefined_value };
-                }
+                if (self.baseClipGone()) return .{ .return_value = .undefined_value };
             },
             .fs_command2 => {
                 const n = try self.popNumber();
@@ -1539,6 +1595,8 @@ pub const Activation = struct {
     }
 
     fn scopeObject(self: *Activation, node: ObjectHandle) ObjectHandle {
+        const values = self.vm.objects.get(node).scope_values;
+        if (values != 0) return values;
         if (node != self.timeline_scope or self.timeline_scope == 0) return node;
         const t = self.targetClipOrRoot();
         return if (t != 0) t else node;
@@ -1611,6 +1669,15 @@ pub const Activation = struct {
         const h = self.target_clip orelse return null;
         const t = stage.targetOf(self.vm, h) orelse return null;
         return @ptrCast(t.clip);
+    }
+
+    /// A script whose OWN clip has been removed stops where it is. Ruffle
+    /// checks this after every call-shaped action (`continue_if_base_clip_
+    /// exists`, activation.rs:3052) rather than per instruction, so the
+    /// statement that did the removing completes and the next call does
+    /// not happen — corpus removed_clip_halts_script traces the difference.
+    fn baseClipGone(self: *Activation) bool {
+        return self.base_clip != 0 and stage.targetOf(self.vm, self.base_clip) == null;
     }
 
     /// GotoFrame2's target: the retarget, else the root.
