@@ -105,6 +105,7 @@ edittext_margins
 edittext_newline_stripping
 edittext_newlines
 edittext_password
+edittext_paste_empty
 edittext_programmatic_focus
 edittext_scroll
 edittext_tab_focus

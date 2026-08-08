@@ -964,6 +964,16 @@ pub const Player = struct {
         try self.updateMouseState(false, true);
     }
 
+    /// Seed the clipboard the way a host paste-buffer would.
+    pub fn setClipboard(self: *Player, utf8: []const u8) !void {
+        self.clipboard.clearRetainingCapacity();
+        const needed = std.unicode.calcUtf16LeLen(utf8) catch return;
+        try self.clipboard.resize(self.gpa, needed);
+        _ = std.unicode.utf8ToUtf16Le(self.clipboard.items, utf8) catch {
+            self.clipboard.clearRetainingCapacity();
+        };
+    }
+
     /// Text typed into the focused field. Nothing happens without one.
     pub fn textInput(self: *Player, typed: []const u16) !void {
         var ctx = self.makeContext();
