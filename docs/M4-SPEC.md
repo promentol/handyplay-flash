@@ -553,6 +553,18 @@ effect and the PlaceObject3 filter list (`bitmap_filters` needs the
 latter — it went from 540 differing lines to 182 once the AVM1 filter
 surface existed), and `StyleSheet.load`, which needs the M5 loader.
 
+**Two corrections to this section's own plan**, so nobody re-derives them:
+
+- `define_font_glyph_table_order` / `_overlap` were named here as D2's
+  first IMAGE-ratchet entries. They are AVM2 content — the player rejects
+  them with `Avm2Unsupported` by design — so they can never be scored,
+  by us or by any AVM1-only engine.
+- The one text dir with an image comparison, `edittext_stylesheet`, is
+  blocked on RASTERISER fidelity, not on text: its layout matches the
+  reference to the eye, but 40152 pixels exceed a tolerance of 64 with
+  none allowed, all of it glyph-edge antialiasing and sub-pixel placement
+  against Flash's own rasteriser.
+
 Nothing else in the cluster is outstanding. The four dirs that needed a
 DEVICE font, the two that needed `flash.filters`, the IME one, drag
 selection, click-to-caret and `TextField.StyleSheet` all shipped.
