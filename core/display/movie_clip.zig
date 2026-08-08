@@ -18,6 +18,7 @@ const library = @import("library.zig");
 const display_object = @import("display_object.zig");
 const drawing_mod = @import("drawing.zig");
 const button_mod = @import("button.zig");
+const edit_text_mod = @import("edit_text.zig");
 
 const DisplayObject = display_object.DisplayObject;
 
@@ -664,7 +665,11 @@ pub const MovieClip = struct {
                 .shape => |*s| .{ .shape = s },
                 .morph_shape => .{ .morph_shape = id },
                 .text => |*t| .{ .text = t },
-                .edit_text => |*et| .{ .edit_text = et },
+                .edit_text => |*et| .{ .edit_text = e: {
+                    const inst = try ctx.gpa.create(edit_text_mod.EditText);
+                    inst.* = try edit_text_mod.EditText.fromTag(ctx.gpa, et);
+                    break :e inst;
+                } },
                 .button => |*btn| .{ .button = b: {
                     const bt = try ctx.gpa.create(button_mod.Button);
                     bt.* = button_mod.Button.init(btn);

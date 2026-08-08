@@ -73,13 +73,21 @@ fn tabChildren(ctx: *Context, obj: *DisplayObject) bool {
 }
 
 /// `tabEnabled`, whose DEFAULT depends on the kind: a button always, a
-/// clip only in button mode or when it carries a tabIndex, an editable
-/// text field (M4-D) otherwise never.
+/// clip only in button mode or when it carries a tabIndex, a text field
+/// only when it is editable.
 pub fn isTabbable(ctx: *Context, obj: *DisplayObject) bool {
+    // An explicit `tabEnabled` still cannot put a NON-EDITABLE field in
+    // the order (ruffle is_tabbable ANDs the two).
+    if (obj.kind == .edit_text and obj.kind.edit_text.read_only) return false;
     if (ctx.boolProperty(obj, "tabEnabled")) |b| return b;
     return switch (obj.kind) {
         .button => true,
         .clip => |mc| mouse.isButtonMode(ctx, mc) or obj.tab_index != null,
+        // A text field is tabbable only when it is EDITABLE — a dynamic
+        // field stays out of the order even with tabEnabled set
+        // (ruffle edit_text.rs is_tabbable/tab_enabled_default, and
+        // corpus tab_ordering_tabbable's table).
+        .edit_text => |et| !et.read_only,
         else => false,
     };
 }

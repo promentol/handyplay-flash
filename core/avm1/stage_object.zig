@@ -226,25 +226,40 @@ pub fn actionPropertyCoerce(vm: *Vm, index: usize, v: Value) !Value {
 
 // --- position --------------------------------------------------------------
 
+/// A TEXT FIELD's reported position is offset by its own bounds: the tag
+/// places the box at `bounds.x_min` inside the instance, and `_x` folds
+/// that in (ruffle edit_text.rs:2615-2625). Every other kind reports the
+/// placement matrix directly.
+fn boundsOffset(t: Target) [2]i32 {
+    if (t.obj.kind != .edit_text) return .{ 0, 0 };
+    const b = t.obj.kind.edit_text.bounds;
+    return .{
+        twipsFromPixels(t.obj.scaleX() / 100.0 * pixelsFromTwips(b.xmin)),
+        twipsFromPixels(t.obj.scaleY() / 100.0 * pixelsFromTwips(b.ymin)),
+    };
+}
+
 fn getX(vm: *Vm, t: Target) !Value {
     _ = vm;
-    return .{ .number = pixelsFromTwips(t.obj.matrix.tx) };
+    return .{ .number = pixelsFromTwips(t.obj.matrix.tx +% boundsOffset(t)[0]) };
 }
 
 fn setX(vm: *Vm, t: Target, v: Value) !void {
     const n = try coerceToNumber(vm, v) orelse return;
     // Both infinities land on -inf, which twipsFromPixels saturates.
-    t.obj.setX(twipsFromPixels(if (std.math.isInf(n)) -std.math.inf(f64) else n));
+    const x = twipsFromPixels(if (std.math.isInf(n)) -std.math.inf(f64) else n);
+    t.obj.setX(x -% boundsOffset(t)[0]);
 }
 
 fn getY(vm: *Vm, t: Target) !Value {
     _ = vm;
-    return .{ .number = pixelsFromTwips(t.obj.matrix.ty) };
+    return .{ .number = pixelsFromTwips(t.obj.matrix.ty +% boundsOffset(t)[1]) };
 }
 
 fn setY(vm: *Vm, t: Target, v: Value) !void {
     const n = try coerceToNumber(vm, v) orelse return;
-    t.obj.setY(twipsFromPixels(if (std.math.isInf(n)) -std.math.inf(f64) else n));
+    const y = twipsFromPixels(if (std.math.isInf(n)) -std.math.inf(f64) else n);
+    t.obj.setY(y -% boundsOffset(t)[1]);
 }
 
 // --- scale / rotation ------------------------------------------------------
@@ -292,23 +307,47 @@ fn setRotation(vm: *Vm, t: Target, v: Value) !void {
 
 fn getWidth(vm: *Vm, t: Target) !Value {
     _ = vm;
+    // A text field measures its own BOX through the placement matrix; it
+    // does not union its content (ruffle edit_text.rs:2641-2647).
+    if (t.obj.kind == .edit_text) {
+        const b = t.obj.matrix.transformRect(t.obj.kind.edit_text.bounds);
+        return .{ .number = pixelsFromTwips(b.width()) };
+    }
     const b = bounds_mod.localBounds(t.obj) orelse return .{ .number = 0 };
     return .{ .number = pixelsFromTwips(b.width()) };
 }
 
 fn getHeight(vm: *Vm, t: Target) !Value {
     _ = vm;
+    if (t.obj.kind == .edit_text) {
+        const b = t.obj.matrix.transformRect(t.obj.kind.edit_text.bounds);
+        return .{ .number = pixelsFromTwips(b.height()) };
+    }
     const b = bounds_mod.localBounds(t.obj) orelse return .{ .number = 0 };
     return .{ .number = pixelsFromTwips(b.height()) };
 }
 
 fn setWidth(vm: *Vm, t: Target, v: Value) !void {
     const n = try coerceToNumber(vm, v) orelse return;
+    // Writing a field's width RESIZES the box — it does not scale the
+    // field the way it would scale a clip.
+    if (t.obj.kind == .edit_text) {
+        const et = t.obj.kind.edit_text;
+        et.bounds.xmax = et.bounds.xmin +% twipsFromPixels(n);
+        t.obj.transformed_by_script = true;
+        return;
+    }
     setSizeAlong(t, n, .width);
 }
 
 fn setHeight(vm: *Vm, t: Target, v: Value) !void {
     const n = try coerceToNumber(vm, v) orelse return;
+    if (t.obj.kind == .edit_text) {
+        const et = t.obj.kind.edit_text;
+        et.bounds.ymax = et.bounds.ymin +% twipsFromPixels(n);
+        t.obj.transformed_by_script = true;
+        return;
+    }
     setSizeAlong(t, n, .height);
 }
 

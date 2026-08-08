@@ -24,6 +24,7 @@ pub const display = struct {
     pub const movie_clip = @import("display/movie_clip.zig");
     pub const button = @import("display/button.zig");
     pub const text = @import("display/text.zig");
+    pub const edit_text = @import("display/edit_text.zig");
     pub const mouse = @import("display/mouse.zig");
     pub const tab = @import("display/tab.zig");
     // M4: text.zig.
@@ -1108,6 +1109,7 @@ test {
     _ = @import("display/mouse.zig");
     _ = @import("display/tab.zig");
     _ = @import("display/text.zig");
+    _ = @import("display/edit_text.zig");
     _ = @import("render/canvas.zig");
     _ = @import("render/shape_utils.zig");
     _ = @import("render/renderer.zig");

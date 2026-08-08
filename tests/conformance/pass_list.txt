@@ -216,10 +216,12 @@ swf4_bool
 swf5_encoding
 swf6_string_as_bool
 swf7_case_sensitive
+tab_ordering_automatic_basic
 tab_ordering_automatic_order_grid
 tab_ordering_automatic_order_same_position
 tab_ordering_custom_duplicate_index
 tab_ordering_events_mouse
+tab_ordering_reverse
 target_clip_removed
 target_clip_swf5
 target_clip_swf6

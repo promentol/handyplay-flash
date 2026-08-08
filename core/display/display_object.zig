@@ -16,6 +16,7 @@ const strings = @import("../avm1/string.zig");
 const library = @import("library.zig");
 const movie_clip = @import("movie_clip.zig");
 const button_mod = @import("button.zig");
+const edit_text_mod = @import("edit_text.zig");
 
 pub const DisplayObject = struct {
     character_id: u16,
@@ -94,7 +95,9 @@ pub const DisplayObject = struct {
         shape: *const swf.shape.Shape,
         morph_shape: u16, // character id; decoded in M7
         text: *const swf.font_text.Text,
-        edit_text: *const swf.font_text.EditText,
+        /// Owned: a text field has MUTABLE state (text, bounds, format),
+        /// so it cannot be a view onto the frozen tag (edit_text.zig).
+        edit_text: *edit_text_mod.EditText,
         /// Owned: a button is a container with its own child lists
         /// (button.zig), not a bare pointer into the library.
         button: *button_mod.Button,
@@ -113,6 +116,10 @@ pub const DisplayObject = struct {
             .button => |b| {
                 b.deinit(gpa);
                 gpa.destroy(b);
+            },
+            .edit_text => |et| {
+                et.deinit(gpa);
+                gpa.destroy(et);
             },
             else => {},
         };
