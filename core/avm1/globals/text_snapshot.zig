@@ -166,14 +166,17 @@ fn nonNegative(v: i32) usize {
     return if (v < 0) 0 else @intCast(v);
 }
 
+/// The five selection members below are stubs in ruffle too, and its
+/// stubs answer UNDEFINED — guessing a plausible false/""/-1 would be a
+/// different lie, not a smaller one.
 fn getSelected(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = .{ p, this, args };
-    return .{ .boolean = false };
+    return .undefined_value;
 }
 
 fn getSelectedText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = .{ p, this, args };
-    return .{ .string = S("") };
+    return .undefined_value;
 }
 
 fn setSelected(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -188,7 +191,7 @@ fn setSelectColor(p: *anyopaque, this: Value, args: []const Value) anyerror!Valu
 
 fn hitTestTextNearPos(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = .{ p, this, args };
-    return .{ .number = -1 };
+    return .undefined_value;
 }
 
 /// `findText(start, text, caseSensitive)` — EXACTLY three arguments, or
@@ -216,7 +219,6 @@ fn findText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 }
 
 fn getTextRunInfo(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = .{ this, args };
-    const vm = vmOf(p);
-    return .{ .object = try vm.newArray() };
+    _ = .{ p, this, args };
+    return .undefined_value;
 }

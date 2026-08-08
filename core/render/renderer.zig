@@ -76,6 +76,11 @@ pub const Renderer = struct {
     /// AFTER construction — `Renderer.init` runs inside the Player's own
     /// struct literal, where `&self.movie` is not yet valid.
     lib: ?*const library.Library = null,
+    /// The EDITABLE field that currently has focus, if any — the only one
+    /// that shows a caret. Set by the Player each frame.
+    caret_field: ?*const edit_text.EditText = null,
+    /// Milliseconds since the movie started, for the caret's blink.
+    now_ms: f64 = 0,
     /// Text layout is version-dependent (wrapping, alignment), so the
     /// renderer needs the movie's version to rebuild a stale one.
     swf_version: u8 = 8,
@@ -244,6 +249,8 @@ pub const Renderer = struct {
             0;
         const scroll_x: f32 = @floatCast(et.hscroll * @as(f64, swf.reader.TWIPS_PER_PX));
 
+        if (self.caret_field == et) self.drawCaret(ctx, et, parent_t, ox, oy, scroll_x, scroll_y);
+
         for (et.layout.lines) |line| {
             for (line.boxes) |b| {
                 if (b.font.isNone()) continue;
@@ -274,6 +281,36 @@ pub const Renderer = struct {
     }
 
     const BULLET = [_]u16{0x2022};
+
+    /// A one-pixel bar at the caret, blinking on a one-second cycle: ON
+    /// for the first half, off for the second (ruffle `blinks_now`).
+    fn drawCaret(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        et: *const edit_text.EditText,
+        t: Transform,
+        ox: f32,
+        oy: f32,
+        scroll_x: f32,
+        scroll_y: f32,
+    ) void {
+        const cycle = 1000.0;
+        if (@mod(self.now_ms, cycle) * 2 >= cycle) return;
+        const c = et.caretBox() orelse return;
+        ctx.setTransform(t.a, t.b, t.c, t.d, t.tx, t.ty);
+        ctx.setColorTransform(.{});
+        const x: f64 = ox + @as(f32, @floatFromInt(c.x)) - scroll_x;
+        const y0: f64 = oy + @as(f32, @floatFromInt(c.y)) - scroll_y;
+        const y1: f64 = y0 + @as(f64, @floatFromInt(c.h));
+        ctx.beginPath();
+        ctx.moveTo(x, y0);
+        ctx.lineTo(x, y1);
+        const col = et.spans.list.items;
+        const rgb = if (col.len > 0) col[0].font.color else 0;
+        setSolid(ctx, edit_text.swfFromRgb(rgb, 255), false);
+        ctx.setLineWidth(1);
+        ctx.stroke();
+    }
 
     fn fieldText(self: *Renderer, et: *const edit_text.EditText, b: text_layout.Box) []const u16 {
         _ = self;

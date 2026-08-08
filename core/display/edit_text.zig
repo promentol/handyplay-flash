@@ -805,6 +805,38 @@ pub const EditText = struct {
         return self.textInput(gpa, text);
     }
 
+    /// Where the caret sits, in the field's own space: the x of the
+    /// character it precedes, and the top and height of that line. Null
+    /// when there is no caret to draw.
+    pub fn caretBox(self: *const EditText) ?struct { x: i32, y: i32, h: i32 } {
+        const sel = self.selection orelse return null;
+        if (!sel.isCaret()) return null;
+        const pos = sel.to;
+        for (self.layout.lines) |line| {
+            if (pos < line.start or pos > line.end) continue;
+            for (line.boxes) |b| {
+                if (b.is_bullet) continue;
+                if (pos < b.start or pos > b.end) continue;
+                // Sum the advances up to the caret; at the very end of
+                // the run that is the whole box.
+                const hi = @min(pos, @min(b.end, self.text.items.len));
+                const lo = @min(b.start, hi);
+                const w = b.font.measure(self.text.items[lo..hi], .{
+                    .height = b.size,
+                    .letter_spacing = b.letter_spacing,
+                    .kerning = b.kerning,
+                });
+                return .{ .x = b.bounds.x + w, .y = line.bounds.y, .h = line.bounds.h };
+            }
+        }
+        // An empty field still has a caret, at the start of its one line.
+        if (self.layout.lines.len > 0) {
+            const l = self.layout.lines[0];
+            return .{ .x = l.bounds.x, .y = l.bounds.y, .h = @max(l.bounds.h, l.ascent + l.descent) };
+        }
+        return null;
+    }
+
     /// Is the character at this point part of a LINK? A field that is not
     /// selectable is invisible to the mouse everywhere else, but a link
     /// in it is still clickable (ruffle `mouse_pick_avm1`).

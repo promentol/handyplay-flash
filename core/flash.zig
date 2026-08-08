@@ -89,6 +89,9 @@ pub const Player = struct {
     /// Fixed timestep (ms/frame) from the SWF header, clamped 0.01–120 fps.
     frame_ms: f64,
     acc_ms: f64 = 0,
+    /// Milliseconds of wall time since the movie started. Only the
+    /// caret's blink reads it, so it need not be precise — just monotone.
+    elapsed_ms: f64 = 0,
 
     /// Safety valve: max timeline frames advanced per tick call.
     const MAX_FRAMES_PER_TICK = 5;
@@ -226,6 +229,7 @@ pub const Player = struct {
     /// ran (0 = nothing new to present).
     pub fn tick(self: *Player, elapsed_ms: f64) !u32 {
         self.acc_ms += elapsed_ms;
+        self.elapsed_ms += elapsed_ms;
         var frames: u32 = 0;
         while (self.acc_ms >= self.frame_ms and frames < MAX_FRAMES_PER_TICK) {
             try self.runOneFrame();
@@ -1228,6 +1232,13 @@ pub const Player = struct {
             .tx = -@as(f64, @floatFromInt(self.movie.header.xmin)) * inv_twips,
             .ty = -@as(f64, @floatFromInt(self.movie.header.ymin)) * inv_twips,
         };
+        // Only an EDITABLE focused field shows a caret.
+        self.renderer.caret_field = blk: {
+            const t = self.focusedFieldTarget() orelse break :blk null;
+            const et = t.obj.kind.edit_text;
+            break :blk if (et.read_only) null else et;
+        };
+        self.renderer.now_ms = self.elapsed_ms;
         try self.renderer.renderFrame(
             &self.canvas,
             &self.root,
