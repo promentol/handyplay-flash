@@ -435,7 +435,7 @@ reached and exactly why.
 | The LOADER (M5) | `root_button_mode`, `focusrect_property_swf5/6/7` |
 | A TextField stores `tabIndex` as u32 and declares it ENUMERABLE, unlike Button and MovieClip — this dir's button and movie-clip sections match exactly, only its two text sections do not | `tab_ordering_properties` |
 
-## 6. Text, fonts and TextField (workstream D) — ✅ CLOSED (339/680)
+## 6. Text, fonts and TextField (workstream D) — ✅ CLOSED (344/680)
 
 Everything below shipped. The plan lives in the git log (`D0`..`D10`); the
 semantics worth keeping are in `docs/AVM1.md`'s "Workstream D notes" and at
@@ -517,12 +517,10 @@ reached and exactly why.
 |---|---|
 | A DEVICE font — the toml sets `with_default_font`, and resolving a face the movie does not embed needs host font I/O (M7) | `gettextextent`, `device_font_spacing`, `edittext_hscroll`, `edittext_drag_select` |
 | `TextField.StyleSheet` — a CSS parser plus `styleSheet`/`stylesheet_transform` | `edittext_stylesheet`, `clone_sprite_edittext_dynamic` |
-| Click → caret index (`screen_position_to_index`): the layout knows where every glyph is, but nothing maps a stage point back to one | `edittext_place_caret` |
 | IME composition | `edittext_ime_focus_lost` |
-| A consumed `keyPress` must suppress the `TextInput` that follows it, and a focused field must swallow Space/Enter instead of pressing the focused clip | `button_keypress_vs_textinput`, `focus_keyboard_press` |
+| A consumed `keyPress` must suppress the `TextInput` event that follows it. The two arrive separately and ruffle's own per-event `key_press_handled` does not obviously carry across, so the mechanism needs finding before it is copied | `button_keypress_vs_textinput` |
 | `filters` are reported as an empty array and not stored, so a field cannot carry one | `clone_sprite_edittext` |
-| `restrict` corner cases: the exact interaction of Copy on a password field and of a paste whose characters are partly filtered | `edittext_password_copy`, `edittext_restrict`, `edittext_restrict_paste` |
-| `TextSnapshot` over a clip whose static text arrived by cloning | `textsnapshot_available_text` |
+| `TextSnapshot` captures at CONSTRUCTION, and duplicating a clip makes a NEW snapshot of the original report undefined while an older one still reports its text — a lifetime rule we do not model | `textsnapshot_available_text` |
 | The LOADER (M5) | `focusrect_property_swf5/6/7` |
 
 ## 7. Bitmaps (workstream E)
