@@ -157,6 +157,16 @@ fn boolArg(vm: *Vm, args: []const Value) bool {
     return value_mod.toBoolean(arg(args, 0), vm.swf_version);
 }
 
+/// The field with its layout up to date and any pending autosize box
+/// applied. Every measurement and every geometry read goes through this.
+fn laidOut(vm: *Vm, this: Value) ?*EditText {
+    const et = etOf(vm, this) orelse return null;
+    const ctx = stage.displayCtxOf(vm) orelse return et;
+    et.ensureLayout(ctx.gpa, &ctx.movie.lib, ctx.movie.swf_version) catch {};
+    et.applyAutosizeBounds();
+    return et;
+}
+
 // --- text --------------------------------------------------------------------
 
 fn getText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -221,6 +231,7 @@ fn boolPair(comptime field: []const u8) type {
             const vm = vmOf(p);
             const et = etOf(vm, this) orelse return .undefined_value;
             @field(et, field) = boolArg(vm, args);
+            et.dirty = true;
             return .undefined_value;
         }
     };
@@ -270,6 +281,7 @@ fn setType(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     } else if (strings.eqlIgnoreCase(s, S("dynamic"))) {
         et.read_only = true;
     }
+    et.dirty = true;
     return .undefined_value;
 }
 
@@ -328,6 +340,7 @@ fn setTextColor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value 
     const rgb = (try toU32(vm, arg(args, 0))) & 0x00FF_FFFF;
     et.default_format.color = rgb;
     et.span_format.color = rgb;
+    et.dirty = true;
     return .undefined_value;
 }
 
@@ -372,6 +385,7 @@ fn setAutoSize(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
         .right
     else
         .none;
+    et.dirty = true;
     return .undefined_value;
 }
 
@@ -384,23 +398,33 @@ fn getScroll(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 
 fn setScroll(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    const et = etOf(vm, this) orelse return .undefined_value;
+    const et = laidOut(vm, this) orelse return .undefined_value;
     const n = try vm.toNumber(arg(args, 0));
     const clamped = std.math.clamp(n, 1, @as(f64, @floatFromInt(maxScrollOf(et))));
     et.scroll = if (std.math.isNan(clamped)) 1 else @intFromFloat(clamped);
     return .undefined_value;
 }
 
-/// Until layout exists (D8) a field is one screenful: nothing scrolls.
+/// The topmost line that can still be scrolled to: the last line whose
+/// remaining lines all fit inside the box.
 fn maxScrollOf(et: *const EditText) u32 {
-    _ = et;
+    const lines = et.layout.lines;
+    if (lines.len == 0) return 1;
+    const visible = et.bounds.height() - edit_text_mod.GUTTER * 2;
+    var i: usize = lines.len;
+    while (i > 0) : (i -= 1) {
+        const first = lines[i - 1];
+        const last = lines[lines.len - 1];
+        const span = last.bounds.y + last.bounds.h - first.bounds.y;
+        if (span > visible) return @intCast(@min(i + 1, lines.len));
+    }
     return 1;
 }
 
 fn getMaxscroll(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
-    const et = etOf(vm, this) orelse return .undefined_value;
+    const et = laidOut(vm, this) orelse return .undefined_value;
     return .{ .number = @floatFromInt(maxScrollOf(et)) };
 }
 
@@ -422,39 +446,47 @@ fn getHscroll(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 /// stranger and is not AVM1's problem.
 fn setHscroll(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    const et = etOf(vm, this) orelse return .undefined_value;
+    const et = laidOut(vm, this) orelse return .undefined_value;
     const n: f64 = @floatFromInt(try toI32(vm, arg(args, 0)));
     et.hscroll = std.math.clamp(n, 0, maxHscrollOf(et));
     return .undefined_value;
 }
 
+/// Word-wrapped text never scrolls sideways; otherwise it is how far the
+/// widest line overhangs the box.
 fn maxHscrollOf(et: *const EditText) f64 {
-    _ = et;
-    return 0;
+    if (et.word_wrap) return 0;
+    const inner = et.bounds.width() - edit_text_mod.GUTTER * 2;
+    const over = et.layout.bounds.w - inner;
+    if (over <= 0) return 0;
+    return @floatFromInt(@divTrunc(over, 20));
 }
 
 fn getMaxhscroll(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
-    const et = etOf(vm, this) orelse return .undefined_value;
+    const et = laidOut(vm, this) orelse return .undefined_value;
     return .{ .number = maxHscrollOf(et) };
 }
 
-/// Measured text, gutter excluded. Real measurement lands with the font
-/// model; an unmeasured field is zero-wide, which is also what ruffle
-/// reports when no font resolves.
+/// Measured text, gutter EXCLUDED — and truncated to whole pixels, not
+/// rounded (ruffle `trunc_to_pixel`).
 fn getTextWidth(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
-    _ = etOf(vm, this) orelse return .undefined_value;
-    return .{ .number = 0 };
+    const et = laidOut(vm, this) orelse return .undefined_value;
+    return .{ .number = truncPixels(et.layout.text_width) };
 }
 
 fn getTextHeight(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
-    _ = etOf(vm, this) orelse return .undefined_value;
-    return .{ .number = 0 };
+    const et = laidOut(vm, this) orelse return .undefined_value;
+    return .{ .number = truncPixels(et.layout.text_height) };
+}
+
+fn truncPixels(t: i32) f64 {
+    return @floatFromInt(@divTrunc(t, 20));
 }
 
 // --- limits and bindings -------------------------------------------------------
@@ -721,6 +753,7 @@ fn setTextFormatFn(p: *anyopaque, this: Value, args: []const Value) anyerror!Val
     if (args.len == 0 or args.len > 3) return .undefined_value;
     const tf = text_format.formatOf(vm, args[args.len - 1]) orelse return .undefined_value;
     et.span_format = tf.mixWith(et.span_format);
+    et.dirty = true;
     return .undefined_value;
 }
 

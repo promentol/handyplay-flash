@@ -460,7 +460,65 @@ fn setTabStops(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 }
 
 /// Needs a laid-out text field to measure with, which arrives in D6.
+/// `getTextExtent(text [, width])` — lays the string out in a THROWAWAY
+/// field and reports six numbers about it. The scratch field autosizes
+/// left, and word-wraps only when a width was given, so omitting the
+/// width and passing `undefined` behave identically.
+///
+/// `height` is not the union height: it is the union plus one more
+/// descent and the leading (ruffle `layout_metrics`).
 fn getTextExtent(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = .{ p, this, args };
-    return .undefined_value;
+    const vm = vmOf(p);
+    const tf = formatOf(vm, this) orelse return .undefined_value;
+    const stage = @import("../stage_object.zig");
+    const edit_text = @import("../../display/edit_text.zig");
+    const font_mod = @import("../../display/font.zig");
+    const ctx = stage.displayCtxOf(vm) orelse return .undefined_value;
+
+    const text = try vm.toStringValue(arg(args, 0));
+    const width: ?f64 = if (args.len > 1 and !isUnset(args[1]))
+        try vm.toNumber(args[1])
+    else
+        null;
+
+    var et = edit_text.EditText.dynamic(width orelse 0, 0);
+    defer et.deinit(ctx.gpa);
+    et.autosize = .left;
+    et.word_wrap = width != null;
+    et.default_format = tf.*;
+    et.span_format = tf.*;
+    try et.setText(ctx.gpa, text);
+    try et.ensureLayout(ctx.gpa, &ctx.movie.lib, ctx.movie.swf_version);
+    et.applyAutosizeBounds();
+
+    const size = twipsOf(tf.size orelse 12);
+    const face = font_mod.resolve(
+        &ctx.movie.lib,
+        tf.font orelse &.{},
+        tf.bold orelse false,
+        tf.italic orelse false,
+        et.use_outlines,
+    );
+    const ascent = face.ascent(size);
+    const descent = face.descent(size);
+    const leading = twipsOf(tf.leading orelse 0);
+
+    const h = try vm.objects.create();
+    vm.objects.get(h).proto = .{ .object = vm.object_proto };
+    try setNum(vm, h, "ascent", ascent);
+    try setNum(vm, h, "descent", descent);
+    try setNum(vm, h, "width", et.layout.bounds.w);
+    try setNum(vm, h, "height", et.layout.bounds.h + descent + leading);
+    try setNum(vm, h, "textFieldHeight", et.bounds.height());
+    try setNum(vm, h, "textFieldWidth", et.bounds.width());
+    return .{ .object = h };
+}
+
+fn twipsOf(px: f64) i32 {
+    return @intFromFloat(px * 20.0);
+}
+
+fn setNum(vm: *Vm, h: ObjectHandle, comptime name: []const u8, twips: i32) !void {
+    const px = @as(f64, @floatFromInt(twips)) / 20.0;
+    try vm.objects.put(h, S(name), .{ .number = px }, false);
 }

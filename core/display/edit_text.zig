@@ -11,6 +11,7 @@ const std = @import("std");
 const swf = @import("../swf/swf.zig");
 const format_mod = @import("../text/format.zig");
 const library = @import("library.zig");
+const text_layout = @import("text_layout.zig");
 
 const Rectangle = swf.reader.Rectangle;
 const TextFormat = format_mod.TextFormat;
@@ -38,7 +39,7 @@ pub fn swfFromRgb(rgb: u32, alpha: u8) u32 {
 /// OBSERVABLE: two pixels of it turn up in `textWidth` vs `_width`, in
 /// `getTextExtent`, and in where the first glyph sits (ruffle
 /// edit_text.rs:257).
-pub const GUTTER: i32 = 40;
+pub const GUTTER: i32 = text_layout.GUTTER;
 
 pub const EditText = struct {
     /// The tag this was born from; null for `createTextField`.
@@ -88,6 +89,17 @@ pub const EditText = struct {
     hscroll: f64 = 0,
     /// 1-based, like Flash's.
     scroll: u32 = 1,
+
+    /// The laid-out lines, rebuilt lazily whenever anything that feeds
+    /// layout changes.
+    layout: text_layout.Layout = .empty,
+    dirty: bool = true,
+    /// Autosize resizes the box, but the new box is applied LAZILY — at
+    /// the top of a render or a geometry read, never inside the setter
+    /// that caused it. The ordering is observable: setting `autoSize`
+    /// then `wordWrap` then `autoSize` again must not bake the first
+    /// answer in (ruffle `apply_autosize_bounds`).
+    autosize_lazy_bounds: ?Rectangle = null,
 
     /// The object this field's `variable` resolved to, or null while the
     /// field is on the unbound list.
@@ -213,6 +225,7 @@ pub const EditText = struct {
 
     pub fn deinit(self: *EditText, gpa: std.mem.Allocator) void {
         self.text.deinit(gpa);
+        self.layout.deinit(gpa);
         gpa.free(self.font_name);
         if (self.variable) |v| gpa.free(v);
         if (self.restrict) |v| gpa.free(v);
@@ -231,6 +244,87 @@ pub const EditText = struct {
     pub fn setText(self: *EditText, gpa: std.mem.Allocator, s: []const u16) !void {
         self.text.clearRetainingCapacity();
         try self.text.appendSlice(gpa, s);
+        self.dirty = true;
+    }
+
+    /// Rebuild the layout if anything has changed since the last one.
+    pub fn ensureLayout(
+        self: *EditText,
+        gpa: std.mem.Allocator,
+        lib: *const library.Library,
+        swf_version: u8,
+    ) !void {
+        if (!self.dirty) return;
+        self.dirty = false;
+        try self.relayout(gpa, lib, swf_version);
+    }
+
+    fn relayout(
+        self: *EditText,
+        gpa: std.mem.Allocator,
+        lib: *const library.Library,
+        swf_version: u8,
+    ) !void {
+        const padding = GUTTER * 2;
+        // An autosizing field that does NOT wrap has no width to lay out
+        // against — it finds its own.
+        const content_width: ?i32 = if (self.autosize == .none or self.word_wrap)
+            self.bounds.width() - padding
+        else
+            null;
+
+        // A password field lays out asterisks, so its width is the width
+        // of the mask rather than of the secret.
+        var masked: ?[]u16 = null;
+        defer if (masked) |m| gpa.free(m);
+        var shown: []const u16 = self.text.items;
+        if (self.password) {
+            const m = try gpa.alloc(u16, self.text.items.len);
+            @memset(m, '*');
+            masked = m;
+            shown = m;
+        }
+
+        const spans = [_]text_layout.Span{.{ .start = 0, .format = self.span_format }};
+        const fresh = try text_layout.layOut(gpa, lib, shown, &spans, .{
+            .width = content_width,
+            .is_input = !self.read_only,
+            .word_wrap = self.word_wrap,
+            .embedded = self.use_outlines,
+            .swf_version = swf_version,
+        });
+        self.layout.deinit(gpa);
+        self.layout = fresh;
+        self.hscroll = 0;
+        self.scroll = 1;
+
+        if (self.autosize == .none) {
+            self.autosize_lazy_bounds = null;
+            return;
+        }
+        var box = self.bounds;
+        if (!self.word_wrap) {
+            var w = fresh.text_width + padding;
+            // An EDITABLE field gets 2.5px more, room for the caret.
+            if (!self.read_only) w += 50;
+            box.xmin = switch (self.autosize) {
+                .left, .none => box.xmin,
+                .center => @divTrunc(box.xmin + box.xmax - w, 2),
+                .right => box.xmax - w,
+            };
+            box.xmax = box.xmin +% w;
+        }
+        box.ymax = box.ymin +% (fresh.text_height + padding);
+        self.autosize_lazy_bounds = box;
+    }
+
+    /// Take the pending autosize box, if any. Called at the top of every
+    /// render and every geometry read — never from a setter.
+    pub fn applyAutosizeBounds(self: *EditText) void {
+        if (self.autosize_lazy_bounds) |b| {
+            self.bounds = b;
+            self.autosize_lazy_bounds = null;
+        }
     }
 
     fn setTextAscii(self: *EditText, gpa: std.mem.Allocator, s: []const u8) !void {

@@ -75,8 +75,16 @@ drag_over_from_outside
 drag_over_without_startdrag
 duplicate_movie_clip
 duplicate_movie_clip_drawing
+edittext_align
 edittext_autosize_setter
+edittext_font_size
 edittext_html_align_swf8
+edittext_leading
+edittext_letter_spacing
+edittext_margins
+edittext_tab_stops
+edittext_text_height_leading
+edittext_underline
 edittext_width_height
 empty_movieclip_can_attach_movies
 enumerate
@@ -251,6 +259,7 @@ text_blocks_clicks
 text_format
 text_format_display
 text_format_font_max_length
+text_format_get_text_extent_undefined_width
 text_format_rounding_swf7
 text_format_rounding_swf8
 textfield_asbroadcaster

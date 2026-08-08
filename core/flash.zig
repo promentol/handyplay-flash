@@ -26,6 +26,8 @@ pub const display = struct {
     pub const button = @import("display/button.zig");
     pub const text = @import("display/text.zig");
     pub const edit_text = @import("display/edit_text.zig");
+    pub const font = @import("display/font.zig");
+    pub const text_layout = @import("display/text_layout.zig");
     pub const mouse = @import("display/mouse.zig");
     pub const tab = @import("display/tab.zig");
     // M4: text.zig.
@@ -1128,6 +1130,8 @@ test {
     _ = @import("display/tab.zig");
     _ = @import("display/text.zig");
     _ = @import("display/edit_text.zig");
+    _ = @import("display/font.zig");
+    _ = @import("display/text_layout.zig");
     _ = @import("render/canvas.zig");
     _ = @import("render/shape_utils.zig");
     _ = @import("render/renderer.zig");
@@ -1146,6 +1150,8 @@ test {
     _ = @import("avm1/globals/selection.zig");
     _ = @import("avm1/globals/text_format.zig");
     _ = @import("avm1/globals/text_snapshot.zig");
+    _ = @import("avm1/globals/text_field.zig");
+    _ = @import("avm1/text_binding.zig");
     _ = @import("text/format.zig");
     _ = @import("avm1/globals/movie_clip.zig");
     _ = @import("avm1/globals/globals.zig");
