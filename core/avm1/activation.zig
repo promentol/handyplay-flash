@@ -603,33 +603,10 @@ pub const Activation = struct {
         // A display property name writes through to the clip; anything
         // else is an ordinary put on the clip's own ScriptObject.
         if (try stage.assignMember(self.vm, h, name, v)) return;
-        const o = self.vm.objects.get(h);
-        if (o.native == .array) {
-            // Numeric keys maintain length.
-            if (parseArrayIndex(name)) |idx| {
-                try self.vm.arraySet(h, idx, v);
-                return;
-            }
-            if (strings.eqlIgnoreCase(name, S("length"))) {
-                const n = try self.vm.toNumber(v);
-                if (!std.math.isNan(n) and n >= 0) {
-                    try self.vm.setArrayLength(h, @intFromFloat(@min(n, 4294967295.0)));
-                }
-                return;
-            }
-        }
+        // An array's `length`/index linkage lives in `Vm.setProperty`,
+        // with the watchers and virtual properties that a write to
+        // either has to pass through first.
         try self.vm.setProperty(h, name, v, target);
-    }
-
-    fn parseArrayIndex(name: strings.AvmString) ?u32 {
-        if (name.len == 0 or name.len > 10) return null;
-        var acc: u64 = 0;
-        for (name) |c| {
-            if (c < '0' or c > '9') return null;
-            acc = acc * 10 + (c - '0');
-            if (acc > 4294967294) return null;
-        }
-        return @intCast(acc);
     }
 
     // --- dispatch ---------------------------------------------------------

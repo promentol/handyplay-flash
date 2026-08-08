@@ -760,6 +760,7 @@ pub const Vm = struct {
     /// an inherited accessor intercepts writes to the child).
     pub fn setProperty(self: *Vm, h: ObjectHandle, name: strings.AvmString, v_in: Value, this: Value) anyerror!void {
         if (name.len == 0) return;
+        if (self.objects.get(h).native == .array) try self.arrayWriteHook(h, name, v_in);
         const v = if (self.objects.get(h).watchers.len == 0)
             v_in
         else
@@ -808,6 +809,55 @@ pub const Vm = struct {
         // (ruffle stage_object.rs `notify_property_change`, run after
         // `set_local`).
         try notifyTextBinding(self, h, name, v);
+    }
+
+    /// An array's `length` and its INDEX properties are linked, and both
+    /// directions are observable.
+    ///
+    /// Writing a shorter `length` DELETES the elements past it, and
+    /// writing an index at or beyond the current length pushes `length`
+    /// up to one past it. An index that will not fit an i32 — `a[2^31]`
+    /// — is not an index at all and leaves the length alone.
+    fn arrayWriteHook(self: *Vm, h: ObjectHandle, name: strings.AvmString, v: Value) !void {
+        if (strings.eql(name, S("length"))) {
+            const new_len = value_mod.toInt32(try self.toNumber(v));
+            const old = self.objects.getOwn(h, S("length"), self.case_sensitive) orelse return;
+            if (old != .number) return;
+            var i: i64 = @max(new_len, 0);
+            const old_len: i64 = value_mod.toInt32(old.number);
+            while (i < old_len) : (i += 1) {
+                _ = self.objects.deleteOwn(h, try self.indexKey(@intCast(i)), self.case_sensitive);
+            }
+            return;
+        }
+        const index = parseArrayIndex(name) orelse return;
+        const len: i64 = @intCast(self.arrayLength(h));
+        if (index >= len) {
+            try self.setArrayLengthRaw(h, @floatFromInt(@as(i32, @truncate(index +% 1))));
+        }
+    }
+
+    fn indexKey(self: *Vm, i: u32) !strings.AvmString {
+        var buf: [12]u8 = undefined;
+        const ascii = std.fmt.bufPrint(&buf, "{d}", .{i}) catch unreachable;
+        const wide = try self.arena().alloc(u16, ascii.len);
+        for (ascii, wide) |c, *w| w.* = c;
+        return wide;
+    }
+
+    /// A canonical non-negative decimal that fits an i32. Anything else —
+    /// a leading zero, a sign, a fraction, or an overflow — is a plain
+    /// property name.
+    fn parseArrayIndex(name: strings.AvmString) ?i64 {
+        if (name.len == 0 or name.len > 10) return null;
+        if (name[0] == '0' and name.len > 1) return null;
+        var acc: i64 = 0;
+        for (name) |c| {
+            if (c < '0' or c > '9') return null;
+            acc = acc * 10 + (c - '0');
+            if (acc > std.math.maxInt(i32)) return null;
+        }
+        return acc;
     }
 
     /// Split out so the hot path stays a single branch: only a DISPLAY
