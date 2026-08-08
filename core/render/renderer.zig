@@ -27,6 +27,7 @@ const edit_text = @import("../display/edit_text.zig");
 const display_font = @import("../display/font.zig");
 const edit_text_device = @import("../display/device_font.zig");
 const text_layout = @import("../display/text_layout.zig");
+const bitmap_decode = @import("../bitmap/decode.zig");
 
 pub const Error = std.mem.Allocator.Error || error{OutOfMemory};
 
@@ -88,9 +89,87 @@ pub const Renderer = struct {
     /// owned by the field and freed when it is, so it must come from the
     /// same place everything else the field owns does.
     display_gpa: ?std.mem.Allocator = null,
+    /// The movie-level JPEGTables (8) stream, which `DefineBits` needs
+    /// spliced in front of its own scan data. Set by the Player.
+    jpeg_tables: ?[]const u8 = null,
+    /// Bitmap characters, decoded ONCE. A null value is a character that
+    /// failed to decode — remembered so a broken image is not re-decoded
+    /// on every frame it appears in.
+    bitmaps: std.AutoHashMapUnmanaged(u16, ?bitmap_decode.Image) = .empty,
+    /// Ready-to-sample patterns, keyed by character id plus the two style
+    /// bits that change how the texels are read. The transform is set per
+    /// use; the pixels are shared.
+    patterns: std.AutoHashMapUnmanaged(u32, simdra.SmPattern) = .empty,
 
     pub fn init(movie_arena: std.mem.Allocator) Renderer {
         return .{ .arena = movie_arena };
+    }
+
+    /// A character's pixels, decoded once. Null when the id is not a
+    /// bitmap or the payload would not decode.
+    fn decodedBitmap(self: *Renderer, id: u16) ?*const bitmap_decode.Image {
+        const gop = self.bitmaps.getOrPut(self.arena, id) catch return null;
+        if (!gop.found_existing) {
+            gop.value_ptr.* = blk: {
+                const lib = self.lib orelse break :blk null;
+                const ch = lib.characters.get(id) orelse break :blk null;
+                const bmp = switch (ch) {
+                    .bitmap => |b| b,
+                    else => break :blk null,
+                };
+                break :blk bitmap_decode.decode(self.arena, bmp, self.jpeg_tables) catch null;
+            };
+        }
+        return if (gop.value_ptr.*) |*img| img else null;
+    }
+
+    /// The pattern for a bitmap fill. Cached with its pixels; only the
+    /// transform changes between uses, so it is set by the caller.
+    fn pattern(self: *Renderer, id: u16, repeating: bool, smoothed: bool) Error!?*simdra.SmPattern {
+        const key = @as(u32, id) |
+            (@as(u32, @intFromBool(repeating)) << 16) |
+            (@as(u32, @intFromBool(smoothed)) << 17);
+        const gop = try self.patterns.getOrPut(self.arena, key);
+        if (!gop.found_existing) {
+            const img = self.decodedBitmap(id) orelse {
+                _ = self.patterns.remove(key);
+                return null;
+            };
+            gop.value_ptr.* = simdra.SmPattern.createWithAllocator(
+                self.arena,
+                img.rgba,
+                img.width,
+                img.height,
+                if (repeating) .repeat else .no_repeat,
+            ) catch {
+                _ = self.patterns.remove(key);
+                return null;
+            };
+            gop.value_ptr.setFilter(if (smoothed) .bilinear else .nearest);
+        }
+        return gop.value_ptr;
+    }
+
+    /// A bitmap placed DIRECTLY on the display list — no shape, no fill
+    /// style. Flash draws it as its own pixel rectangle at one twip-scaled
+    /// pixel per texel, which is the same job as a bitmap fill over a
+    /// unit-sized box.
+    fn renderBitmap(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        id: u16,
+        t: Transform,
+        cx: swf.reader.ColorTransform,
+    ) Error!void {
+        const img = self.decodedBitmap(id) orelse return;
+        const pat = try self.pattern(id, false, false) orelse return;
+        pat.setTransform(t.a * 20, t.b * 20, t.c * 20, t.d * 20, t.tx, t.ty);
+
+        ctx.setTransform(t.a, t.b, t.c, t.d, t.tx, t.ty);
+        ctx.setColorTransform(toSimdraCxform(cx));
+        ctx.setFillPattern(pat);
+        boxPath(ctx, 0, 0, @as(f64, @floatFromInt(img.width)) * 20, @as(f64, @floatFromInt(img.height)) * 20);
+        ctx.fill(.nonzero);
     }
 
     fn distilledGlyph(
@@ -164,7 +243,8 @@ pub const Renderer = struct {
                 .button => |b| try self.renderClip(ctx, &b.container, t, cx),
                 .text => |txt| try self.renderText(ctx, txt, t, cx),
                 .edit_text => |et| try self.renderEditText(ctx, et, t, cx),
-                .morph_shape, .bitmap => {}, // M7
+                .bitmap => |id| try self.renderBitmap(ctx, id, t, cx),
+                .morph_shape => {}, // M7
             }
         }
     }
@@ -550,7 +630,6 @@ pub const Renderer = struct {
         t: Transform,
         cx: swf.reader.ColorTransform,
     ) Error!void {
-        _ = self;
         if (paths.len == 0) return;
         ctx.setTransform(t.a, t.b, t.c, t.d, t.tx, t.ty);
         ctx.setColorTransform(toSimdraCxform(cx));
@@ -560,7 +639,7 @@ pub const Renderer = struct {
                     buildPath(ctx, f.commands);
                     var grad: ?simdra.SmGradient = null;
                     defer if (grad) |*g| g.deinit();
-                    try applyFillStyle(ctx, f.style, t, &grad);
+                    try applyFillStyle(self, ctx, f.style, t, &grad);
                     ctx.fill(switch (f.winding) {
                         .even_odd => .evenodd,
                         .non_zero => .nonzero,
@@ -644,6 +723,7 @@ fn boxPath(ctx: *simdra.SmCanvas, x0: f64, y0: f64, x1: f64, y1: f64) void {
 }
 
 fn applyFillStyle(
+    self: *Renderer,
     ctx: *simdra.SmCanvas,
     style: *const swf.shape.FillStyle,
     t: Transform,
@@ -668,10 +748,19 @@ fn applyFillStyle(
             grad_out.* = try buildGradient(ctx, fg.gradient, t, .radial, fg.focal_point);
             ctx.setFillGradient(&grad_out.*.?);
         },
-        .bitmap => {
-            // M4: decoded bitmap → SmPattern. Placeholder: mid gray so
-            // bitmap-filled shapes are visible rather than missing.
-            ctx.setFillStyle(128, 128, 128, 255);
+        .bitmap => |b| {
+            if (try self.pattern(b.id, b.is_repeating, b.is_smoothed)) |pat| {
+                // The pattern samples in DEVICE space, so its forward
+                // matrix is the whole chain: texel → bitmap twips (20 per
+                // pixel) → shape twips (the style matrix) → device.
+                const full = t.concat(b.matrix);
+                pat.setTransform(full.a * 20, full.b * 20, full.c * 20, full.d * 20, full.tx, full.ty);
+                ctx.setFillPattern(pat);
+            } else {
+                // A character that is missing or would not decode. Mid
+                // gray, so a broken image is visible rather than absent.
+                ctx.setFillStyle(128, 128, 128, 255);
+            }
         },
     }
 }

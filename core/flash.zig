@@ -22,6 +22,7 @@ pub const bitmap = struct {
     pub const pixels = @import("bitmap/pixels.zig");
     pub const data = @import("bitmap/data.zig");
     pub const operations = @import("bitmap/operations.zig");
+    pub const decode = @import("bitmap/decode.zig");
 };
 
 pub const display = struct {
@@ -188,6 +189,7 @@ pub const Player = struct {
         self.renderer.lib = &self.movie.lib;
         self.renderer.swf_version = self.movie.swf_version;
         self.renderer.display_gpa = gpa;
+        self.renderer.jpeg_tables = self.movie.jpeg_tables;
         self.vm.root_swf_version = self.movie.swf_version;
         self.vm.movie_url = avm1.strings.fromSwf(self.vm.arena(), opts.url, 8) catch &.{};
         self.vm.epoch_ms = opts.epoch_ms;
@@ -1316,6 +1318,7 @@ test {
     _ = @import("bitmap/pixels.zig");
     _ = @import("bitmap/data.zig");
     _ = @import("bitmap/operations.zig");
+    _ = @import("bitmap/decode.zig");
     _ = @import("text/format.zig");
     _ = @import("text/spans.zig");
     _ = @import("text/html.zig");
