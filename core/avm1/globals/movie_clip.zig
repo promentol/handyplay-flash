@@ -342,7 +342,7 @@ const BLEND_NAMES = [_][]const u16{
     S("invert"),  S("alpha"),  S("erase"),      S("overlay"),  S("hardlight"),
 };
 
-fn getBlendMode(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+pub fn getBlendMode(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
@@ -353,7 +353,7 @@ fn getBlendMode(p: *anyopaque, this: Value, args: []const Value) anyerror!Value 
 
 /// Accepts either the name or the numeric index; anything unrecognised
 /// leaves the current mode alone (ruffle set_blend_mode logs and returns).
-fn setBlendMode(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+pub fn setBlendMode(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
     const v = arg(args, 0);
@@ -376,14 +376,14 @@ fn setBlendMode(p: *anyopaque, this: Value, args: []const Value) anyerror!Value 
 /// PlaceObject3 filters are parsed but not applied (M7). Reading yields a
 /// fresh empty Array every time, which is what ruffle does — the returned
 /// array is a COPY, so mutating it does not change the object.
-fn getFilters(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+pub fn getFilters(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
     _ = args;
     const vm = vmOf(p);
     return .{ .object = try vm.newArray() };
 }
 
-fn setFilters(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+pub fn setFilters(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = p;
     _ = this;
     _ = args;

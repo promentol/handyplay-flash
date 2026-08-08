@@ -187,6 +187,16 @@ pub fn install(vm: *Vm) !void {
         try decl.value(vm, btn_proto, "useHandCursor", .{ .boolean = true }, .{});
         try decl.value(vm, btn_proto, "enabled", .{ .boolean = true }, .{});
         try decl.method(vm, btn_proto, "getDepth", @import("movie_clip.zig").getDepth, ver(.{}, decl.V6));
+        // The SWF8 block. Unlike MovieClip's, Button's members carry NO
+        // attribute flags at all — they enumerate and delete like ordinary
+        // properties (ruffle globals/button.rs PROTO_DECLS). `tabEnabled`
+        // is deliberately absent: it is not a built-in Button property.
+        const mc_globals = @import("movie_clip.zig");
+        try decl.property(vm, btn_proto, "blendMode", mc_globals.getBlendMode, mc_globals.setBlendMode, ver(.{ .read_only = true }, decl.V8));
+        try decl.property(vm, btn_proto, "filters", mc_globals.getFilters, mc_globals.setFilters, ver(.{ .read_only = true }, decl.V8));
+        try decl.value(vm, btn_proto, "cacheAsBitmap", .{ .boolean = false }, ver(.{ .read_only = true }, decl.V8));
+        try decl.value(vm, btn_proto, "scale9Grid", .undefined_value, ver(.{ .read_only = true }, decl.V8));
+        try decl.value(vm, btn_proto, "tabIndex", .undefined_value, ver(.{}, decl.V6));
         _ = try decl.class(vm, "Button", ctorMovieClip, btn_proto, attrs);
 
         const tf_proto = try vm.objects.create();
