@@ -14,6 +14,8 @@ const std = @import("std");
 const swf = @import("../swf/swf.zig");
 const display_object = @import("display_object.zig");
 const shape_utils = @import("../render/shape_utils.zig");
+const library = @import("library.zig");
+const text_mod = @import("text.zig");
 
 const DisplayObject = display_object.DisplayObject;
 const Rectangle = swf.reader.Rectangle;
@@ -103,7 +105,14 @@ pub fn hitTestBounds(obj: *const DisplayObject, point: [2]i32, parent_to_global:
 /// Characters we cannot rasterise yet (buttons, bitmaps, morph shapes)
 /// fall back to their bounding box, which is `null` for those kinds today
 /// and so reports a miss — the same answer the renderer gives.
-pub fn hitTestShape(obj: *const DisplayObject, point: [2]i32, parent_to_global: Matrix) bool {
+/// `lib` is needed only to resolve a static text's FONT; pass null and
+/// text falls back to its box.
+pub fn hitTestShape(
+    obj: *const DisplayObject,
+    point: [2]i32,
+    parent_to_global: Matrix,
+    lib: ?*const library.Library,
+) bool {
     if (!obj.visible) return false;
     const to_global = parent_to_global.mul(obj.matrix);
     const inv = to_global.invert() orelse return false;
@@ -115,7 +124,7 @@ pub fn hitTestShape(obj: *const DisplayObject, point: [2]i32, parent_to_global: 
                 if (d.hitTest(.{ .x = local[0], .y = local[1] }, to_global)) return true;
             }
             for (mc.children.items) |child| {
-                if (hitTestShape(child, point, to_global)) return true;
+                if (hitTestShape(child, point, to_global, lib)) return true;
             }
             return false;
         },
@@ -128,13 +137,34 @@ pub fn hitTestShape(obj: *const DisplayObject, point: [2]i32, parent_to_global: 
             else
                 b.container.children.items;
             for (list) |child| {
-                if (hitTestShape(child, point, to_global)) return true;
+                if (hitTestShape(child, point, to_global, lib)) return true;
             }
             return false;
         },
-        // Text renders in M4-D and bitmaps in M4-E; until then their box
-        // IS their geometry.
-        .text, .edit_text, .bitmap, .morph_shape => {
+        // STATIC text is hit GLYPH BY GLYPH: the gap between two letters
+        // is not part of it, so a click there falls through to whatever
+        // is behind (ruffle text.rs:191-257). Without a library to
+        // resolve the font, the box has to stand in.
+        .text => |txt| {
+            const box = selfBounds(obj) orelse return false;
+            if (!contains(box, local[0], local[1])) return false;
+            const l = lib orelse return true;
+            // The tag's own matrix wraps the run, so the point comes back
+            // out of it before the per-glyph walk.
+            const inv_text = txt.matrix.invert() orelse return false;
+            const p = inv_text.transformPoint(local[0], local[1]);
+            var w = text_mod.Walker.init(txt, l);
+            while (w.next()) |g| {
+                const gi = g.matrix.invert() orelse continue;
+                const gp = gi.transformPoint(p[0], p[1]);
+                const gs = swf.font_text.glyphShape(g.glyph);
+                if (shape_utils.shapeHitTest(&gs, .{ .x = gp[0], .y = gp[1] }, to_global)) return true;
+            }
+            return false;
+        },
+        // A field's box IS its geometry — Flash hit-tests the rectangle,
+        // not the glyphs. Bitmaps land in M4-E and morph shapes in M7.
+        .edit_text, .bitmap, .morph_shape => {
             const box = selfBounds(obj) orelse return false;
             return contains(box, local[0], local[1]);
         },

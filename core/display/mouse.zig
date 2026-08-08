@@ -123,7 +123,7 @@ pub fn pick(
             // (ruffle Avm1Button::enabled); the pick's `mouse_enabled`
             // gate is the AVM2 flag, which AVM1 never clears.
             if (containsPoint(obj, world, point) and
-                isButtonMode(ctx, mc) and bounds.hitTestShape(obj, point, parent_matrix))
+                isButtonMode(ctx, mc) and bounds.hitTestShape(obj, point, parent_matrix, &ctx.movie.lib))
             {
                 return obj;
             }
@@ -133,12 +133,12 @@ pub fn pick(
             // A child of a button can be a button in its own right.
             if (pickChildren(ctx, b.container.children.items, world, point)) |hit| return hit;
             for (b.hit_area.children.items) |child| {
-                if (bounds.hitTestShape(child, point, world)) return obj;
+                if (bounds.hitTestShape(child, point, world, &ctx.movie.lib)) return obj;
             }
             // A button with no hit records is hit through what it shows.
             if (b.hit_area.children.items.len == 0) {
                 for (b.container.children.items) |child| {
-                    if (bounds.hitTestShape(child, point, world)) return obj;
+                    if (bounds.hitTestShape(child, point, world, &ctx.movie.lib)) return obj;
                 }
             }
             return null;

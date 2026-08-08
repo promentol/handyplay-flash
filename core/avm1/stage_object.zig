@@ -1724,7 +1724,11 @@ pub fn hitTestPoint(vm: *Vm, t: Target, x_px: f64, y_px: f64, shape_flag: bool) 
         gy = p[1];
     }
     const parent_to_global = parentToGlobalMatrix(t);
-    if (shape_flag) return bounds_mod.hitTestShape(t.obj, .{ gx, gy }, parent_to_global);
+    if (shape_flag) {
+        const l: ?*const @import("../display/library.zig").Library =
+            if (displayCtx(vm)) |c| &c.movie.lib else null;
+        return bounds_mod.hitTestShape(t.obj, .{ gx, gy }, parent_to_global, l);
+    }
     return bounds_mod.hitTestBounds(t.obj, .{ gx, gy }, parent_to_global);
 }
 
@@ -1863,6 +1867,8 @@ pub fn dropTargetPath(vm: *Vm, t: Target) ![]const u16 {
 /// drawn on top.
 fn topmostUnder(vm: *Vm, container: *MovieClip, point: [2]i32, to_global: swf.reader.Matrix) ?Target {
     var best: ?Target = null;
+    const lib: ?*const @import("../display/library.zig").Library =
+        if (displayCtx(vm)) |c| &c.movie.lib else null;
     for (container.children.items) |child| {
         if (insideDrag(vm, child)) continue;
         if (child.kind == .clip) {
@@ -1872,10 +1878,10 @@ fn topmostUnder(vm: *Vm, container: *MovieClip, point: [2]i32, to_global: swf.re
             // found nothing (corpus drag_drop's /drop2/drop3).
             if (topmostUnder(vm, child.kind.clip, point, child_to_global)) |inner| {
                 best = inner;
-            } else if (bounds_mod.hitTestShape(child, point, to_global)) {
+            } else if (bounds_mod.hitTestShape(child, point, to_global, lib)) {
                 best = .{ .obj = child, .clip = child.kind.clip };
             }
-        } else if (bounds_mod.hitTestShape(child, point, to_global)) {
+        } else if (bounds_mod.hitTestShape(child, point, to_global, lib)) {
             // Only CLIPS can be drop targets; a bare shape reports its
             // container instead (ruffle drop_target is a MovieClip).
             best = .{ .obj = container.placement orelse continue, .clip = container };
