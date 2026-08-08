@@ -454,3 +454,28 @@ unit in the last place per channel.
 **`BitmapData.draw` blits** when the source is a BitmapData and the
 matrix has no scale or skew. That is what Flash does, and the result
 differs from a real render, so it is the answer rather than a shortcut.
+A blend mode of `alpha` or `erase` against a BitmapData source does
+NOTHING at all, whatever the pixels are.
+
+**The same blit happens on the STAGE**, for any bitmap drawn unscaled and
+axis-aligned on whole pixels. Flash's composite there is premultiplied
+source-over with a truncating divide; the rasteriser's pattern path
+un-premultiplies, blends and un-premultiplies again. Three roundings
+against one, worth a unit per channel, which two tolerance-zero image
+dirs measure.
+
+**`perlinNoise` writes its output RAW**, so a channel can exceed its own
+alpha — an impossible premultiplied pixel. Un-premultiplying one must
+CLAMP (the corpus reads the 0xFFs back) and putting one on screen must
+SATURATE; the pixel operations keep the wrapping blend, which is what
+their own traces pin and which a valid pixel can never reach. Its
+channel index counts only the SELECTED channels, so asking for blue
+alone gives the field red would have got, and an unselected channel is
+forced to -1 (colour) or +1 (alpha) rather than left alone.
+
+**Only `ColorMatrixFilter` is applied.** Four rows of five over the
+un-premultiplied colour, clamped per channel on the 0..1 value and only
+then premultiplied. The fourth column multiplies alpha as it stands
+while the other three take colour divided BY that alpha, so a fully
+transparent pixel contributes nothing but its own alpha. Every other
+filter reports -1, which is what Flash reports for one it cannot build.

@@ -569,7 +569,7 @@ Nothing else in the cluster is outstanding. The four dirs that needed a
 DEVICE font, the two that needed `flash.filters`, the IME one, drag
 selection, click-to-caret and `TextField.StyleSheet` all shipped.
 
-## 7. Bitmaps (workstream E) — ✅ CLOSED (385/680, images 4/26)
+## 7. Bitmaps (workstream E) — ✅ CLOSED (385/680, images 8/26)
 
 **This section used to describe only half of E, and not the half the
 corpus measures.** It was entirely about decoding `DefineBits*` and
@@ -654,6 +654,23 @@ an off-screen draw path; `DisplayObject.Kind` gained `attached_bitmap`.
   is texel → bitmap twips (20 per pixel) → the style matrix → the CTM. A
   library character uploads once; a script `BitmapData` is re-read on
   every use, because script may have painted into it between frames.
+- **A bitmap that lands square on the pixel grid is BLITTED**, not
+  rasterised, and its blend is not the rasteriser's: premultiplied
+  source-over with a truncating divide, against a pattern fill's
+  un-premultiply → blend → un-premultiply. Three roundings against one,
+  and two tolerance-zero image dirs see the difference. The blit falls
+  back the moment anything about the draw is not square.
+- **`perlinNoise` is SVG's feTurbulence**, seeded by the same Park-Miller
+  stream. Its channel index counts only the SELECTED channels, so blue
+  alone gets the field red would have had; an unselected channel is
+  forced to -1 (colour) or +1 (alpha) rather than left alone; and the
+  output is written RAW, so a channel can exceed its own alpha. That last
+  one is why un-premultiplying CLAMPS and why the stage composite
+  saturates where the pixel operations wrap.
+- **`applyFilter` applies a ColorMatrixFilter**: four rows of five over
+  the un-premultiplied colour, clamped per channel on the 0..1 value and
+  only then premultiplied. The matrix's fourth column multiplies alpha as
+  it stands while the other three take colour divided BY that alpha.
 - **`BitmapData.draw` is two things.** A BitmapData source under a matrix
   with no scale or skew is a plain BLIT — Flash does not go near the
   renderer, and the result is not what a render would give, so the fast
@@ -661,35 +678,47 @@ an off-screen draw path; `DisplayObject.Kind` gained `attached_bitmap`.
   renders into an off-screen canvas seeded with the target's pixels. The
   source's own placement matrix is not applied.
 
-**Not reached, and why.**
+**Not reached, and why.** Every scorable bitmap dir passes, in both the
+trace sweep and the image one. What is left is named below with what it
+would actually take.
 
-- **`bitmap_data_thorough/{copyPixels,paletteMap,perlinNoise}` and
-  `bitmap_data_thorough/pixelDissolve`** are recorded `known_failure` in
-  ruffle and excluded from the sweep — no implementation can move them.
-  `copyPixels` and `paletteMap` are implemented anyway and used by the
-  top-level dirs, which do pass.
-- **`perlinNoise` has its argument contract but no pixels.** Ruffle's own
-  Perlin output does not match Flash's (that is why its dir is a recorded
-  known failure), so there is nothing correct to port. Its image dir has
-  an EMPTY `output.txt` and scores only through the image harness.
-- **`applyFilter` is contract-only** — it reports -1, which is what Flash
-  reports for a filter it cannot build. Applying a filter to a pixel
-  buffer needs the filter kernels, which are M7; the AVM1 filter OBJECTS
-  landed in workstream D. This is what blocks
-  `bitmapdata_applyfilter_colormatrix` (max channel delta 62).
-- **`bitmap_filters` is not an E dir at all.** It needs PlaceObject3's
-  filter list decoded, which is M7.
-- **Blend modes are not modelled** — `draw` treats every mode as
-  `normal`. No scorable dir depends on one.
-- **`bitmap_data_fillrect` and `bitmap_data_copypixels` fail on
-  COMPOSITING ROUNDING, not on bitmap logic.** Both are at `tolerance =
-  0`. simdra composites straight RGBA with `x/255 ≈ (x + 128) >> 8`;
-  Flash composites premultiplied values with a truncating `/255`. The two
-  disagree by one unit on a translucent bitmap over the stage —
-  both are max channel delta **1** — `copypixels` across 14% of its
-  pixels, `fillrect` across 0.6%. Making them exact means changing the
-  vendored rasteriser's blend rounding, which touches every image dir;
-  it belongs to a rendering-fidelity pass, not to E.
+- **`bitmap_filters` is not an E dir**, and measuring it says so: of its
+  87 differing lines, **16** need PlaceObject3's filter list decoded
+  (M7 — `docs/TAGS.md` still has tag 70's filters out of scope) and the
+  other **71** are workstream D's filter PROPERTY coercions: `angle`
+  normalising to -1 rather than 359, a bevel `type` defaulting to `full`
+  rather than `inner`, and the `colors`/`alphas`/`ratios` triple's
+  length-matching rules. Neither half is bitmap work.
+- **`bitmap_data_thorough/{copyPixels,paletteMap,perlinNoise,pixelDissolve}`
+  are recorded `known_failure`** — ruffle does not match them either and
+  the harness excludes them, so no implementation can move the score. All
+  four are implemented and their scorable siblings pass. Where the
+  recorded output states a rule unambiguously it has been taken (a
+  five-argument `pixelDissolve`, an empty region returning the seed);
+  where it does not, it has been left alone rather than guessed at:
+  - `pixelDissolve`'s return for a NON-EMPTY region is the raw Feistel
+    index in ruffle, and Flash's disagrees in a way no permutation length
+    explains — seeds of 100 and 0 give different answers although both
+    are 0 modulo every candidate length. 72 lines.
+  - `paletteMap`'s recorded sums match neither ruffle's masked
+    (`& 0xFF`) table entries nor the unmasked ones, and the dir ships no
+    `.as` to say what its arrays hold. 104 lines.
+  - `perlinNoise` differs only on NEGATIVE base frequencies; every
+    positive-frequency case matches and the scorable image dir is
+    byte-exact.
+  - `copyPixels` — 136 lines, not analysed.
+- **Only `ColorMatrixFilter` is applied** by `applyFilter`: it is the one
+  filter that is a per-pixel function rather than a convolution. The rest
+  need M7's kernels and until then report -1, which is what Flash reports
+  for a filter it cannot build — a script that checks the return value is
+  told the truth.
+- **`layer` blends as source-over.** It needs a compositing layer, which
+  simdra has (`beginCompositeLayer`) but nothing here drives yet.
+- **The colour transform's exact grid is unknown.** Ruffle's Fixed8 model
+  lands within four units of Flash against a tolerance of five, so
+  `bitmap_data_colortransform` passes; `chan` in
+  `core/bitmap/operations.zig` records what the image says and why the
+  obvious alternative is worse.
 
 ## 8. Renderer additions (workstream F)
 
