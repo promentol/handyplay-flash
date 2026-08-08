@@ -1,0 +1,2 @@
+color
+display_object_properties
