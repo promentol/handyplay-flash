@@ -83,6 +83,13 @@ pub const Context = struct {
     /// no events (ruffle InteractiveObject::mouse_enabled).
     mouse_enabled: ?*const fn (user: *anyopaque, obj: *DisplayObject) bool = null,
 
+    /// An object has just joined the display list. A text field binds its
+    /// `variable` here and becomes an AsBroadcaster; a CLIP matters too,
+    /// because a field parked on the unbound list may have been waiting
+    /// for exactly this timeline to exist (ruffle calls `bind_variables`
+    /// from both post_instantiations). Null in pure-display tests.
+    object_instantiated: ?*const fn (user: *anyopaque, obj: *DisplayObject) void = null,
+
     pub fn keyFocused(self: *Context, obj: *DisplayObject) bool {
         const f = self.key_focus orelse return false;
         return f(self.class_lookup_user.?, obj);
@@ -752,6 +759,12 @@ pub const MovieClip = struct {
         // it is on the list, so its children are named right after it and
         // `_width` measures something on the very first frame.
         if (obj.kind == .button) try obj.kind.button.ensureInit(ctx, obj);
+        // A field binds its `variable` the moment it is addressable, which
+        // is why the initial value can travel in either direction before
+        // any frame script runs.
+        if (obj.kind == .edit_text) {
+            if (ctx.object_instantiated) |f| f(ctx.class_lookup_user.?, obj);
+        }
         if (obj.kind == .clip) {
             // Construct is queued BEFORE the first frame runs. Ruffle's
             // instantiate_child passes `run_frame = false` to
@@ -762,6 +775,7 @@ pub const MovieClip = struct {
             if (queue_construct) try queueConstruct(ctx, obj);
             try obj.kind.clip.runFrame(ctx);
             obj.kind.clip.ran_this_tick = true;
+            if (ctx.object_instantiated) |f| f(ctx.class_lookup_user.?, obj);
         }
     }
 

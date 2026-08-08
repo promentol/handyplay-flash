@@ -15,6 +15,7 @@ pub const avm1 = struct {
     pub const activation = @import("avm1/activation.zig");
     pub const stage_object = @import("avm1/stage_object.zig");
     pub const singletons = @import("avm1/globals/singletons.zig");
+    pub const text_binding = @import("avm1/text_binding.zig");
 };
 
 pub const display = struct {
@@ -220,6 +221,7 @@ pub const Player = struct {
             .lost_display_object = hostLostDisplayObject,
             .bool_property = hostBoolProperty,
             .key_focus = hostKeyFocus,
+            .object_instantiated = hostObjectInstantiated,
         };
     }
 
@@ -512,6 +514,19 @@ pub const Player = struct {
         return avm1.stage_object.hasKeyFocus(self.vm, obj);
     }
 
+    /// A display object just joined the list. A field gets its broadcaster
+    /// object and binds its `variable`; anything else just gives the
+    /// parked fields another chance (M4-D7).
+    fn hostObjectInstantiated(user: *anyopaque, obj: *display.display_object.DisplayObject) void {
+        const self: *Player = @ptrCast(@alignCast(user));
+        if (obj.kind == .edit_text) {
+            _ = avm1.stage_object.displayObject(self.vm, obj) catch return;
+            avm1.text_binding.onFieldCreated(self.vm, obj) catch {};
+            return;
+        }
+        avm1.text_binding.retryUnbound(self.vm) catch {};
+    }
+
     fn hostBoolProperty(
         user: *anyopaque,
         obj: *display.display_object.DisplayObject,
@@ -534,6 +549,9 @@ pub const Player = struct {
     fn hostLostDisplayObject(user: *anyopaque, obj: *display.display_object.DisplayObject) void {
         const self: *Player = @ptrCast(@alignCast(user));
         avm1.stage_object.dropFocusIf(self.vm, obj) catch {};
+        // Fields bound to a variable ON this object go back to waiting
+        // rather than pointing at a corpse (ruffle unregister_bindings).
+        avm1.text_binding.unregister(self.vm, obj) catch {};
     }
 
     /// The script-property half of "button mode": does the clip's object

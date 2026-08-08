@@ -167,6 +167,28 @@ pub const Activation = struct {
 
     // --- variable paths ---------------------------------------------------
 
+    /// A text field's `variable` split into the object holding it and the
+    /// property name — ruffle `resolve_variable_path`, run from nothing.
+    ///
+    /// The RIGHT-MOST `:` or `.` divides the two; with neither, the whole
+    /// string is a property on `start` itself.
+    pub fn resolveVariablePath(
+        vm: *Vm,
+        root: ObjectHandle,
+        start: ObjectHandle,
+        path: strings.AvmString,
+    ) anyerror!?struct { obj: ObjectHandle, name: strings.AvmString } {
+        var sep: ?usize = null;
+        for (path, 0..) |c, i| {
+            if (c == ':' or c == '.') sep = i;
+        }
+        const at = sep orelse return .{ .obj = start, .name = path };
+        var act = Activation.init(vm, &.{}, .{ .object = start }, start, 0);
+        const target = try act.resolveTargetPath(root, start, path[0..at], true, true) orelse
+            return null;
+        return .{ .obj = target, .name = path[at + 1 ..] };
+    }
+
     /// Resolve a TARGET PATH to an object, walking the DISPLAY tree.
     /// Ports ruffle activation.rs:2562-2676. This is a different animal
     /// from GetMember: children are resolved before ordinary properties,
@@ -456,7 +478,13 @@ pub const Activation = struct {
     /// aware path when something is actually watching.
     fn storeInScope(self: *Activation, node: ObjectHandle, name: strings.AvmString, v: Value) !void {
         if (self.vm.objects.get(node).watchers.len == 0) {
-            return self.vm.objects.put(node, name, v, self.vm.case_sensitive);
+            try self.vm.objects.put(node, name, v, self.vm.case_sensitive);
+            // A timeline variable is where text-field bindings live, so
+            // the fast path has to notify too.
+            if (stage.targetOf(self.vm, node)) |t| {
+                try @import("text_binding.zig").notify(self.vm, t.obj, name, v);
+            }
+            return;
         }
         return self.vm.setProperty(node, name, v, .{ .object = node });
     }

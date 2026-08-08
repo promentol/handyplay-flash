@@ -89,6 +89,13 @@ pub const EditText = struct {
     /// 1-based, like Flash's.
     scroll: u32 = 1,
 
+    /// The object this field's `variable` resolved to, or null while the
+    /// field is on the unbound list.
+    bound_to: ?*anyopaque = null,
+    /// Guards the field -> variable direction against the write coming
+    /// straight back (ruffle FIRING_VARIABLE_BINDING).
+    firing_binding: bool = false,
+
     /// The AVM1 handle of the `TextField.StyleSheet` assigned to this
     /// field, or 0. Kept as an opaque number so `core/display` stays
     /// clear of the interpreter.

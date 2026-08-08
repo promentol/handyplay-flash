@@ -253,13 +253,16 @@ text_format_display
 text_format_font_max_length
 text_format_rounding_swf7
 text_format_rounding_swf8
+textfield_asbroadcaster
 textfield_background_color
 textfield_border_color
+textfield_cache_as_bitmap
 textfield_maxchars
 textfield_properties
 textfield_props_swf6
 textfield_props_swf7
 textfield_props_swf8
+textfield_variable
 textsnapshot_findtext
 textsnapshot_gettext
 textsnapshot_props_swf5

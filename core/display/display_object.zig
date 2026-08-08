@@ -18,6 +18,13 @@ const movie_clip = @import("movie_clip.zig");
 const button_mod = @import("button.zig");
 const edit_text_mod = @import("edit_text.zig");
 
+/// One text field bound to one property name on the object holding it.
+pub const TextBinding = struct {
+    field: *DisplayObject,
+    /// Owned.
+    name: []u16,
+};
+
 pub const DisplayObject = struct {
     character_id: u16,
     /// SWF tags only ever use 0..65535, but SCRIPTS address a much wider
@@ -34,6 +41,11 @@ pub const DisplayObject = struct {
     name: ?[]const u16 = null,
     /// Morph ratio (0-65535).
     ratio: u16 = 0,
+    /// Text fields watching a variable ON THIS OBJECT. The list lives on
+    /// the TARGET, not on the field, because the notification runs from a
+    /// property write and has only the target in hand (ruffle
+    /// `Avm1TextFieldBinding`, stored on the stage object).
+    text_bindings: std.ArrayList(TextBinding) = .empty,
     visible: bool = true,
     /// PlaceObject3 blend byte (0/1 = normal).
     blend_mode: u8 = 0,
@@ -108,6 +120,8 @@ pub const DisplayObject = struct {
 
     pub fn deinit(self: *DisplayObject, gpa: std.mem.Allocator) void {
         if (self.name) |n| gpa.free(n);
+        for (self.text_bindings.items) |b| gpa.free(b.name);
+        self.text_bindings.deinit(gpa);
         if (self.owns_kind) switch (self.kind) {
             .clip => |mc| {
                 mc.deinit(gpa);

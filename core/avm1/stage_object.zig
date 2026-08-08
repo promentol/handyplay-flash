@@ -88,6 +88,16 @@ pub fn displayObject(vm: *Vm, obj: *DisplayObject) !ObjectHandle {
     vm.objects.get(h).proto = .{ .object = if (proto != 0) proto else vm.object_proto };
     vm.objects.get(h).native = .{ .display = @ptrCast(obj) };
     obj.avm_object = h;
+    // Every text field is an AsBroadcaster, and it is its OWN first
+    // listener — which is how a field's `onChanged` runs before any
+    // script listener's (ruffle initialize_as_broadcaster).
+    if (obj.kind == .edit_text) {
+        const singletons = @import("globals/singletons.zig");
+        try singletons.makeBroadcaster(vm, h);
+        if (vm.objects.getChained(h, S("_listeners"), false)) |lv| {
+            if (lv == .object) try vm.arraySet(lv.object, 0, .{ .object = h });
+        }
+    }
     return h;
 }
 

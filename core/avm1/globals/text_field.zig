@@ -29,6 +29,7 @@ const decl = @import("decl.zig");
 const mc_globals = @import("movie_clip.zig");
 const text_format = @import("text_format.zig");
 const edit_text_mod = @import("../../display/edit_text.zig");
+const text_binding = @import("../text_binding.zig");
 const format_mod = @import("../../text/format.zig");
 
 const Value = value_mod.Value;
@@ -167,13 +168,16 @@ fn getText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 
 fn setText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    const et = etOf(vm, this) orelse return .undefined_value;
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    if (t.obj.kind != .edit_text) return .undefined_value;
+    const et = t.obj.kind.edit_text;
     const gpa = gpaOf(vm) orelse return .undefined_value;
     const s = try vm.toStringValue(arg(args, 0));
     try et.setText(gpa, s);
     // Replacing the text throws the spans away — the whole field takes
     // the new-text format again.
     et.span_format = et.default_format;
+    try text_binding.propagate(vm, t.obj);
     return .undefined_value;
 }
 
@@ -183,10 +187,15 @@ fn getHtmlText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return getText(p, this, args);
 }
 
+/// Deliberately does NOT propagate the variable binding: only writing
+/// `text` notifies.
 fn setHtmlText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    // Deliberately NOT propagating a variable binding: writing htmlText
-    // does not notify, only writing `text` does.
-    return setText(p, this, args);
+    const vm = vmOf(p);
+    const et = etOf(vm, this) orelse return .undefined_value;
+    const gpa = gpaOf(vm) orelse return .undefined_value;
+    try et.setText(gpa, try vm.toStringValue(arg(args, 0)));
+    et.span_format = et.default_format;
+    return .undefined_value;
 }
 
 fn getLength(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -480,10 +489,29 @@ fn setVariable(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const et = etOf(vm, this) orelse return .undefined_value;
     const gpa = gpaOf(vm) orelse return .undefined_value;
     const v = arg(args, 0);
+    const t = stage.targetOfValue(vm, this).?;
+    // The old link goes first, wherever it pointed.
+    text_binding.clearBinding(vm, t.obj);
+    // Then the field is RESET to the text its tag was born with — not to
+    // whatever it is showing (ruffle set_variable:863). That is why
+    // re-pointing a field at a fresh variable puts the authored text back.
+    var initial: []const u16 = &.{};
+    var buf: [256]u16 = undefined;
+    if (et.def) |d| if (d.initial_text) |it| {
+        const n = @min(it.len, buf.len);
+        for (it[0..n], 0..) |c, i| buf[i] = c;
+        initial = buf[0..n];
+    };
+    try et.setText(gpa, initial);
+    et.span_format = et.default_format;
+
     if (v == .undefined_value or v == .null_value) {
         try et.setVariable(gpa, null);
     } else {
         try et.setVariable(gpa, try vm.toStringValue(v));
+    }
+    if (!try text_binding.bind(vm, t.obj, true)) {
+        try vm.unbound_text_fields.append(vm.arena(), t.obj);
     }
     return .undefined_value;
 }

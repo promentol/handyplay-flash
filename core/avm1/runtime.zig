@@ -105,6 +105,8 @@ pub const Vm = struct {
     /// prototypes must exist now so `getDepth` and friends resolve.
     button_proto: ObjectHandle = 0,
     textfield_proto: ObjectHandle = 0,
+    /// Text fields whose `variable` has not resolved yet (M4-D7).
+    unbound_text_fields: std.ArrayList(*@import("../display/display_object.zig").DisplayObject) = .empty,
     /// flash.geom prototypes. Held here because the engine constructs these
     /// objects itself (`mc.transform`, `Color.getTransform`, `getBounds`),
     /// not only via `new`.
@@ -763,6 +765,17 @@ pub const Vm = struct {
             }
         }
         try self.objects.put(h, name, v, self.case_sensitive);
+        // A text field bound to this property mirrors the new value
+        // (ruffle stage_object.rs `notify_property_change`, run after
+        // `set_local`).
+        try notifyTextBinding(self, h, name, v);
+    }
+
+    /// Split out so the hot path stays a single branch: only a DISPLAY
+    /// object can carry bindings, and almost none of them do.
+    fn notifyTextBinding(self: *Vm, h: ObjectHandle, name: strings.AvmString, v: Value) !void {
+        const t = @import("stage_object.zig").targetOf(self, h) orelse return;
+        try @import("text_binding.zig").notify(self, t.obj, name, v);
     }
 
     // --- scope objects ----------------------------------------------------
@@ -812,6 +825,10 @@ pub const Vm = struct {
     /// DefineLocal: always on the innermost scope.
     pub fn scopeDefineLocal(self: *Vm, scope: ObjectHandle, name: strings.AvmString, v: Value) Error!void {
         try self.objects.put(scope, name, v, self.case_sensitive);
+        // `var theVar = …` at the top level of a timeline defines on the
+        // CLIP, so a field bound to that name sees it (corpus
+        // textfield_variable's last block).
+        notifyTextBinding(self, scope, name, v) catch {};
     }
 
     // --- function calls ---------------------------------------------------
