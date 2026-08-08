@@ -41,6 +41,82 @@ pub const Host = struct {
     /// `run_now` drains the queue before returning, which a KEY-driven
     /// move does and a programmatic one does not.
     focus_roll: ?*const fn (ctx: *anyopaque, obj: ?*anyopaque, run_now: bool) void = null,
+    /// Queue an asynchronous load. The request is COPIED by the host; both
+    /// of its slices live in the VM arena, so they outlive the call anyway.
+    fetch: ?*const fn (ctx: *anyopaque, req: FetchRequest) void = null,
+    /// `getURL` / `LoadVars.send`: open a URL in the browser. There is no
+    /// browser here, so a frontend either ignores it or logs it — which is
+    /// exactly what the corpus's `log_fetch` dirs measure.
+    navigate: ?*const fn (ctx: *anyopaque, req: NavigateRequest) void = null,
+};
+
+/// A browser navigation, which unlike a fetch has no reply.
+pub const NavigateRequest = struct {
+    url: []const u8,
+    /// Already normalised: the leading `_` is optional and `blank` in any
+    /// case becomes `_blank`, while every other target passes through
+    /// verbatim (ruffle `normalize_navigate_target`).
+    target: []const u8,
+    /// `.none` means the call carried no variables AT ALL, which is
+    /// distinct from carrying an empty set.
+    method: FetchRequest.Method = .none,
+    /// Raw, unescaped `key`/`value` pairs in enumeration order.
+    vars: []const Pair = &.{},
+
+    pub const Pair = struct { key: []const u8, value: []const u8 };
+};
+
+/// One outstanding load. `core/` does no I/O: the VM hands these to the
+/// Player, which hands the URL to the frontend and applies the answer at
+/// the END of the tick — never inside the script that asked. That delay is
+/// observable and load-bearing: `loadvariables2` polls on an interval
+/// precisely because the data is not there yet when `loadVariables`
+/// returns, and `LoadVars.loaded` reads false until a later tick.
+pub const FetchRequest = struct {
+    /// UTF-8, exactly as the script wrote it. Resolving a relative URL is
+    /// the host's job, not ours.
+    url: []const u8,
+    method: Method = .none,
+    /// Already form-urlencoded. Non-empty only for `.post`; a `.get`
+    /// folds its variables into `url`.
+    body: []const u8 = &.{},
+    target: Target,
+
+    pub const Method = enum {
+        none,
+        get,
+        post,
+
+        /// `NavigationMethod::from_method_str` — anything else is null,
+        /// and callers differ on what they do with that.
+        pub fn fromName(s: []const u16) ?Method {
+            if (strings.eqlIgnoreCase(s, S("GET"))) return .get;
+            if (strings.eqlIgnoreCase(s, S("POST"))) return .post;
+            return null;
+        }
+
+        pub fn name(self: Method) []const u8 {
+            return switch (self) {
+                .none => "",
+                .get => "GET",
+                .post => "POST",
+            };
+        }
+    };
+
+    /// What to do with the bytes. Each arm has its own completion
+    /// protocol; `core/avm1/globals/loader.zig` owns all three.
+    pub const Target = union(enum) {
+        /// `loadVariables` and `MovieClip.loadVariables`: the pairs are
+        /// assigned straight onto the object, then `onData` fires.
+        form: ObjectHandle,
+        /// `LoadVars.load`/`sendAndLoad` AND `XML.load`/`sendAndLoad` —
+        /// ruffle drives both through `load_form_into_load_vars`, and the
+        /// two classes differ only in what their `onData` does with the
+        /// text. `_bytesTotal` and `_bytesLoaded` are set, then
+        /// `onHTTPStatus`, then `onData` with the RAW body.
+        load_vars: ObjectHandle,
+    };
 };
 
 /// Stage render quality — `_quality` / `_highquality` read and write it.
@@ -271,6 +347,7 @@ pub const Vm = struct {
     /// content reassigns it (corpus xmlnode_proto).
     xmlnode_ctor: ObjectHandle = 0,
     xml_proto: ObjectHandle = 0,
+    loadvars_proto: ObjectHandle = 0,
     /// Every `flash.filters` prototype, indexed by the class's position
     /// in `globals/filters.zig`'s table. Needed to build a filter object
     /// from a PlaceObject3 record, which has no constructor to call.
@@ -526,6 +603,31 @@ pub const Vm = struct {
                 };
             },
         }
+    }
+
+    /// `coerce_to_string` with a THROWING `toString` propagated instead of
+    /// swallowed. `toStringValue`'s error set is allocation-only, so it has
+    /// to eat the throw; that is invisible almost everywhere, but a
+    /// built-in that stringifies user values inside a script's `try` block
+    /// makes it observable — corpus loadvars_tostring expects
+    /// `LoadVars.toString` to abort on the first member that throws.
+    pub fn toStringThrowing(self: *Vm, v: Value) anyerror!strings.AvmString {
+        if (v != .object) return self.toStringValue(v);
+        const h = v.object;
+        switch (self.objects.get(h).native) {
+            // The arms that never dispatch to a script `toString`.
+            .clip, .display, .removed_display, .boxed_string => return self.toStringValue(v),
+            else => {},
+        }
+        const m = try self.getProperty(h, S("toString"), v);
+        if (self.isCallable(m)) {
+            const r = try self.callFunction(m, v, &.{});
+            if (r == .string) return r.string;
+        }
+        return switch (self.objects.get(h).native) {
+            .function => S("[type Function]"),
+            else => S("[type Object]"),
+        };
     }
 
     pub fn typeOf(self: *Vm, v: Value) strings.AvmString {

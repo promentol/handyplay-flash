@@ -73,8 +73,13 @@ one() {
     if grep -q '^with_default_font *= *true' "$toml" 2>/dev/null && [ -f "$DEVICE_FONT" ]; then
         df="--device-font $DEVICE_FONT"
     fi
+    # [player_options] log_fetch — the harness's navigator traces every
+    # request through the SAME sink as trace(), and those lines are part of
+    # the expected output.
+    lf=""
+    grep -q '^log_fetch *= *true' "$toml" 2>/dev/null && lf="--log-fetch"
     # shellcheck disable=SC2086
-    timeout 20 "$BIN" "$swf" --frames "$n" $inp $vp $df >"$T" 2>/dev/null
+    timeout 20 "$BIN" "$swf" --frames "$n" $inp $vp $df $lf >"$T" 2>/dev/null
     if grep -q '^bare_numbers *= *true' "$toml" 2>/dev/null; then
         eps=$(sed -n 's/^epsilon *= *\([0-9.eE+-]*\).*/\1/p' "$toml" | head -1)
         [ -n "$eps" ] || eps=2.220446049250313e-16

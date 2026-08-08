@@ -92,6 +92,13 @@ def dis(b, ind='  '):
         extra = ''
         if op == 0x96:
             extra = ' ' + repr(push_items(body))
+        elif op == 0x9a:  # GetURL2 — flag order is reversed vs the spec
+            f = body[0]
+            bits = []
+            if f & 1: bits.append('load_vars')
+            if f & 2: bits.append('target_sprite')
+            bits.append(('none', 'GET', 'POST', '?')[(f >> 6) & 3])
+            extra = ' %s (0x%02x)' % (','.join(bits), f)
         elif op == 0x88:
             n = struct.unpack_from('<H', body, 0)[0]
             j = 2; strs = []

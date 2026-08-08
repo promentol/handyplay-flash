@@ -17,6 +17,7 @@ const opcodes = @import("opcodes.zig");
 const runtime = @import("runtime.zig");
 const stage = @import("stage_object.zig");
 const movie_clip_mod = @import("../display/movie_clip.zig");
+const loader = @import("globals/loader.zig");
 
 const Value = runtime.Value;
 const Vm = runtime.Vm;
@@ -228,6 +229,15 @@ pub const Activation = struct {
     /// A TARGET PATH from a native method, resolved against the clip the
     /// call is running in. Natives hold only the `Vm`, so they reach the
     /// running frame through `current_activation`.
+    /// The CALLING frame's variable bag, for the natives that submit it as
+    /// form data (`MovieClip.getURL` with a method, and the `getURL`
+    /// opcode). In timeline code this is the clip itself.
+    pub fn localsForNative(vm: *runtime.Vm) ?ObjectHandle {
+        const p = vm.current_activation orelse return null;
+        const act: *Activation = @ptrCast(@alignCast(p));
+        return act.localScope();
+    }
+
     pub fn resolveTargetForNative(vm: *runtime.Vm, start: ObjectHandle, path: strings.AvmString) anyerror!?ObjectHandle {
         const p = vm.current_activation orelse return null;
         const act: *Activation = @ptrCast(@alignCast(p));
@@ -804,15 +814,109 @@ pub const Activation = struct {
                 if (frame == std.math.minInt(i32)) frame = std.math.maxInt(i32);
                 if (frame > 16001) self.skipActions(w.skip_count);
             },
-            .get_url => {}, // network: out of scope
-            .get_url2 => {
-                _ = self.pop(); // target
-                _ = self.pop(); // url
+            // The STATIC form: both strings are in the tag, so there is no
+            // stack traffic and no variables to send. It can still load a
+            // level (`getURL("x.swf", "_level1")`), and its level test is
+            // strictly `len > 6` — a bare "_level" is just a window name.
+            .get_url => |u| {
+                const url = try self.swfStr(u.url);
+                const target = try self.swfStr(u.target);
+                if (target.len > 6 and strings.eql(target[0..6], S("_level"))) {
+                    // Levels other than 0 do not exist yet (workstream L3).
+                    return .next;
+                }
+                if (loader.fsCommandOf(url) != null) return .next;
+                try loader.navigate(self.vm, url, target, .none, &.{});
             },
+            .get_url2 => |g| try self.getUrl2(g.is_load_vars, g.is_target_sprite, switch (g.send_vars_method) {
+                1 => .get,
+                2 => .post,
+                else => .none,
+            }),
             .strict_mode => {},
             .unknown => {},
         }
         return .next;
+    }
+
+    /// `GetURL2` — five different statements share this one opcode, and
+    /// which one you wrote is recovered from two flag bits plus the SHAPE
+    /// of the target: `loadVariables`, `loadVariablesNum`, `loadMovie`,
+    /// `loadMovieNum`, `unloadMovie*` and plain `getURL` all land here.
+    ///
+    /// The subtle rule is the LoadVariables demotion. With neither
+    /// `is_target_sprite` nor a `_levelN` target, a `loadVariables` whose
+    /// target resolves to anything other than the movie's own root is not
+    /// a load at all — Flash opens the URL in the browser instead.
+    ///
+    /// Reference: ruffle activation.rs `action_get_url_2`.
+    fn getUrl2(
+        self: *Activation,
+        is_load_vars: bool,
+        is_target_sprite: bool,
+        method: runtime.FetchRequest.Method,
+    ) !void {
+        const target_val = self.pop();
+        const target = try self.vm.toStringValue(target_val);
+        const url_val = self.pop();
+        const url = try self.vm.toStringValue(url_val);
+
+        // `fscommand:` hijacks the URL entirely — the TARGET becomes the
+        // command's arguments and nothing is fetched or navigated.
+        if (loader.fsCommandOf(url) != null) return;
+
+        // `_levelN`: a target that names a level bypasses path resolution
+        // entirely. A bare "_level" (nothing after it) is level 0; a
+        // suffix that will not parse is not a level at all.
+        const level_target: i32 = blk: {
+            if (target.len < 6 or !strings.eql(target[0..6], S("_level"))) break :blk -1;
+            const n = value_mod.stringToNumber(target[6..], self.swf_version);
+            if (std.math.isNan(n)) break :blk if (target.len == 6) 0 else -1;
+            break :blk value_mod.toInt32(n);
+        };
+
+        var clip_target: ?ObjectHandle = null;
+        if (level_target > -1) {
+            // Only level 0 exists — a load into any other level is a
+            // no-op until levels are real (workstream L3).
+            if (level_target == 0 and self.vm.root_object == .object) {
+                clip_target = self.vm.root_object.object;
+            }
+        } else if (is_load_vars or is_target_sprite) {
+            clip_target = if (target_val == .object and stage.targetOf(self.vm, target_val.object) != null)
+                target_val.object
+            else
+                try self.resolveTargetPath(self.rootHandle(), self.targetClipOrRoot(), target, true, false);
+        }
+
+        if (is_load_vars) {
+            var really_loads = true;
+            if (!is_target_sprite and level_target <= -1) {
+                // Demoted to a navigation unless the target IS the root.
+                really_loads = target_val == .object and clip_target != null and
+                    clip_target.? == self.rootHandle();
+            }
+            if (really_loads) {
+                if (clip_target) |dest| {
+                    const req = try loader.buildRequest(
+                        self.vm,
+                        url,
+                        self.localScope(),
+                        method,
+                        .{ .form = dest },
+                    );
+                    loader.spawn(self.vm, req);
+                }
+                return;
+            }
+        }
+
+        // `getURL`. With no send method the locals are not gathered at all.
+        const vars: []const runtime.NavigateRequest.Pair = if (method == .none)
+            &.{}
+        else
+            try loader.formPairs(self.vm, self.localScope());
+        try loader.navigate(self.vm, url, target, method, vars);
     }
 
     /// Decode and discard `n` actions. `WaitForFrame` counts ACTIONS, so

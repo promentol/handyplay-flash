@@ -77,6 +77,8 @@ pub fn install(vm: *Vm) !void {
     try method(vm, proto, "setMask", setMask, ver(hidden, decl.V6));
     try method(vm, proto, "startDrag", startDrag, hidden);
     try method(vm, proto, "stopDrag", stopDrag, hidden);
+    try method(vm, proto, "loadVariables", loadVariables, hidden);
+    try method(vm, proto, "getURL", getUrl, hidden);
 
     // --- the property block --------------------------------------------------
     // Ruffle declares each of these with a getter/setter pair, but the
@@ -233,6 +235,46 @@ fn getBytesTotal(p: *anyopaque, this: Value, args: []const Value) anyerror!Value
     const vm = vmOf(p);
     const c = clipOf(vm, this) orelse return .undefined_value;
     return .{ .number = stage.bytesTotal(vm, c) };
+}
+
+/// `MovieClip.getURL(url, window, method)`. The clip is ignored entirely —
+/// it is a namespaced alias for the global navigation, and the variables it
+/// can send are the CALLING frame's, not the clip's. The method argument
+/// only counts when it is literally a string; a Number or a String OBJECT
+/// leaves the request variable-free.
+fn getUrl(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    if (args.len == 0) return .undefined_value;
+    const l = @import("loader.zig");
+    const url = try vm.toStringValue(args[0]);
+    if (l.fsCommandOf(url) != null) return .undefined_value;
+    const window = if (args.len > 1) try vm.toStringValue(args[1]) else S("");
+    const m: runtime.FetchRequest.Method = if (args.len > 2 and args[2] == .string)
+        runtime.FetchRequest.Method.fromName(args[2].string) orelse .none
+    else
+        .none;
+    const locals = activation.Activation.localsForNative(vm);
+    const vars = if (m == .none or locals == null)
+        &[_]runtime.NavigateRequest.Pair{}
+    else
+        try l.formPairs(vm, locals.?);
+    try l.navigate(vm, url, window, m, vars);
+    return .undefined_value;
+}
+
+/// The method form of `loadVariables`. Unlike the opcode it is never
+/// demoted to a browser navigation, and it sends the CLIP's own variables
+/// rather than the calling frame's locals. Returns undefined either way —
+/// success is only observable through the data arriving.
+fn loadVariables(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (clipOf(vm, this) == null) return .undefined_value;
+    const url = try vm.toStringValue(arg(args, 0));
+    const m = runtime.FetchRequest.Method.fromName(try vm.toStringValue(arg(args, 1))) orelse .none;
+    const l = @import("loader.zig");
+    l.spawn(vm, try l.buildRequest(vm, url, this.object, m, .{ .form = this.object }));
+    return .undefined_value;
 }
 
 /// -1 when the clip has no movie of its own; every clip here shares the

@@ -180,8 +180,11 @@ pub const Action = union(enum) {
     push: []const u8,
     jump: i16,
     get_url2: struct {
-        /// Errata: flag order is REVERSED vs Adobe — actual bit layout:
-        /// bit0 = load_variables, bit1 = load_target, bits 6-7 = send method.
+        /// Errata: SWF19 lists the flag order BACKWARDS. The real byte is
+        /// bits 0-1 = send method, bit 6 = LoadTarget, bit 7 = LoadVariables
+        /// (ruffle swf/src/avm1/types.rs `GetUrlFlags`) — and a real
+        /// `loadVariables(url, clip)` sets 0xC0, both high bits, which the
+        /// spec's layout would read as a nonexistent method 3.
         send_vars_method: u2, // 0=none, 1=GET, 2=POST
         is_target_sprite: bool,
         is_load_vars: bool,
@@ -294,9 +297,9 @@ pub fn readAction(r: *rdr.Reader) Error!?Action {
         .get_url2 => blk: {
             const flags = try br.readU8();
             break :blk .{ .get_url2 = .{
-                .send_vars_method = @intCast((flags >> 6) & 0b11),
-                .is_target_sprite = (flags & 0b10) != 0,
-                .is_load_vars = (flags & 0b01) != 0,
+                .send_vars_method = @intCast(flags & 0b11),
+                .is_target_sprite = (flags & 0b0100_0000) != 0,
+                .is_load_vars = (flags & 0b1000_0000) != 0,
             } };
         },
         .define_function => blk: {
@@ -453,7 +456,12 @@ test "decode DefineFunction2 with registers and body in outer stream" {
 }
 
 test "decode GetURL2 errata flag order and GotoFrame2 bias" {
-    const code = [_]u8{ 0x9A, 1, 0, 0b0100_0010 } ++ // POST? send=1, target_sprite
+    // SWF19 lists these bits backwards. Real bytes: 0x41 = LoadTarget
+    // (bit 6) plus method 1 (GET), and 0xC0 — the byte the Flash compiler
+    // actually emits for `loadVariables(url, clip)` — is BOTH high flags
+    // with no method, which the spec's layout would decode as method 3.
+    const code = [_]u8{ 0x9A, 1, 0, 0b0100_0001 } ++
+        [_]u8{ 0x9A, 1, 0, 0b1100_0000 } ++
         [_]u8{ 0x9F, 3, 0, 0b11, 4, 0 } ++ // goto2: bias present, play, scene 4
         [_]u8{0x00};
     var r = rdr.Reader.init(&code);
@@ -461,6 +469,10 @@ test "decode GetURL2 errata flag order and GotoFrame2 bias" {
     try std.testing.expectEqual(@as(u2, 1), u.send_vars_method);
     try std.testing.expect(u.is_target_sprite);
     try std.testing.expect(!u.is_load_vars);
+    const lv = (try readAction(&r)).?.get_url2;
+    try std.testing.expectEqual(@as(u2, 0), lv.send_vars_method);
+    try std.testing.expect(lv.is_target_sprite);
+    try std.testing.expect(lv.is_load_vars);
     const g = (try readAction(&r)).?.goto_frame2;
     try std.testing.expect(g.set_playing);
     try std.testing.expectEqual(@as(u16, 4), g.scene_offset);

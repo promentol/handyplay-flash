@@ -120,6 +120,7 @@ pub fn install(vm: *Vm) !void {
         try vm.objects.putWithAttrs(array_class, S(c[0]), .{ .number = @floatFromInt(c[1]) }, frozen, false);
     }
     try @import("xml.zig").install(vm, attrs);
+    try @import("loader.zig").install(vm);
     const string_class = try decl.class(vm, "String", ctorString, vm.string_proto, attrs);
     const number_class = try decl.class(vm, "Number", ctorNumber, vm.number_proto, attrs);
     _ = try decl.class(vm, "Boolean", ctorBoolean, vm.boolean_proto, attrs);

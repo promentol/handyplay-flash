@@ -35,8 +35,13 @@ pub fn main(init: std.process.Init) !u8 {
     var viewport_w: u32 = 0;
     var viewport_h: u32 = 0;
     var scale_factor: f64 = 1.0;
+    var log_fetch = false;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--log-fetch")) {
+            log_fetch = true;
+            continue;
+        }
         if (std.mem.eql(u8, args[i], "--frames")) {
             i += 1;
             if (i >= args.len) return 2;
@@ -83,12 +88,25 @@ pub fn main(init: std.process.Init) !u8 {
     defer if (device_font) |d| gpa.free(d);
 
     const url = try std.fmt.allocPrint(arena, "/{s}", .{std.fs.path.basename(path)});
+    // Ruffle's test navigator serves every fetch out of the test's own
+    // directory, which is why `loadVariables("testvars.txt")` works with no
+    // scheme and no host. Same rule here.
+    var files: FileServer = .{
+        .gpa = gpa,
+        .io = io,
+        .base = std.fs.path.dirname(path) orelse ".",
+        .store = .init(gpa),
+    };
+    defer files.store.deinit();
     const player = flash.Player.createWith(gpa, bytes, .{
         .url = url,
         .device_font = device_font,
         .viewport_width = viewport_w,
         .viewport_height = viewport_h,
         .scale_factor = scale_factor,
+        .load_file = FileServer.read,
+        .load_user = @ptrCast(&files),
+        .log_fetch = log_fetch,
     }) catch {
         // A movie we can't run produces no trace output (several corpus
         // dirs are AVM2/image-comparison tests whose expected stdout is
@@ -201,6 +219,36 @@ fn feedUntilWait(player: *flash.Player, events: []const std.json.Value, start: u
     }
     return i;
 }
+
+/// The `--log-fetch` file reader. Every answer is kept alive for the whole
+/// run: a loaded SWF is parsed IN PLACE, so its buffer has to outlive the
+/// clip that holds it, and a conformance run is short enough that never
+/// freeing is the simplest correct policy.
+const FileServer = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    base: []const u8,
+    /// Everything served lives here until the process exits.
+    store: std.heap.ArenaAllocator,
+
+    fn read(user: ?*anyopaque, url: []const u8) ?[]const u8 {
+        const self: *FileServer = @ptrCast(@alignCast(user orelse return null));
+        const keep = self.store.allocator();
+        // Flash allows a query string on a local URL and Ruffle strips it
+        // before touching the filesystem.
+        var rel = url;
+        if (std.mem.indexOfScalar(u8, rel, '?')) |q| rel = rel[0..q];
+        // An absolute URL is served from the same directory by its last
+        // component, which is what ruffle's virtual filesystem amounts to
+        // for these tests.
+        if (std.mem.indexOf(u8, rel, "://")) |_| rel = std.fs.path.basename(rel);
+        while (rel.len > 0 and rel[0] == '/') rel = rel[1..];
+        if (rel.len == 0) return null;
+        const full = std.fs.path.join(self.gpa, &.{ self.base, rel }) catch return null;
+        defer self.gpa.free(full);
+        return std.Io.Dir.cwd().readFileAlloc(self.io, full, keep, .limited(64 << 20)) catch null;
+    }
+};
 
 fn gunzip(gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
     defer gpa.free(raw);

@@ -15,6 +15,7 @@ pub const avm1 = struct {
     pub const activation = @import("avm1/activation.zig");
     pub const stage_object = @import("avm1/stage_object.zig");
     pub const singletons = @import("avm1/globals/singletons.zig");
+    pub const loader = @import("avm1/globals/loader.zig");
     pub const text_binding = @import("avm1/text_binding.zig");
 };
 
@@ -104,6 +105,14 @@ pub const Player = struct {
     /// Milliseconds of wall time since the movie started. Only the
     /// caret's blink reads it, so it need not be precise — just monotone.
     elapsed_ms: f64 = 0,
+    /// Loads the movie has asked for and not yet been answered. They are
+    /// resolved at the END of the tick, mirroring ruffle's test harness,
+    /// which runs its future executor after `run_frame` and the timers.
+    pending_loads: std.ArrayList(avm1.runtime.FetchRequest) = .empty,
+    /// The frontend's file reader, and whether requests are traced.
+    load_file: ?*const fn (user: ?*anyopaque, url: []const u8) ?[]const u8 = null,
+    load_user: ?*anyopaque = null,
+    log_fetch: bool = false,
 
     /// Safety valve: max timeline frames advanced per tick call.
     const MAX_FRAMES_PER_TICK = 5;
@@ -133,6 +142,17 @@ pub const Player = struct {
         /// none, an unembedded face measures zero and draws nothing,
         /// which is what a machine without the font installed does.
         device_font: ?[]const u8 = null,
+        /// Answer a `loadVariables`/`loadMovie`/`XML.load` for a URL. The
+        /// same rule as `device_font`: `core/` does no I/O, so the host
+        /// resolves the URL (relative to the movie) and reads the bytes.
+        /// The returned slice must stay valid for the Player's lifetime —
+        /// a loaded SWF is parsed in place, not copied. `null` = the load
+        /// failed, which scripts observe as an unsuccessful `onData`.
+        load_file: ?*const fn (user: ?*anyopaque, url: []const u8) ?[]const u8 = null,
+        load_user: ?*anyopaque = null,
+        /// `test.toml`'s `log_fetch`: trace every request and navigation
+        /// the way ruffle's test navigator does. Off for a real frontend.
+        log_fetch: bool = false,
     };
 
     pub fn create(gpa: std.mem.Allocator, file_bytes: []const u8) anyerror!*Player {
@@ -169,6 +189,9 @@ pub const Player = struct {
             .owns_kind = false,
         };
         self.root.placement = &self.root_placement;
+        self.load_file = opts.load_file;
+        self.load_user = opts.load_user;
+        self.log_fetch = opts.log_fetch;
         // The ROOT consumes instance0 without keeping it: ruffle runs
         // post_instantiation (which names it) and only then
         // set_default_root_name, which blanks the name again for AVM1
@@ -218,9 +241,24 @@ pub const Player = struct {
         // DoAction drains the CHILD first, so every `_root`-anchored path
         // resolved against Vm.create's placeholder object instead of the
         // real clip — and a movie with no DoAction at all never bound it.
-        _ = try self.clipObject(&self.root);
+        const root_obj = try self.clipObject(&self.root);
+        // `$version` is an ordinary, ENUMERABLE variable on the root
+        // timeline — which is why a POST `getURL` sends it along with the
+        // movie's own variables (corpus geturl). The platform tag and
+        // player version are the ones the corpus was recorded with.
+        try self.vm.objects.putWithAttrs(
+            root_obj,
+            avm1.strings.ascii("$version"),
+            .{ .string = avm1.strings.ascii("LNX 32,0,0,0") },
+            .{},
+            false,
+        );
         // Frame 1 executes immediately so the first present isn't blank.
         try self.runOneFrame();
+        // …and frame 1 IS a tick, so a load it started resolves here. Half
+        // the loader corpus runs with `num_frames = 1` and would otherwise
+        // never see its own data.
+        _ = try self.finishTick();
         try self.renderNow();
         return self;
     }
@@ -231,6 +269,7 @@ pub const Player = struct {
             f.deinit();
             gpa.destroy(f);
         }
+        self.pending_loads.deinit(gpa);
         self.clipboard.deinit(gpa);
         self.vm.destroy();
         self.root.deinit(gpa);
@@ -254,8 +293,88 @@ pub const Player = struct {
         if (self.acc_ms > self.frame_ms * MAX_FRAMES_PER_TICK) {
             self.acc_ms = self.frame_ms;
         }
-        if (frames > 0) try self.renderNow();
+        const loaded = try self.finishTick();
+        if (frames > 0 or loaded) try self.renderNow();
         return frames;
+    }
+
+    /// Ruffle's `executor.run()`: everything asynchronous that came due
+    /// during this tick lands now, after the frame and after the timers.
+    /// Returns whether anything actually completed.
+    ///
+    /// A load queued BY a completion handler is deliberately left for the
+    /// next tick — ruffle polls a snapshot of its future set, so a chain of
+    /// loads advances one link per tick rather than running to exhaustion.
+    fn finishTick(self: *Player) !bool {
+        if (self.pending_loads.items.len == 0) return false;
+        const batch = try self.pending_loads.toOwnedSlice(self.gpa);
+        defer self.gpa.free(batch);
+        var ctx = self.makeContext();
+        defer ctx.deinit(self.gpa);
+        self.cur_ctx = &ctx;
+        self.vm.display_ctx = @ptrCast(&ctx);
+        defer {
+            self.cur_ctx = null;
+            self.vm.display_ctx = null;
+        }
+        for (batch) |req| {
+            self.completeLoad(req) catch |e| self.reportUncaught(e);
+            try self.drainActions(&ctx);
+        }
+        self.retireDead(&ctx);
+        return true;
+    }
+
+    /// Ask the host for the bytes and hand them to whichever completion
+    /// protocol the request named. A host with no reader at all fails
+    /// every load, which is the honest answer for a frontend that cannot
+    /// read files.
+    fn completeLoad(self: *Player, req: avm1.runtime.FetchRequest) !void {
+        if (self.log_fetch) try self.traceFetch(req);
+        const body: ?[]const u8 = if (self.load_file) |f| f(self.load_user, req.url) else null;
+        switch (req.target) {
+            .form => |h| try avm1.loader.completeForm(self.vm, h, body),
+            .load_vars => |h| try avm1.loader.completeLoadVars(self.vm, h, body),
+        }
+    }
+
+    /// `log_fetch`: ruffle's test navigator logs each request through the
+    /// SAME sink as `trace`, so the lines interleave with the movie's own
+    /// output and the corpus pins the interleaving.
+    fn traceFetch(self: *Player, req: avm1.runtime.FetchRequest) !void {
+        try self.traceFmt("Navigator::fetch:", .{});
+        try self.traceFmt("  URL: {s}", .{req.url});
+        try self.traceFmt("  Method: {s}", .{if (req.method == .none) "GET" else req.method.name()});
+        if (req.method == .post) {
+            try self.traceFmt("  Mime-Type: application/x-www-form-urlencoded", .{});
+            try self.traceFmt("  Body: {s}", .{req.body});
+        }
+    }
+
+    fn traceFmt(self: *Player, comptime fmt: []const u8, args: anytype) !void {
+        const a = self.vm.arena();
+        const line = try std.fmt.allocPrint(a, fmt, args);
+        try self.vm.traceLine(try avm1.strings.fromSwf(a, line, 8));
+    }
+
+    /// `getURL` and `LoadVars.send`. There is no browser, so the request
+    /// is only ever logged.
+    fn hostNavigate(ctx: *anyopaque, req: avm1.runtime.NavigateRequest) void {
+        const self: *Player = @ptrCast(@alignCast(ctx));
+        if (!self.log_fetch) return;
+        self.traceFmt("Navigator::navigate_to_url:", .{}) catch return;
+        self.traceFmt("  URL: {s}", .{req.url}) catch return;
+        self.traceFmt("  Target: {s}", .{req.target}) catch return;
+        if (req.method == .none) return;
+        self.traceFmt("  Method: {s}", .{req.method.name()}) catch return;
+        for (req.vars) |kv| {
+            self.traceFmt("  Param: {s}={s}", .{ kv.key, kv.value }) catch return;
+        }
+    }
+
+    fn hostFetch(ctx: *anyopaque, req: avm1.runtime.FetchRequest) void {
+        const self: *Player = @ptrCast(@alignCast(ctx));
+        self.pending_loads.append(self.gpa, req) catch {};
     }
 
     /// One tick's display Context. Every entry point builds the same one.
@@ -670,6 +789,8 @@ pub const Player = struct {
             .set_playing = hostSetPlaying,
             .next_prev = hostNextPrev,
             .focus_roll = hostFocusRoll,
+            .fetch = hostFetch,
+            .navigate = hostNavigate,
         };
     }
 
@@ -1320,6 +1441,7 @@ test {
     _ = @import("avm1/globals/style_sheet.zig");
     _ = @import("avm1/globals/filters.zig");
     _ = @import("avm1/globals/bitmap_data.zig");
+    _ = @import("avm1/globals/loader.zig");
     _ = @import("avm1/text_binding.zig");
     _ = @import("bitmap/pixels.zig");
     _ = @import("bitmap/data.zig");

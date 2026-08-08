@@ -50,6 +50,12 @@ device_font_for() {
     fi
 }
 
+# [player_options] log_fetch — the harness's navigator traces every request
+# through the SAME sink as trace(), so those lines belong in the output.
+log_fetch_for() {
+    grep -q '^log_fetch *= *true' "$CORPUS/$1/test.toml" 2>/dev/null && echo "--log-fetch"
+}
+
 have_approx() {
     # 0 if test.toml has [approximations] with bare_numbers = true.
     grep -q '^bare_numbers *= *true' "$1" 2>/dev/null
@@ -146,7 +152,7 @@ run_one() {
     # normalizes them (framework/src/runner/trace.rs:14), so we must too.
     exp="$TMP.exp"; tr -d '\r' <"$CORPUS/$d/output.txt" >"$exp"
     # shellcheck disable=SC2086
-    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") $(device_font_for "$d") >"$TMP" 2>/dev/null || return 1
+    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") $(device_font_for "$d") $(log_fetch_for "$d") >"$TMP" 2>/dev/null || return 1
     if have_approx "$toml"; then
         # `approx`'s defaults are f64::EPSILON for both knobs.
         approx_cmp "$TMP" "$exp" \
@@ -207,7 +213,7 @@ case "${1:-}" in
     have_approx "$toml" && verdict="$verdict (approximate)"
     # Re-run with stderr merged so panics show up in the diff.
     # shellcheck disable=SC2086
-    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") $(device_font_for "$d") >"$TMP" 2>&1
+    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") $(device_font_for "$d") $(log_fetch_for "$d") >"$TMP" 2>&1
     echo "--- $verdict: ours vs expected ($d):"
     tr -d '\r' <"$CORPUS/$d/output.txt" >"$TMP.exp"
     diff "$TMP" "$TMP.exp" | head -40
