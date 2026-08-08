@@ -29,6 +29,7 @@ const edit_text_device = @import("../display/device_font.zig");
 const text_layout = @import("../display/text_layout.zig");
 const bitmap_decode = @import("../bitmap/decode.zig");
 const bitmap_data = @import("../bitmap/data.zig");
+const bitmap_pixels = @import("../bitmap/pixels.zig");
 
 pub const Error = std.mem.Allocator.Error || error{OutOfMemory};
 
@@ -268,6 +269,75 @@ pub const Renderer = struct {
         ctx.setColorTransform(.{}); // leave ctx state clean
     }
 
+    /// `BitmapData.draw` with a DISPLAY OBJECT source: render it into the
+    /// target's pixels through an off-screen canvas the size of the
+    /// target.
+    ///
+    /// The object's OWN placement matrix is not applied — Flash draws the
+    /// source as though it sat at the origin, and `t` is the caller's
+    /// matrix alone. `t` maps the source's twips to destination PIXELS,
+    /// so it already carries the ÷20 the stage transform normally does.
+    ///
+    /// simdra surfaces hold STRAIGHT RGBA and a BitmapData holds
+    /// premultiplied, so the target's pixels convert on the way in and
+    /// back on the way out. The canvas is seeded with them rather than
+    /// cleared, because a draw composites over what is already there.
+    pub fn drawObjectInto(
+        self: *Renderer,
+        gpa: std.mem.Allocator,
+        dst: *bitmap_data.BitmapData,
+        obj: *const display_object.DisplayObject,
+        t: Transform,
+        cx: swf.reader.ColorTransform,
+        clip: ?[4]i32,
+    ) !void {
+        if (dst.width == 0 or dst.height == 0) return;
+        var canvas = try canvas_mod.Canvas.init(gpa, dst.width, dst.height);
+        defer canvas.deinit();
+        for (canvas.surface.pixels, dst.data) |*out, c| out.* = c.toUnmultiplied().toArgb();
+
+        const ctx = try canvas.ctx();
+        if (clip) |c| {
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.beginPath();
+            ctx.rect(@floatFromInt(c[0]), @floatFromInt(c[1]), @floatFromInt(c[2]), @floatFromInt(c[3]));
+            ctx.clip(.nonzero);
+        }
+        try self.renderObject(ctx, obj, t, cx);
+        if (clip != null) ctx.restore();
+        ctx.setColorTransform(.{});
+
+        for (canvas.surface.pixels, dst.data) |px, *c| {
+            c.* = bitmap_pixels.Color.fromArgb(px).toPremultiplied(dst.transparency);
+        }
+    }
+
+    /// One display object, WITHOUT its own placement matrix — the caller
+    /// supplies the transform. `renderClip`'s per-child arm and this are
+    /// the same dispatch; keeping it callable on its own is what lets
+    /// `BitmapData.draw` render an object that is not on the stage.
+    fn renderObject(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        obj: *const display_object.DisplayObject,
+        t: Transform,
+        cx: swf.reader.ColorTransform,
+    ) Error!void {
+        switch (obj.kind) {
+            .shape => |sh| try self.renderShape(ctx, obj.character_id, sh, t, cx),
+            .clip => |mc| try self.renderClip(ctx, mc, t, cx),
+            // A button draws its current state's children and nothing
+            // else — the hit records are invisible by definition.
+            .button => |b| try self.renderClip(ctx, &b.container, t, cx),
+            .text => |txt| try self.renderText(ctx, txt, t, cx),
+            .edit_text => |et| try self.renderEditText(ctx, et, t, cx),
+            .bitmap => |b| try self.renderBitmap(ctx, .{ .character = b.id }, false, t, cx),
+            .attached_bitmap => |b| try self.renderBitmap(ctx, .{ .live = b.data }, b.smoothing, t, cx),
+            .morph_shape => {}, // M7
+        }
+    }
+
     fn renderClip(
         self: *Renderer,
         ctx: *simdra.SmCanvas,
@@ -282,18 +352,7 @@ pub const Renderer = struct {
             if (child.clip_depth != 0) continue; // M7: masks (skip the masker)
             const t = parent_t.concat(child.matrix);
             const cx = concatCxform(parent_cx, child.color_transform);
-            switch (child.kind) {
-                .shape => |s| try self.renderShape(ctx, child.character_id, s, t, cx),
-                .clip => |mc| try self.renderClip(ctx, mc, t, cx),
-                // A button draws its current state's children and nothing
-                // else — the hit records are invisible by definition.
-                .button => |b| try self.renderClip(ctx, &b.container, t, cx),
-                .text => |txt| try self.renderText(ctx, txt, t, cx),
-                .edit_text => |et| try self.renderEditText(ctx, et, t, cx),
-                .bitmap => |b| try self.renderBitmap(ctx, .{ .character = b.id }, false, t, cx),
-                .attached_bitmap => |b| try self.renderBitmap(ctx, .{ .live = b.data }, b.smoothing, t, cx),
-                .morph_shape => {}, // M7
-            }
+            try self.renderObject(ctx, child, t, cx);
         }
     }
 

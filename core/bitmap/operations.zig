@@ -148,6 +148,12 @@ pub const ColorTransform = struct {
     mult: [4]f64 = .{ 1, 1, 1, 1 },
     add: [4]f64 = .{ 0, 0, 0, 0 },
 
+    pub fn isIdentity(self: ColorTransform) bool {
+        for (self.mult) |m| if (m != 1) return false;
+        for (self.add) |a| if (a != 0) return false;
+        return true;
+    }
+
     /// A transform that only RAISES alpha does nothing at all. It is a
     /// Flash bug and the corpus depends on it.
     fn isNoOp(self: ColorTransform) bool {
@@ -740,6 +746,58 @@ pub fn paletteMap(
             dst.set(dest.x_min + x, dest.y_min + y, Color.fromArgb(sum).toPremultiplied(true));
         }
     }
+}
+
+// --- draw ---------------------------------------------------------------------
+
+/// `BitmapData.draw` when the source is another BitmapData and the matrix
+/// has no scale or skew. Flash takes a plain blit here rather than going
+/// through the renderer, and the result differs from a real render — so
+/// this is the correct answer, not a shortcut.
+///
+/// `clip` is in destination PIXELS and defaults to the whole target. Note
+/// which point each region is anchored at: the clip's own corner on the
+/// destination, and that corner MINUS the translation on the source.
+pub fn drawBitmapData(
+    dst: *BitmapData,
+    src: *const BitmapData,
+    tx: i32,
+    ty: i32,
+    clip: ?[4]i32,
+    ct: ?ColorTransform,
+) void {
+    var source = PixelRegion.wholeSize(src.width, src.height);
+    var dest = PixelRegion.wholeSize(dst.width, dst.height);
+    const c = clip orelse [4]i32{ 0, 0, @intCast(dst.width), @intCast(dst.height) };
+    dest.clampWithIntersection(
+        .{ c[0], c[1] },
+        .{ c[0] -% tx, c[1] -% ty },
+        .{ c[2], c[3] },
+        &source,
+    );
+    if (dest.width() == 0 or dest.height() == 0) return;
+
+    if (ct) |transform| {
+        var y: i64 = 0;
+        while (y < dest.height()) : (y += 1) {
+            var x: i64 = 0;
+            while (x < dest.width()) : (x += 1) {
+                const s = src.get(source.x_min + x, source.y_min + y).toUnmultiplied();
+                var out = Color.rgba(
+                    chan(s.r, transform.mult[0], transform.add[0]),
+                    chan(s.g, transform.mult[1], transform.add[1]),
+                    chan(s.b, transform.mult[2], transform.add[2]),
+                    chan(s.a, transform.mult[3], transform.add[3]),
+                ).toPremultiplied(true);
+                out = blendOver(dst.get(dest.x_min + x, dest.y_min + y), out);
+                if (!dst.transparency) out = out.withAlpha(255);
+                dst.set(dest.x_min + x, dest.y_min + y, out);
+            }
+        }
+        return;
+    }
+    // An OPAQUE source has nothing to blend — every alpha is already 255.
+    copyOnCpu(dst, src, source, dest, src.transparency);
 }
 
 // --- pixelDissolve -----------------------------------------------------------

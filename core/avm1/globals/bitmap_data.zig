@@ -24,6 +24,8 @@ const decl = @import("decl.zig");
 const geom = @import("geom.zig");
 const stage = @import("../stage_object.zig");
 const bitmap_decode = @import("../../bitmap/decode.zig");
+const renderer_mod = @import("../../render/renderer.zig");
+const swf_mod = @import("../../swf/swf.zig");
 
 const Value = value_mod.Value;
 const Vm = runtime.Vm;
@@ -658,13 +660,68 @@ fn generateFilterRect(p: *anyopaque, this: Value, args: []const Value) anyerror!
     return .undefined_value;
 }
 
-/// Rendering a display object into a pixel buffer needs an off-screen
-/// canvas; that is E6. Until then the receiver check is all that is real.
+/// `draw(source, matrix, colorTransform, blendMode, clipRect, smooth)`.
+///
+/// Two very different paths behind one name. A BitmapData source under a
+/// matrix with no scale or skew is a plain BLIT — Flash does not go near
+/// the renderer for it, and the result is not the same as one that did.
+/// Anything else is a real render into an off-screen canvas.
+///
+/// Blend modes are not modelled; every mode draws as `normal`.
 fn draw(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = args;
     const vm = vmOf(p);
-    _ = dataOf(vm, this) orelse return BAD;
+    const bd = dataOf(vm, this) orelse return BAD;
+
+    var m: swf_mod.reader.Matrix = .{};
+    if (arg(args, 1) == .object) m = try geom.matrixOf(vm, args[1].object);
+    // A colour transform must be a REAL one here, as it is everywhere
+    // else on this class; a duck-typed object is silently ignored.
+    var ct: ?ops.ColorTransform = null;
+    if (arg(args, 2) == .object and geom.isColorTransformNominal(vm, args[2].object)) {
+        var got: ops.ColorTransform = .{};
+        inline for (.{ "redMultiplier", "greenMultiplier", "blueMultiplier", "alphaMultiplier" }, 0..) |k, i| {
+            if (vm.objects.getChained(args[2].object, S(k), vm.case_sensitive)) |v| got.mult[i] = try vm.toNumber(v);
+        }
+        inline for (.{ "redOffset", "greenOffset", "blueOffset", "alphaOffset" }, 0..) |k, i| {
+            if (vm.objects.getChained(args[2].object, S(k), vm.case_sensitive)) |v| got.add[i] = try vm.toNumber(v);
+        }
+        if (!got.isIdentity()) ct = got;
+    }
+    // The clip rectangle is in destination PIXELS, unlike every other
+    // rectangle argument on this class, which are already pixels too —
+    // but this one arrives through a geom.Rectangle in pixels and is NOT
+    // converted to twips.
+    const clip = try rectArg(vm, arg(args, 4));
+
+    switch (bitmapArg(vm, arg(args, 0))) {
+        .disposed => return .{ .number = -3 },
+        .valid => |src| {
+            // The blit path needs an unscaled, unskewed matrix; anything
+            // else has to go through the renderer, and a BitmapData is
+            // not a display object, so there is nothing to render.
+            if (m.a != 1 or m.b != 0 or m.c != 0 or m.d != 1) return .undefined_value;
+            ops.drawBitmapData(bd, src, @divFloor(m.tx, 20), @divFloor(m.ty, 20), clip, ct);
+            return .undefined_value;
+        },
+        .not_bitmap => {},
+    }
+
+    const t = stage.targetOfValue(vm, arg(args, 0)) orelse return .{ .number = -2 };
+    const r = rendererOf(vm) orelse return .undefined_value;
+    // Twips in, destination PIXELS out — the ÷20 the stage transform
+    // normally supplies has to come from here instead.
+    const px = 1.0 / 20.0;
+    const full: renderer_mod.Transform = (renderer_mod.Transform{
+        .a = px,
+        .d = px,
+    }).concat(m);
+    try r.drawObjectInto(vm.gpa, bd, t.obj, full, .{}, clip);
     return .undefined_value;
+}
+
+fn rendererOf(vm: *Vm) ?*renderer_mod.Renderer {
+    const p = vm.renderer orelse return null;
+    return @ptrCast(@alignCast(p));
 }
 
 /// `BitmapData.loadBitmap(exportName)` — a STATIC on the constructor,

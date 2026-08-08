@@ -229,6 +229,12 @@ pub const Vm = struct {
     /// stage_object.zig is the one file allowed to cast it back. Null in
     /// pure-VM tests, where every such operation no-ops.
     display_ctx: ?*anyopaque = null,
+    /// The Player's `render.renderer.Renderer`, for the one script call
+    /// that needs to RASTERISE on demand: `BitmapData.draw` with a
+    /// display object as its source. Opaque for the same reason
+    /// `display_ctx` is; `globals/bitmap_data.zig` casts it back. Null in
+    /// pure-VM tests, where `draw` then does nothing.
+    renderer: ?*anyopaque = null,
     /// trace() output collects here as UTF-8 lines.
     trace_buf: std.ArrayList(u8) = .empty,
     /// The value of the `throw` currently unwinding, paired with

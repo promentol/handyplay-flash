@@ -32,6 +32,7 @@ bitmap_data
 bitmap_data_colortransform
 bitmap_data_compare
 bitmap_data_copypixels
+bitmap_data_draw_cliprect
 bitmap_data_fillrect
 bitmap_data_hittest
 bitmap_data_max_size_swf10

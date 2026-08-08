@@ -190,6 +190,7 @@ pub const Player = struct {
         self.renderer.swf_version = self.movie.swf_version;
         self.renderer.display_gpa = gpa;
         self.renderer.jpeg_tables = self.movie.jpeg_tables;
+        self.vm.renderer = @ptrCast(&self.renderer);
         self.vm.root_swf_version = self.movie.swf_version;
         self.vm.movie_url = avm1.strings.fromSwf(self.vm.arena(), opts.url, 8) catch &.{};
         self.vm.epoch_ms = opts.epoch_ms;
