@@ -1444,8 +1444,12 @@ pub const Activation = struct {
             var i: usize = 0;
             while (i < o.props.items.len) : (i += 1) {
                 const p = o.props.items[i];
+                // Only DontEnum hides a key. A VERSION-gated property
+                // still enumerates — it just reads back as undefined
+                // (ruffle `get_keys` filters on `is_enumerable` alone;
+                // corpus textsnapshot_props_swf5 lists all nine methods
+                // at SWF5 and then reads every one as undefined).
                 if (p.attrs.dont_enum) continue;
-                if (object_mod.versionHidden(p.attrs, self.swf_version)) continue;
                 var dup = false;
                 for (seen.items) |k| {
                     const same = if (self.vm.case_sensitive)

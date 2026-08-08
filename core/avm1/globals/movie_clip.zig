@@ -48,6 +48,7 @@ pub fn install(vm: *Vm) !void {
     try method(vm, proto, "curveTo", curveTo, ver(hidden, decl.V6));
     try method(vm, proto, "clear", clearDrawing, ver(hidden, decl.V6));
     try method(vm, proto, "getDepth", getDepth, ver(frozen, decl.V6));
+    try method(vm, proto, "getTextSnapshot", getTextSnapshot, ver(hidden, decl.V6));
     try method(vm, proto, "getNextHighestDepth", getNextHighestDepth, ver(hidden, decl.V7));
 
     // --- timeline control ---------------------------------------------------
@@ -98,6 +99,19 @@ pub fn install(vm: *Vm) !void {
     try decl.property(vm, proto, "blendMode", getBlendMode, setBlendMode, ver(hidden, decl.V8));
     try decl.property(vm, proto, "filters", getFilters, setFilters, ver(hidden, decl.V8));
     try decl.property(vm, proto, "transform", getTransform, setTransform, ver(.{ .dont_enum = true }, decl.V8));
+}
+
+/// Not a factory of its own: it RESOLVES the name `TextSnapshot` and
+/// constructs whatever that names, passing the clip as the only argument.
+/// Content can therefore replace the class and see its own constructor run
+/// (corpus movieclip_gettextsnapshot swaps it out and traces the calls).
+fn getTextSnapshot(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const ctor = vm.objects.getChained(vm.globals, S("TextSnapshot"), vm.case_sensitive) orelse
+        return .undefined_value;
+    return vm.construct(ctor, &.{this});
 }
 
 /// `tabIndex` is a NATIVE slot, not an ordinary property: it survives on

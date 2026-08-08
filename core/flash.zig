@@ -29,6 +29,10 @@ pub const display = struct {
     // M4: text.zig.
 };
 
+pub const text = struct {
+    pub const format = @import("text/format.zig");
+};
+
 pub const render = struct {
     pub const canvas = @import("render/canvas.zig");
     pub const shape_utils = @import("render/shape_utils.zig");
@@ -1120,6 +1124,9 @@ test {
     _ = @import("avm1/globals/date.zig");
     _ = @import("avm1/globals/singletons.zig");
     _ = @import("avm1/globals/selection.zig");
+    _ = @import("avm1/globals/text_format.zig");
+    _ = @import("avm1/globals/text_snapshot.zig");
+    _ = @import("text/format.zig");
     _ = @import("avm1/globals/movie_clip.zig");
     _ = @import("avm1/globals/globals.zig");
 }

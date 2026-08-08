@@ -945,6 +945,10 @@ pub const AVM_DEPTH_BIAS: i32 = 16384;
 const AVM_MAX_DEPTH: i32 = 2130706428;
 const AVM_MAX_REMOVE_DEPTH: i32 = 2130706416;
 
+pub fn displayCtxOf(vm: *Vm) ?*movie_clip.Context {
+    return displayCtx(vm);
+}
+
 fn displayCtx(vm: *Vm) ?*movie_clip.Context {
     const p = vm.display_ctx orelse return null;
     return @ptrCast(@alignCast(p));

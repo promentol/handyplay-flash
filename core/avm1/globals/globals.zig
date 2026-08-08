@@ -210,6 +210,8 @@ pub fn install(vm: *Vm) !void {
     try @import("date.zig").install(vm);
     try @import("singletons.zig").install(vm);
     try @import("selection.zig").install(vm);
+    try @import("text_format.zig").install(vm);
+    try @import("text_snapshot.zig").install(vm);
 
     // --- Error ------------------------------------------------------------
     {

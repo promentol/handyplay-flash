@@ -119,6 +119,9 @@ pub const NativeInfo = union(enum) {
     removed_display,
     /// A `Date`: milliseconds since the Unix epoch, UTC (NaN = invalid).
     date: f64,
+    /// A `TextFormat`'s value struct, owned by the VM arena. Opaque here
+    /// so the object model keeps no dependency on the text module.
+    text_format: *anyopaque,
     /// flash.geom.Transform — a live view of the display object whose AVM1
     /// handle this holds. A handle rather than a pointer so a removed clip
     /// simply stops resolving, like every other retained reference.
