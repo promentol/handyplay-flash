@@ -1476,6 +1476,32 @@ pub fn highlightVisible(vm: *Vm) bool {
     return vm.stage_focus_rect;
 }
 
+/// A click landed on `obj` at `index`: if the character there carries an
+/// `asfunction:` URL, call what it names.
+///
+/// The address is split at the FIRST comma only, so
+/// `asfunction:f,a,b,c` passes ONE argument, the string "a,b,c".
+/// Anything else — a real URL, `event:` — needs a navigator we do not
+/// have (M5), and is ignored rather than guessed at.
+fn followLink(vm: *Vm, obj: *DisplayObject, index: usize) !void {
+    const et = obj.kind.edit_text;
+    const url = et.urlAt(index) orelse return;
+    const prefix = S("asfunction:");
+    if (url.len < prefix.len or !strings.eql(url[0..prefix.len], prefix)) return;
+    const address = url[prefix.len..];
+    if (address.len == 0) return;
+
+    const timeline = obj.parent orelse return;
+    const start = try clipObject(vm, timeline);
+    const comma = std.mem.indexOfScalar(u16, address, ',');
+    if (comma) |c| {
+        const arg_str = try vm.arena().dupe(u16, address[c + 1 ..]);
+        try @import("activation.zig").Activation.callNamed(vm, start, address[0..c], &.{.{ .string = arg_str }});
+    } else {
+        try @import("activation.zig").Activation.callNamed(vm, start, address, &.{});
+    }
+}
+
 /// A field's text changed from the ENGINE side (an IME commit, typing):
 /// push the variable binding and broadcast `onChanged` from the field.
 pub fn fieldEdited(vm: *Vm, obj: *DisplayObject) !void {
@@ -1516,6 +1542,18 @@ pub fn focusedField(vm: *Vm) ?*@import("../display/edit_text.zig").EditText {
 /// else clears the focus, but only when what was focused was itself
 /// mouse-focusable (ruffle `update_focus_on_mouse_press`).
 pub fn focusByMousePress(vm: *Vm, obj: ?*DisplayObject) anyerror!void {
+    // A LINK is followed on press whatever the field's selectability —
+    // that is the only thing a non-selectable field reacts to at all.
+    if (obj) |o| {
+        if (o.kind == .edit_text) {
+            syncField(vm, .{ .obj = o, .clip = null });
+            const p = localMouse(vm, .{ .obj = o, .clip = null });
+            const at = o.kind.edit_text.positionToIndex(
+                .{ twipsFromPixels(p[0]), twipsFromPixels(p[1]) },
+            );
+            if (at) |idx| try followLink(vm, o, idx);
+        }
+    }
     const focusable = blk: {
         const o = obj orelse break :blk false;
         if (o.kind != .edit_text) break :blk false;

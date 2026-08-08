@@ -805,6 +805,26 @@ pub const EditText = struct {
         return self.textInput(gpa, text);
     }
 
+    /// Is the character at this point part of a LINK? A field that is not
+    /// selectable is invisible to the mouse everywhere else, but a link
+    /// in it is still clickable (ruffle `mouse_pick_avm1`).
+    pub fn isLinkAt(self: *const EditText, local: [2]i32) bool {
+        const idx = self.positionToIndex(local) orelse return false;
+        return self.urlAt(idx) != null;
+    }
+
+    /// The URL of the span covering `index`, if it has one.
+    pub fn urlAt(self: *const EditText, index: usize) ?[]const u16 {
+        var base: usize = 0;
+        for (self.spans.list.items) |sp| {
+            if (index >= base and index < base + sp.len) {
+                return if (sp.url.len > 0) sp.url else null;
+            }
+            base += sp.len;
+        }
+        return null;
+    }
+
     pub fn setFormatRange(
         self: *EditText,
         gpa: std.mem.Allocator,

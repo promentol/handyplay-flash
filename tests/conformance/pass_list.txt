@@ -22,6 +22,7 @@ as_set_prop_flags_version_swf7
 as_set_prop_flags_version_swf8
 as_set_prop_flags_version_swf9
 as_transformed_flag
+asfunction
 attach_movie
 attach_movie_stop
 bad_placeobject_clipaction

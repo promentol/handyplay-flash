@@ -189,6 +189,35 @@ pub const Activation = struct {
         return .{ .obj = target, .name = path[at + 1 ..] };
     }
 
+    /// `asfunction:` — call the function a text field's link names, in a
+    /// scope rooted at the field's own timeline.
+    ///
+    /// `this` is the object the NAME resolved against when it was a path
+    /// (`text1.callback` runs with text1 as `this`) and the timeline
+    /// otherwise — ruffle's `call_with_default_this`.
+    pub fn callNamed(
+        vm: *Vm,
+        start: ObjectHandle,
+        name: strings.AvmString,
+        args: []const Value,
+    ) anyerror!void {
+        if (name.len == 0) return;
+        var act = Activation.init(vm, &.{}, .{ .object = start }, start, 0);
+        const hit = try act.getVariableHit(name) orelse return;
+        if (!vm.isCallable(hit.value)) return;
+        // The scope hit's OWNER is `this`. A name that only `_global`
+        // provides has no scope object behind it, and there `_global`
+        // itself is the receiver — corpus asfunction traces
+        // `this == _global` for a function declared there.
+        const this: Value = if (hit.owner != 0)
+            .{ .object = hit.owner }
+        else if (vm.objects.hasOwn(vm.globals, name, vm.case_sensitive))
+            .{ .object = vm.globals }
+        else
+            .{ .object = start };
+        _ = try vm.callFunction(hit.value, this, args);
+    }
+
     /// Resolve a TARGET PATH to an object, walking the DISPLAY tree.
     /// Ports ruffle activation.rs:2562-2676. This is a different animal
     /// from GetMember: children are resolved before ordinary properties,

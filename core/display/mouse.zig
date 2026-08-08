@@ -148,8 +148,13 @@ pub fn pick(
         // invisible to the mouse, which is why it neither takes focus nor
         // blocks what is behind it (ruffle `mouse_pick_avm1`).
         .edit_text => |et| {
-            if (!et.selectable) return null;
-            return if (containsPoint(obj, world, point)) obj else null;
+            if (!containsPoint(obj, world, point)) return null;
+            if (et.selectable) return obj;
+            // A field that is not selectable is invisible to the mouse
+            // EXCEPT over a link, which stays clickable.
+            const inv = world.invert() orelse return null;
+            const local = inv.transformPoint(point[0], point[1]);
+            return if (et.isLinkAt(local)) obj else null;
         },
         else => return null,
     }
