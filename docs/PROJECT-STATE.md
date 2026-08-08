@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D and E complete (**408/680**, images **8/26**); F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D and E complete (**453/680**, images **8/26**); F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -59,8 +59,11 @@ transform, channel copy, merge, threshold, compare, hit-test, colour
 bounds, pixel dissolve, both forms of `copyPixels`, `paletteMap`, plus
 `attachBitmap`, `beginBitmapFill`, `loadBitmap` and `draw` — including
 Perlin noise, a ColorMatrixFilter through `applyFilter`, and blend modes.
-408 of Ruffle's 680 scorable conformance dirs pass, and 8 of its 26
+453 of Ruffle's 680 scorable conformance dirs pass, and 8 of its 26
 runnable image comparisons; EVERY bitmap dir in the corpus passes both.
+**XML today**: `XML` and `XMLNode` in full — parse, build, walk, clone,
+reparent, serialise, namespaces, `idMap`, the lot — over a hand-written
+UTF-16 parser. Everything but `load`/`sendAndLoad`, which need I/O.
 **Filters today**: every class, every property coercion, and
 PlaceObject3's filter list decoded and readable — but only
 `ColorMatrixFilter` is actually APPLIED (M7 owns the kernels).
@@ -464,27 +467,28 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
-**Workstreams A, B, C, D and E are CLOSED at 408/680, with every bitmap
+**Workstreams A, B, C, D and E are CLOSED at 453/680, with every bitmap
 dir in the corpus passing both harnesses.** Pick up F (PlaceObject3 blend
 modes and clipDepth masks) next — `Renderer.blendModeFromSwf` already has
 the mapping F needs, because `BitmapData.draw` takes the same numbering.
 `docs/M4-SPEC.md` §4, §5, §6 and §7 list, by name and cause, every dir
 those five workstreams could not reach; do not re-derive them.
 
-**What the remaining 272 failures actually are.** They cluster hard, and
-none of them is a near-miss any more — every dir that was failing by one
-or two lines has been fixed:
+**What the remaining 227 failures actually are.** They cluster hard, and
+none is a near-miss of one or two lines that does not need a subsystem:
 
 | cluster | dirs | what it needs |
 |---|---:|---|
-| `xml*` | 32 | `XML` / `XMLNode` — a whole class family, no I/O for the DOM half |
-| `movieclip*` | 16 | a mixed bag; read each one |
 | `sound*` | 15 | M6 |
-| `file*`, `mcl*`, `loadmovie*` | 30 | loaders — needs a host I/O seam, and `core/` does no I/O |
+| `file*`, `mcl*`, `loadmovie*`, `xml_load`, `xml_socket*` | 42 | a host I/O seam — `core/` does no I/O |
+| `movieclip*` | 14 | mixed; several need a loaded child movie |
 | `external*` | 7 | ExternalInterface |
 | `amf*` | 6 | AMF / SharedObject serialisation |
+| the tail | ~140 | one dir at a time, each its own semantics |
 
-**XML is the single biggest available win** and needs no new subsystem.
+**The loader seam is the biggest single unlock**: 42 dirs across five
+clusters are waiting on the same thing, and none of them can be reached
+from `core/` as it stands.
 
 Seven things to know before you start:
 

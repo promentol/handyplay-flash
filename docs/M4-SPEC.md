@@ -569,7 +569,7 @@ Nothing else in the cluster is outstanding. The four dirs that needed a
 DEVICE font, the two that needed `flash.filters`, the IME one, drag
 selection, click-to-caret and `TextField.StyleSheet` all shipped.
 
-## 7. Bitmaps (workstream E) — ✅ CLOSED (408/680, images 8/26)
+## 7. Bitmaps (workstream E) — ✅ CLOSED (453/680, images 8/26)
 
 **This section used to describe only half of E, and not the half the
 corpus measures.** It was entirely about decoding `DefineBits*` and

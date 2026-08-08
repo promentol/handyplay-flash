@@ -588,3 +588,68 @@ an i32 — so `Infinity`, `16002.5` and `2147483649` are all "loaded".
 **A clip UNLINKED from its parent stringifies empty.** Flash re-resolves
 a reference by walking down from the level by name; its children keep
 reporting their paths through their own `onUnload`.
+
+## XML (workstream E follow-on)
+
+`XML` and `XMLNode`, over `core/xml/parser.zig`. Everything but the
+network half — `load`, `sendAndLoad` and the `_bytesLoaded` the loader
+would write.
+
+**The tree lives beside the script objects.** A node's AVM1 object is
+made LAZILY, on the first read that hands it to script, and is then the
+node's identity: `n.firstChild == n.firstChild` is true. An `XML`
+document IS an `XMLNode` — its object carries both natives and every
+node accessor reaches it through the root, which is an element with NO
+name, which is why `doc.toString()` concatenates its children rather
+than wrapping them.
+
+**`nodeName` reads null on anything but an element and `nodeValue` reads
+null on an element** — one storage slot, two accessors with opposite
+guards — and they SHARE a setter, so writing either rewrites the slot
+whatever the node type.
+
+**Attributes are stored in REVERSE definition order.** A `for..in` pushes
+properties in storage order and the script pops them, so reversing is
+what makes script see them the way the document wrote them; the
+serialiser and every namespace lookup walk back the other way.
+
+**`XMLNode.prototype` is read FRESH for every node the parser makes**, so
+content that reassigns it changes what later nodes inherit.
+
+**The parser is lenient where a conforming one is not.** An entity runs
+from `&` to the next `;` with NO intervening `&`, so a bare ampersand is
+left alone rather than swallowing what follows, and an unrecognised
+entity is copied through verbatim. A doctype's internal subset nests
+`<…>` so the scan balances rather than stopping at the first `>`. A
+declaration and a doctype are captured VERBATIM rather than interpreted.
+An unquoted attribute value has its own `status` code — the status
+numbers are script-visible and part of the behaviour.
+
+## Arrays, strings and Math (near-miss sweep, second pass)
+
+**Every array mutator DELETES an element before setting it**, so the
+property lands at the end of the property list — `for..in` walks that
+list and the corpus dumps the enumeration after each operation.
+`reverse` deletes both ends before setting either.
+
+**`Array.sort` is Flash's own quicksort**: unstable, leftmost pivot, so
+the permutation it leaves equal elements in is observable. DESCENDING is
+applied by reversing AFTERWARDS rather than by flipping the comparison,
+precisely because of that. UNIQUESORT answers 0 and abandons the result
+using the BUILT-IN comparison whatever comparator ordered the array.
+`sortOn` honours an options array only when it is exactly as long as the
+field list, and reads fields as OWN properties.
+
+**`substr`'s length is not clamped**: `start + length` is a WRAPPING end
+index, so `substr(0, -1)` is everything but the last character. `slice`
+wraps both indices, `substring` clamps both and swaps them if they
+cross. `charAt`/`charCodeAt` wrap their index into an i32 first.
+
+**`Math.min`/`max` are BINARY**, and a missing second argument is
+undefined — NaN above SWF6 — so `Math.min(1)` is NaN. Every Math method
+coerces its first two arguments whether or not it uses them, and below
+SWF7 its arity is checked before it runs.
+
+**`toUpperCase`/`toLowerCase` use Flash's own tables**
+(`core/avm1/case_tables.zig`), which are not Unicode's. Case folding for
+PROPERTY LOOKUP stays ASCII-only — a different rule.
