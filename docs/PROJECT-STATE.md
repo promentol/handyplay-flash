@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C and D complete (**344/680**); E–F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C and D complete (**347/680**); E–F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -50,7 +50,7 @@ Focus, `Selection`, and Tab ordering work.
 **Text today**: static text and text fields both render glyphs; a field
 is a real instance with formatting spans, HTML in and out, wrapping and
 alignment, autosize, scrolling, a two-way `variable` binding, a
-selection, and typing through the full editing-command set. 344 of
+selection, and typing through the full editing-command set. 347 of
 Ruffle's 680 scorable conformance dirs pass.
 
 ---
@@ -325,6 +325,15 @@ In order of how often it settled things this session:
    `paste -d'|' <(./zig-out/bin/trace_runner $D/test.swf --frames N) \
                 <(cat $D/output.txt) | cat -n`
 
+### ⚠️ `zig build` does NOT build the SDL frontend
+
+`zig build` installs the tools and the core; the frontend is its own step,
+`zig build sdl`. A visual check run without it renders with whatever
+binary was last built — which silently made a whole session's worth of
+"verified visually" claims meaningless once. Always `zig build sdl`
+before `--headless-frames`, and check the binary's mtime if a change
+seems to have had no effect.
+
 ### Visual gate (renderer / timeline changes)
 
 ```sh
@@ -433,7 +442,7 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
-**Workstreams A, B, C and D are CLOSED at 344/680.** Pick up E (bitmaps)
+**Workstreams A, B, C and D are CLOSED at 347/680.** Pick up E (bitmaps)
 next. `docs/M4-SPEC.md` §4, §5 and §6 list, by name and cause, every dir
 those four workstreams could not reach; do not re-derive them.
 

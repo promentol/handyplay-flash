@@ -219,6 +219,20 @@ pub const Renderer = struct {
 
         if (et.background or et.border) try self.drawFieldBox(ctx, et, parent_t, cx);
 
+        // Text is CLIPPED to the field's box: a line too long for the
+        // field is cut off, not spilled across the stage.
+        ctx.save();
+        defer ctx.restore();
+        ctx.setTransform(parent_t.a, parent_t.b, parent_t.c, parent_t.d, parent_t.tx, parent_t.ty);
+        boxPath(
+            ctx,
+            @floatFromInt(et.bounds.xmin),
+            @floatFromInt(et.bounds.ymin),
+            @floatFromInt(et.bounds.xmax),
+            @floatFromInt(et.bounds.ymax),
+        );
+        ctx.clip(.nonzero);
+
         const gutter: f32 = @floatFromInt(edit_text.GUTTER);
         const ox: f32 = @as(f32, @floatFromInt(et.bounds.xmin)) + gutter;
         const oy: f32 = @as(f32, @floatFromInt(et.bounds.ymin)) + gutter;
@@ -317,8 +331,11 @@ pub const Renderer = struct {
         return edit_text.swfFromRgb(rgb, 255);
     }
 
-    /// The field's box: a filled background and/or a one-pixel border,
-    /// both drawn in the field's OWN space.
+    /// The field's box: a filled background and/or a one-pixel border.
+    ///
+    /// Drawn in TWIPS under the field's own CTM, like every other path —
+    /// the canvas transform is what carries twips to pixels, so points
+    /// pre-multiplied here would be transformed a second time.
     fn drawFieldBox(
         self: *Renderer,
         ctx: *simdra.SmCanvas,
@@ -327,32 +344,22 @@ pub const Renderer = struct {
         cx: swf.reader.ColorTransform,
     ) Error!void {
         _ = self;
-        // The corners go through the WHOLE transform, in twips, and only
-        // then down to pixels — a rotated field's box is a quad.
+        ctx.setTransform(t.a, t.b, t.c, t.d, t.tx, t.ty);
+        ctx.setColorTransform(toSimdraCxform(cx));
         const x0: f64 = @floatFromInt(et.bounds.xmin);
         const y0: f64 = @floatFromInt(et.bounds.ymin);
         const x1: f64 = @floatFromInt(et.bounds.xmax);
         const y1: f64 = @floatFromInt(et.bounds.ymax);
-        const corners = [4][2]f64{ .{ x0, y0 }, .{ x1, y0 }, .{ x1, y1 }, .{ x0, y1 } };
-        var pts: [4][2]f32 = undefined;
-        for (corners, 0..) |c, i| {
-            const p = t.apply(c[0], c[1]);
-            pts[i] = .{ @floatCast(p[0]), @floatCast(p[1]) };
-        }
+
         if (et.background) {
-            ctx.beginPath();
-            ctx.moveTo(pts[0][0], pts[0][1]);
-            for (pts[1..]) |p| ctx.lineTo(p[0], p[1]);
-            ctx.closePath();
-            setSolid(ctx, et.background_color, cx, true);
+            boxPath(ctx, x0, y0, x1, y1);
+            setSolid(ctx, et.background_color, true);
             ctx.fill(.nonzero);
         }
         if (et.border) {
-            ctx.beginPath();
-            ctx.moveTo(pts[0][0], pts[0][1]);
-            for (pts[1..]) |p| ctx.lineTo(p[0], p[1]);
-            ctx.closePath();
-            setSolid(ctx, et.border_color, cx, false);
+            boxPath(ctx, x0, y0, x1, y1);
+            setSolid(ctx, et.border_color, false);
+            // A hairline: one DEVICE pixel however the field is scaled.
             ctx.setLineWidth(1);
             ctx.stroke();
         }
@@ -457,27 +464,28 @@ fn buildPath(ctx: *simdra.SmCanvas, commands: []const shape_utils.DrawCommand) v
 
 const GRADIENT_HALF: f64 = 16384.0; // gradient square is ±16384 twips
 
-/// A flat colour through the current colour transform. `Color` is packed
-/// ABGR, and the canvas wants the four channels apart.
-fn setSolid(ctx: *simdra.SmCanvas, c: u32, cx: swf.reader.ColorTransform, fill: bool) void {
-    const ch = [4]u8{
-        @truncate(c & 0xFF),
-        @truncate((c >> 8) & 0xFF),
-        @truncate((c >> 16) & 0xFF),
-        @truncate((c >> 24) & 0xFF),
-    };
-    var out: [4]u8 = undefined;
-    for (ch, 0..) |v, i| {
-        const m = @as(i32, cx.mult[i]);
-        const a = @as(i32, cx.add[i]);
-        const n = @divTrunc(@as(i32, v) * m, 256) + a;
-        out[i] = @intCast(std.math.clamp(n, 0, 255));
-    }
+/// A flat colour. `Color` is packed ABGR and the canvas wants the four
+/// channels apart; the colour TRANSFORM is the canvas's own state, set
+/// alongside the CTM, so it is not applied here.
+fn setSolid(ctx: *simdra.SmCanvas, c: u32, fill: bool) void {
+    const r: u8 = @truncate(c & 0xFF);
+    const g: u8 = @truncate((c >> 8) & 0xFF);
+    const b: u8 = @truncate((c >> 16) & 0xFF);
+    const a: u8 = @truncate((c >> 24) & 0xFF);
     if (fill) {
-        ctx.setFillStyle(out[0], out[1], out[2], out[3]);
+        ctx.setFillStyle(r, g, b, a);
     } else {
-        ctx.setStrokeStyle(out[0], out[1], out[2], out[3]);
+        ctx.setStrokeStyle(r, g, b, a);
     }
+}
+
+fn boxPath(ctx: *simdra.SmCanvas, x0: f64, y0: f64, x1: f64, y1: f64) void {
+    ctx.beginPath();
+    ctx.moveTo(@floatCast(x0), @floatCast(y0));
+    ctx.lineTo(@floatCast(x1), @floatCast(y0));
+    ctx.lineTo(@floatCast(x1), @floatCast(y1));
+    ctx.lineTo(@floatCast(x0), @floatCast(y1));
+    ctx.closePath();
 }
 
 fn applyFillStyle(

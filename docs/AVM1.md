@@ -356,6 +356,17 @@ re-derived:
   non-selectable one is invisible to the mouse and neither takes focus nor
   blocks what is behind it. A press on NOTHING goes to the stage, which
   cannot hold focus, so a focused field loses it.
+- **Printable ASCII raises its button `keyPress` from the TEXT INPUT
+  event, not the key-down** (`ButtonKeyCode::from_input_event`); only the
+  SPECIAL keys come from the key-down, and space is not one of them.
+  Since a claimed keyPress suppresses the rest of that same event,
+  deriving the ASCII one from the key-down fires the handler AND still
+  lets the character reach the focused field.
+- **Enter and Space press the focused object only when the highlight is
+  VISIBLE**, which `_focusrect` can switch off independently of the
+  highlight being active. A text field cannot render one at all.
+- **A `TextSnapshot` captures at construction**, so one taken earlier
+  keeps reporting what the clip said then.
 - **`TextField.text` must hand out a COPY.** Returning the field's own
   buffer let a later edit rewrite a string already stored in a variable —
   a real aliasing bug the corpus caught through `replaceSel`.

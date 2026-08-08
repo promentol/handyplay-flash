@@ -435,7 +435,7 @@ reached and exactly why.
 | The LOADER (M5) | `root_button_mode`, `focusrect_property_swf5/6/7` |
 | A TextField stores `tabIndex` as u32 and declares it ENUMERABLE, unlike Button and MovieClip — this dir's button and movie-clip sections match exactly, only its two text sections do not | `tab_ordering_properties` |
 
-## 6. Text, fonts and TextField (workstream D) — ✅ CLOSED (344/680)
+## 6. Text, fonts and TextField (workstream D) — ✅ CLOSED (347/680)
 
 Everything below shipped. The plan lives in the git log (`D0`..`D10`); the
 semantics worth keeping are in `docs/AVM1.md`'s "Workstream D notes" and at
@@ -507,6 +507,15 @@ reached and exactly why.
   text rather than the box. A SELECTABLE field is pickable through its
   whole box; a dynamic non-selectable one is invisible to the mouse and
   neither takes focus nor blocks what is behind it.
+- **`TextField.StyleSheet`**: `_css` holds the raw style objects, `_styles`
+  their transformed formats, and the lowercased selector goes into a hidden
+  side table the HTML parser matches against through a callback — so
+  `core/text` never learns what a StyleSheet is. A sheet makes a field HTML
+  without touching its `html` flag, and a styled field reports the markup it
+  was GIVEN rather than re-serialising.
+- **A `TextSnapshot` captures at CONSTRUCTION.** One taken before its clip
+  changed still reports what the clip said then, and a receiver built from
+  something that was not a clip answers `undefined` rather than empty.
 - Also closed here: every §5 dir listed as blocked on EditText, plus a real
   aliasing bug — `TextField.text` handed out the field's own buffer, so a
   later edit rewrote a string already stored in a variable.
@@ -516,11 +525,9 @@ reached and exactly why.
 | Blocker | Dirs |
 |---|---|
 | A DEVICE font — the toml sets `with_default_font`, and resolving a face the movie does not embed needs host font I/O (M7) | `gettextextent`, `device_font_spacing`, `edittext_hscroll`, `edittext_drag_select` |
-| `TextField.StyleSheet` — a CSS parser plus `styleSheet`/`stylesheet_transform` | `edittext_stylesheet`, `clone_sprite_edittext_dynamic` |
 | IME composition | `edittext_ime_focus_lost` |
-| A consumed `keyPress` must suppress the `TextInput` event that follows it. The two arrive separately and ruffle's own per-event `key_press_handled` does not obviously carry across, so the mechanism needs finding before it is copied | `button_keypress_vs_textinput` |
-| `filters` are reported as an empty array and not stored, so a field cannot carry one | `clone_sprite_edittext` |
-| `TextSnapshot` captures at CONSTRUCTION, and duplicating a clip makes a NEW snapshot of the original report undefined while an older one still reports its text — a lifetime rule we do not model | `textsnapshot_available_text` |
+| `flash.filters.*` — a field reports `filters` as an empty array and stores nothing, so it cannot carry one. The whole package is M7 | `clone_sprite_edittext` |
+| Cloning a text FIELD. `duplicateMovieClip` on one produces a live clone in Flash, and the corpus also pins how autosize interacts with a scripted `_width` on the original | `clone_sprite_edittext_dynamic` |
 | The LOADER (M5) | `focusrect_property_swf5/6/7` |
 
 ## 7. Bitmaps (workstream E)
