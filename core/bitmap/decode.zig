@@ -4,9 +4,13 @@
 //! stb (JPEG, and the PNG/GIF that SWF8+ smuggles inside a JPEG tag), or
 //! inflate and de-swizzle a raw pixel block ourselves.
 //!
-//! Output is STRAIGHT RGBA8, one byte per channel — not premultiplied,
-//! because that is what both the rasteriser's pattern fill and
-//! `BitmapData` ingestion want, and each premultiplies on its own terms.
+//! Output is RGBA8, one byte per channel, and `premultiplied` says which
+//! FORM it is in. Most SWF bitmap families store colour already
+//! multiplied by alpha — a `DefineBitsLossless2` and the alpha plane of a
+//! `DefineBitsJPEG3` both do — and that is also `BitmapData`'s storage
+//! form, so `loadBitmap` copies those bytes across untouched. Converting
+//! out and back instead costs a unit in the last place per channel, which
+//! the corpus reads back and notices.
 //!
 //! No I/O: the compressed bytes are already slices into the movie buffer.
 //!
@@ -29,6 +33,10 @@ pub const Image = struct {
     height: u32,
     /// `width * height * 4`, row-major, R G B A.
     rgba: []u8,
+    /// Is the colour already multiplied by the alpha? True for the tag
+    /// families that store it that way; false for a straight-alpha PNG or
+    /// GIF smuggled inside a JPEG tag.
+    premultiplied: bool = false,
 
     pub fn deinit(self: *Image, gpa: std.mem.Allocator) void {
         gpa.free(self.rgba);
@@ -86,20 +94,24 @@ fn decodeJpeg(
     errdefer gpa.free(rgba);
     @memcpy(rgba, bm.data[0 .. n * 4]);
 
+    var premultiplied = false;
     if (alpha_zlib) |az| {
         const alpha = inflateZlib(gpa, az) catch null;
         if (alpha) |a| {
             defer gpa.free(a);
-            if (a.len >= n) applyAlphaPlane(rgba, a);
+            if (a.len >= n) {
+                applyAlphaPlane(rgba, a);
+                premultiplied = true;
+            }
         }
     }
-    return .{ .width = bm.width, .height = bm.height, .rgba = rgba };
+    return .{ .width = bm.width, .height = bm.height, .rgba = rgba, .premultiplied = premultiplied };
 }
 
-/// The JPEG payload of a `DefineBitsJPEG3` is supposed to be premultiplied
-/// and in some encoders is not, so a fully transparent pixel can carry
-/// colour and show up. Flash clamps each channel to the alpha, and we do
-/// the same — the pixels stay STRAIGHT, this is only a clamp.
+/// The JPEG payload of a `DefineBitsJPEG3` IS premultiplied, and in some
+/// encoders is not, so a fully transparent pixel can carry colour and
+/// show up. Flash clamps each channel to the alpha, which is exactly the
+/// invariant premultiplication guarantees.
 fn applyAlphaPlane(rgba: []u8, alpha: []const u8) void {
     var i: usize = 0;
     while (i * 4 + 3 < rgba.len and i < alpha.len) : (i += 1) {
@@ -250,7 +262,7 @@ fn decodeLossless(gpa: std.mem.Allocator, tag: bitmap_tags.Lossless) Error!Image
         },
         _ => return error.BadImage,
     }
-    return .{ .width = @intCast(w), .height = @intCast(h), .rgba = rgba };
+    return .{ .width = @intCast(w), .height = @intCast(h), .rgba = rgba, .premultiplied = has_alpha };
 }
 
 /// 5 bits to 8 the way Flash does it: `(c * 255 + 15) / 31`, which is not

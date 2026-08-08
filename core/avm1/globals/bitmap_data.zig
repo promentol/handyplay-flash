@@ -293,13 +293,7 @@ fn colorTransform(p: *anyopaque, this: Value, args: []const Value) anyerror!Valu
     if (args[1] != .object) return .{ .number = -3 };
     const o = args[1].object;
     if (!geom.isColorTransformNominal(vm, o)) return .{ .number = -3 };
-    var ct: ops.ColorTransform = .{};
-    inline for (.{ "redMultiplier", "greenMultiplier", "blueMultiplier", "alphaMultiplier" }, 0..) |k, i| {
-        if (vm.objects.getChained(o, S(k), vm.case_sensitive)) |v| ct.mult[i] = try vm.toNumber(v);
-    }
-    inline for (.{ "redOffset", "greenOffset", "blueOffset", "alphaOffset" }, 0..) |k, i| {
-        if (vm.objects.getChained(o, S(k), vm.case_sensitive)) |v| ct.add[i] = try vm.toNumber(v);
-    }
+    const ct = try colorTransformArg(vm, o);
     ops.colorTransform(bd, @max(r[0], 0), @max(r[1], 0), @as(i64, r[0]) + r[2], @as(i64, r[1]) + r[3], ct);
     // -1 on SUCCESS. Not a typo: colorTransform is the one mutator that
     // reports the same value it uses for failure.
@@ -678,13 +672,7 @@ fn draw(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     // else on this class; a duck-typed object is silently ignored.
     var ct: ?ops.ColorTransform = null;
     if (arg(args, 2) == .object and geom.isColorTransformNominal(vm, args[2].object)) {
-        var got: ops.ColorTransform = .{};
-        inline for (.{ "redMultiplier", "greenMultiplier", "blueMultiplier", "alphaMultiplier" }, 0..) |k, i| {
-            if (vm.objects.getChained(args[2].object, S(k), vm.case_sensitive)) |v| got.mult[i] = try vm.toNumber(v);
-        }
-        inline for (.{ "redOffset", "greenOffset", "blueOffset", "alphaOffset" }, 0..) |k, i| {
-            if (vm.objects.getChained(args[2].object, S(k), vm.case_sensitive)) |v| got.add[i] = try vm.toNumber(v);
-        }
+        const got = try colorTransformArg(vm, args[2].object);
         if (!got.isIdentity()) ct = got;
     }
     // The clip rectangle is in destination PIXELS, unlike every other
@@ -719,6 +707,21 @@ fn draw(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return .undefined_value;
 }
 
+/// The eight properties of a `flash.geom.ColorTransform`, snapped to the
+/// 8.8 fixed grid Flash actually computes on. A missing property keeps
+/// the identity value rather than reading as zero.
+fn colorTransformArg(vm: *Vm, o: ObjectHandle) !ops.ColorTransform {
+    var mult: [4]f64 = .{ 1, 1, 1, 1 };
+    var add: [4]f64 = .{ 0, 0, 0, 0 };
+    inline for (.{ "redMultiplier", "greenMultiplier", "blueMultiplier", "alphaMultiplier" }, 0..) |k, i| {
+        if (vm.objects.getChained(o, S(k), vm.case_sensitive)) |v| mult[i] = try vm.toNumber(v);
+    }
+    inline for (.{ "redOffset", "greenOffset", "blueOffset", "alphaOffset" }, 0..) |k, i| {
+        if (vm.objects.getChained(o, S(k), vm.case_sensitive)) |v| add[i] = try vm.toNumber(v);
+    }
+    return ops.ColorTransform.fromFloats(mult, add);
+}
+
 fn rendererOf(vm: *Vm) ?*renderer_mod.Renderer {
     const p = vm.renderer orelse return null;
     return @ptrCast(@alignCast(p));
@@ -749,14 +752,17 @@ fn loadBitmap(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 
     const bd = try vm.arena().create(BitmapData);
     bd.* = try BitmapData.init(vm.gpa, img.width, img.height, true, 0);
-    // Decoded pixels are STRAIGHT; storage is premultiplied.
+    // A tag that already stores premultiplied colour is copied ACROSS,
+    // not converted: the two forms agree, and a round trip through the
+    // un-premultiply table would cost a unit per channel.
     for (bd.data, 0..) |*slot, i| {
-        slot.* = pixels.Color.rgba(
+        const c = pixels.Color.rgba(
             img.rgba[i * 4 + 0],
             img.rgba[i * 4 + 1],
             img.rgba[i * 4 + 2],
             img.rgba[i * 4 + 3],
-        ).toPremultiplied(true);
+        );
+        slot.* = if (img.premultiplied) c else c.toPremultiplied(true);
     }
 
     const out = try vm.objects.create();

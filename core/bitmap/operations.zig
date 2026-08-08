@@ -144,12 +144,25 @@ pub fn scroll(bd: *BitmapData, dx: i32, dy: i32) void {
 }
 
 pub const ColorTransform = struct {
-    /// 8.8 fixed multipliers and integer adds, as the SWF carries them.
-    mult: [4]f64 = .{ 1, 1, 1, 1 },
-    add: [4]f64 = .{ 0, 0, 0, 0 },
+    /// 8.8 FIXED multipliers and i16 adds, exactly as a SWF carries them.
+    /// Script hands over f64s and Flash snaps them to this grid before
+    /// doing anything, so a multiplier of 1.3 really is 332/256 — using
+    /// the f64 straight is visibly wrong across a gradient.
+    mult: [4]i16 = .{ 256, 256, 256, 256 },
+    add: [4]i16 = .{ 0, 0, 0, 0 },
+
+    /// Truncating toward zero, which is what `Fixed8::from_f64` does.
+    pub fn fromFloats(mult: [4]f64, add: [4]f64) ColorTransform {
+        var out: ColorTransform = .{};
+        inline for (0..4) |i| {
+            out.mult[i] = fixed8(mult[i] * 256.0);
+            out.add[i] = fixed8(add[i]);
+        }
+        return out;
+    }
 
     pub fn isIdentity(self: ColorTransform) bool {
-        for (self.mult) |m| if (m != 1) return false;
+        for (self.mult) |m| if (m != 256) return false;
         for (self.add) |a| if (a != 0) return false;
         return true;
     }
@@ -157,11 +170,37 @@ pub const ColorTransform = struct {
     /// A transform that only RAISES alpha does nothing at all. It is a
     /// Flash bug and the corpus depends on it.
     fn isNoOp(self: ColorTransform) bool {
-        return self.mult[0] == 1 and self.mult[1] == 1 and self.mult[2] == 1 and
-            self.mult[3] >= 1 and
+        return self.mult[0] == 256 and self.mult[1] == 256 and self.mult[2] == 256 and
+            self.mult[3] >= 256 and
             self.add[0] == 0 and self.add[1] == 0 and self.add[2] == 0 and self.add[3] == 0;
     }
+
+    /// A FULLY TRANSPARENT pixel is left exactly as it is — not even the
+    /// additive terms reach it.
+    pub fn apply(self: ColorTransform, c: Color) Color {
+        if (c.a == 0) return c;
+        return Color.rgba(
+            chan(c.r, self.mult[0], self.add[0]),
+            chan(c.g, self.mult[1], self.add[1]),
+            chan(c.b, self.mult[2], self.add[2]),
+            chan(c.a, self.mult[3], self.add[3]),
+        );
+    }
 };
+
+fn fixed8(n: f64) i16 {
+    if (std.math.isNan(n)) return 0;
+    return @intFromFloat(std.math.clamp(@trunc(n), -32768, 32767));
+}
+
+/// The multiply happens at 16-bit precision and only the FINAL value
+/// saturates, which is what lets a huge multiplier and a huge negative
+/// offset cancel into a sane colour.
+fn chan(v: u8, mult: i16, add: i16) u8 {
+    const n: i32 = (@as(i32, mult) * @as(i32, v)) >> 8;
+    const sum = std.math.clamp(n +| @as(i32, add), -32768, 32767);
+    return @intCast(std.math.clamp(sum, 0, 255));
+}
 
 /// Applied to UNMULTIPLIED values, so each pixel converts out and back.
 pub fn colorTransform(bd: *BitmapData, x0_in: i64, y0_in: i64, x1_in: i64, y1_in: i64, ct: ColorTransform) void {
@@ -176,21 +215,10 @@ pub fn colorTransform(bd: *BitmapData, x0_in: i64, y0_in: i64, x1_in: i64, y1_in
     while (y < y1) : (y += 1) {
         var x = x0;
         while (x < x1) : (x += 1) {
-            const c = bd.get(x, y).toUnmultiplied();
-            const out = Color.rgba(
-                chan(c.r, ct.mult[0], ct.add[0]),
-                chan(c.g, ct.mult[1], ct.add[1]),
-                chan(c.b, ct.mult[2], ct.add[2]),
-                chan(c.a, ct.mult[3], ct.add[3]),
-            );
+            const out = ct.apply(bd.get(x, y).toUnmultiplied());
             bd.set(x, y, out.toPremultiplied(bd.transparency));
         }
     }
-}
-
-fn chan(v: u8, mult: f64, add: f64) u8 {
-    const n = @as(f64, @floatFromInt(v)) * mult + add;
-    return @intFromFloat(std.math.clamp(@trunc(n), 0, 255));
 }
 
 /// The tightest box holding pixels that DO (or do not) match `color`
@@ -783,12 +811,7 @@ pub fn drawBitmapData(
             var x: i64 = 0;
             while (x < dest.width()) : (x += 1) {
                 const s = src.get(source.x_min + x, source.y_min + y).toUnmultiplied();
-                var out = Color.rgba(
-                    chan(s.r, transform.mult[0], transform.add[0]),
-                    chan(s.g, transform.mult[1], transform.add[1]),
-                    chan(s.b, transform.mult[2], transform.add[2]),
-                    chan(s.a, transform.mult[3], transform.add[3]),
-                ).toPremultiplied(true);
+                var out = transform.apply(s).toPremultiplied(true);
                 out = blendOver(dst.get(dest.x_min + x, dest.y_min + y), out);
                 if (!dst.transparency) out = out.withAlpha(255);
                 dst.set(dest.x_min + x, dest.y_min + y, out);
@@ -920,7 +943,7 @@ test "flood fill refuses to replace a colour with itself" {
 test "a colour transform that only raises alpha does nothing" {
     var b = try BitmapData.init(testing.allocator, 1, 1, true, 0x80112233);
     defer b.deinit(testing.allocator);
-    colorTransform(&b, 0, 0, 1, 1, .{ .mult = .{ 1, 1, 1, 2 } });
+    colorTransform(&b, 0, 0, 1, 1, .{ .mult = .{ 256, 256, 256, 512 } });
     try testing.expectEqual(@as(u32, 0x80), b.getPixel32(0, 0) >> 24);
 }
 

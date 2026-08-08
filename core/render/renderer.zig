@@ -182,7 +182,20 @@ pub const Renderer = struct {
         switch (src) {
             .character => |id| if (!gop.found_existing or stale) {
                 const img = self.decodedBitmap(id) orelse return null;
-                @memcpy(gop.value_ptr.data, img.rgba);
+                if (img.premultiplied) {
+                    // A pattern samples STRAIGHT RGBA.
+                    for (0..@as(usize, size[0]) * size[1]) |i| {
+                        const u = bitmap_pixels.Color.fromArgb(
+                            std.mem.readInt(u32, img.rgba[i * 4 ..][0..4], .little),
+                        ).toUnmultiplied();
+                        gop.value_ptr.data[i * 4 + 0] = u.b;
+                        gop.value_ptr.data[i * 4 + 1] = u.g;
+                        gop.value_ptr.data[i * 4 + 2] = u.r;
+                        gop.value_ptr.data[i * 4 + 3] = u.a;
+                    }
+                } else {
+                    @memcpy(gop.value_ptr.data, img.rgba);
+                }
             },
             // Storage is premultiplied and a pattern samples straight
             // RGBA, so every pixel converts on the way out.

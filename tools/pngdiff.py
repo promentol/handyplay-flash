@@ -51,6 +51,15 @@ def read(p):
                 pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
                 line[x] = (line[x] + pr) & 255
         out += line; prev = line
+    # Normalise 8-bit RGB to RGBA. A stage dump is always four channels
+    # and some recorded expectations are three; both are fully opaque, so
+    # the added alpha is 255 and the comparison is unchanged.
+    if ch == 3 and bd == 8:
+        rgba = bytearray(w * h * 4)
+        for i in range(w * h):
+            rgba[i*4:i*4+3] = out[i*3:i*3+3]
+            rgba[i*4+3] = 255
+        return w, h, 4, bytes(rgba)
     return w, h, bpp, bytes(out)
 
 
