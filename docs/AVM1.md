@@ -286,6 +286,80 @@ re-derived:
   focus, and the next idle tick would otherwise roll straight back out of
   it.
 
+## Workstream D notes (text, fonts, TextField)
+
+- **A font's scale is 20480 for DefineFont3 and 1024 otherwise.** Miss it
+  and every Font3 glyph is twenty times too big. The font's own LEADING is
+  ignored entirely — line spacing is `TextFormat.leading` and nothing else
+  (ruffle `html/layout.rs:253`).
+- **Faces resolve by NAME, never by id**, and only among EMBEDDED fonts. A
+  DefineFont with an empty glyph table does not count. Everything else is a
+  "device" font, which under the conformance harness resolves to nothing
+  and measures zero — that is correct, not a gap: the four dirs that need a
+  real one say so in their toml (`with_default_font`).
+- **A DefineFont1 has no name of its own.** The DefineFontInfo beside it
+  carries the name and the bold/italic pair, so the fold at preload is what
+  makes a v1 face findable at all.
+- **A field's format comes off its tag fully populated**, in PIXELS, with
+  the colour's ALPHA DROPPED and the channels in script order. A fresh
+  black field reports `color == 0`, not `0xFF000000`.
+- **The engine packs colours ABGR** (red in the low byte, as RGBA arrives
+  on the wire) and script reads `0xRRGGBB`. Every colour crossing the AVM1
+  boundary swaps.
+- **`GUTTER` is 40 twips on all four sides** and it is observable
+  everywhere: in `textWidth` vs `_width`, in `getTextExtent`, and in where
+  the first glyph sits. An empty autosizing field is 4px square.
+- **Layout puts the cursor ON THE BASELINE** and fixes the line up
+  afterwards — that ordering is what lets two font sizes on one line share
+  a baseline. Only the FIRST line contributes its leading to the measured
+  height; a non-input field drops a trailing empty line while an input
+  field keeps it (you have to be able to click there).
+- **Autosize bounds are applied LAZILY**, at the top of a render or a
+  geometry read and never inside the setter that caused it. `autoSize`,
+  then `wordWrap`, then `autoSize` again must not bake the first answer in.
+- **Word wrapping changed in SWF8**: below it every space is a break point
+  and only the final space of a slice is dropped when measuring; from SWF8
+  only the last space of a run breaks and the whole run is trimmed.
+- **`TextField.prototype`'s declaration order is an ABI** — enumeration is
+  reverse-insertion and `textfield_props_swf5..8` print it four times. Two
+  rules fall out of it: a version-HIDDEN accessor is not virtual on the
+  WRITE path (so the five SWF8 members take an assignment below SWF8 while
+  the other thirty swallow it), and `tabEnabled` is deliberately NOT a
+  built-in TextField property.
+- **A field's `tabIndex` is a u32** where a clip's is an i32 — the same
+  stored value reported unsigned. `-1` means UNSET whatever the object.
+- **`setTextFormat` writes the SPANS, `setNewTextFormat` the new-text
+  format.** Keeping them apart is what stops `setTextFormat({color})` from
+  moving `textColor`. An EMPTY range reports the all-null default format,
+  which is why `getTextFormat()` on an empty field is nulls.
+- **The HTML writer is not the reader's inverse.** It always emits a `<P>`
+  (or `<LI>`) and a fully-specified first `<FONT>`, wraps in `<TEXTFORMAT>`
+  only when a margin/indent/leading/tab stop is non-zero, and keeps its
+  tags in a fixed order — a tag that would open out of order is skipped. A
+  newline CLOSES the paragraph rather than emitting `<BR>`.
+- **`</P>` emits a newline whose span takes the font of the last `</FONT>`
+  seen** and resets style, url and target. It makes no sense; Flash does it.
+- **A CARRIAGE RETURN in a traced string prints as a NEWLINE.** That is a
+  general `trace` rule, not a text one, and it is what makes a field's line
+  breaks come out as lines.
+- **The `variable` binding lives on the TARGET**, not on the field: a write
+  to `_root.myVar` has only the target in hand and must find every field
+  watching that name. Variable→field rides the ordinary write path
+  (including the fast one that skips watchers, and `DefineLocal`);
+  field→variable runs behind a re-entrancy guard and can fire a virtual
+  setter, which the other direction cannot. Re-pointing `variable` resets
+  the field to the text its TAG was born with.
+- **A key or a script focus selects the whole field; a mouse focus does
+  not** — it places a caret. Losing focus CLEARS the selection in AVM1, so
+  every `Selection` index query answers -1 on an unfocused field.
+- **A selectable field is pickable through its whole box**; a dynamic
+  non-selectable one is invisible to the mouse and neither takes focus nor
+  blocks what is behind it. A press on NOTHING goes to the stage, which
+  cannot hold focus, so a focused field loses it.
+- **`TextField.text` must hand out a COPY.** Returning the field's own
+  buffer let a later edit rewrite a string already stored in a variable —
+  a real aliasing bug the corpus caught through `replaceSel`.
+
 All other codes in 0x00–0x9F are INVALID (open-flash `_index.md`); on decode we
 skip by length (>=0x80) or treat as End-adjacent no-op, matching Flash's
 tolerance.

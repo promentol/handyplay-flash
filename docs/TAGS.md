@@ -58,16 +58,18 @@ is rejected (`error.Avm2Unsupported`).
 | 34 | DefineButton2 | 3 | M1/M4 | done | ButtonCondAction dispatch, incl. keyPress; the actions run on the button's PARENT timeline |
 | 23 | DefineButtonCxform | 2 | M1/M4 | parse | decoder in button.zig; preload wiring still open; may hold MULTIPLE cxforms (errata) |
 | 17 | DefineButtonSound | 2 | M6 | todo | decoder with sound work |
-| 10 | DefineFont | 1 | M1/M4 | parse | glyph shapes only |
-| 48 | DefineFont2 | 3 | M1/M4 | parse | layout/kerning/wide codes |
-| 75 | DefineFont3 | 8 | M1/M4 | parse | 20× glyph resolution (/20480) |
+| 10 | DefineFont | 1 | M1/M4 | done | glyph shapes only; its NAME and style come from the DefineFontInfo beside it |
+| 48 | DefineFont2 | 3 | M1/M4 | done | layout/kerning/wide codes; resolved by NAME + bold/italic |
+| 75 | DefineFont3 | 8 | M1/M4 | done | 20× glyph resolution (/20480) |
 | 91 | DefineFont4 | 10 | — | oos | CFF |
-| 13 | DefineFontInfo | 1 | M1/M4 | parse | glyph→codepoint map |
-| 62 | DefineFontInfo2 | 6 | M1/M4 | parse | |
-| 73/74/88 | FontAlignZones/CsmTextSettings/DefineFontName | 8+ | M1 | parse | parse-skip |
-| 11 | DefineText | 1 | M1/M4 | parse | sticky TextRecord state |
-| 33 | DefineText2 | 3 | M1/M4 | parse | RGBA |
-| 37 | DefineEditText | 4 | M1/M7 | parse | `variable` binds to AVM1 var |
+| 13 | DefineFontInfo | 1 | M1/M4 | done | glyph→codepoint map, plus the face name/bold/italic a DefineFont1 has nowhere else |
+| 62 | DefineFontInfo2 | 6 | M1/M4 | done | |
+| 73 | FontAlignZones | 8 | M1 | parse | parse-skip |
+| 74 | CsmTextSettings | 8 | M1/M4 | exec | the field's `antiAliasType`/`gridFitType`/thickness/sharpness; the tag may sit on EITHER side of its DefineEditText |
+| 88 | DefineFontName | 9 | M1 | parse | parse-skip (a display name, not the one lookup uses) |
+| 11 | DefineText | 1 | M1/M4 | done | sticky TextRecord state; rendered and hit-tested per glyph |
+| 33 | DefineText2 | 3 | M1/M4 | done | RGBA |
+| 37 | DefineEditText | 4 | M1/M4 | done | a full instance: spans, HTML, layout, selection, input, two-way `variable` binding. Device fonts (a face the movie does not embed) still resolve to nothing — M7 |
 | 14 | DefineSound | 1 | M1/M6 | parse | PCM/ADPCM/MP3 |
 | 46 | DefineMorphShape | 3 | M7 | todo | raw body captured by preload |
 | 84 | DefineMorphShape2 | 8 | M7 | todo | raw body captured by preload |

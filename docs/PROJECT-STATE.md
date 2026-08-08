@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B and C complete (**257/680**); D–F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C and D complete (**339/680**); E–F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -46,8 +46,12 @@ real mouse and keyboard input.
 **Interactive today**: buttons draw, hit-test and react — rollOver,
 press, release, releaseOutside, drag in and out, keyPress, and the state
 changes that go with them; clips with mouse handlers behave the same way.
-Focus, `Selection`, and Tab ordering work. 257 of Ruffle's 680 scorable
-conformance dirs pass.
+Focus, `Selection`, and Tab ordering work.
+**Text today**: static text and text fields both render glyphs; a field
+is a real instance with formatting spans, HTML in and out, wrapping and
+alignment, autosize, scrolling, a two-way `variable` binding, a
+selection, and typing through the full editing-command set. 339 of
+Ruffle's 680 scorable conformance dirs pass.
 
 ---
 
@@ -124,6 +128,10 @@ handyflash/
 │   │   ├── button.zig        a button as a CONTAINER: states + hit area + cond actions
 │   │   ├── mouse.zig         picking + the roll/press/release state machine
 │   │   ├── tab.zig           tab order: custom by tabIndex, automatic by 6y+x
+│   │   ├── text.zig          static DefineText: the sticky-state glyph walk
+│   │   ├── font.zig          face metrics, kerning, `evaluate` (the layout primitive)
+│   │   ├── text_layout.zig   spans → lines and boxes: wrap, align, tabs, autosize
+│   │   ├── edit_text.zig     a TEXT FIELD instance: spans, selection, input, layout cache
 │   │   └── movie_clip.zig    timeline: runFrame / goto rewind+replay / action QUEUEING
 │   ├── avm1/                 THE INTERPRETER (M3)
 │   │   ├── opcodes.zig       full 0x00-0x9F decoder (allocation-free)
@@ -135,8 +143,14 @@ handyflash/
 │   │   ├── stage_object.zig  display properties, paths, focus — the only
 │   │   │                     file under avm1/ that imports display/
 │   │   ├── timers.zig        setInterval / setTimeout
+│   │   ├── text_binding.zig  TextField.variable, both ways, stored on the TARGET
 │   │   └── globals/          globals.zig · decl.zig · movie_clip.zig · geom.zig
 │   │                         date.zig · singletons.zig · selection.zig
+│   │                         text_field.zig · text_format.zig · text_snapshot.zig
+│   ├── text/                 THE TEXT MODEL — no display, no interpreter
+│   │   ├── format.zig        TextFormat: 19 tri-state properties
+│   │   ├── spans.zig         FormatSpans: resolved runs over the text
+│   │   └── html.zig          Flash's HTML in and out
 │   └── render/
 │       ├── shape_utils.zig   SWF dual-edge records → DrawPath IR (port of ruffle)
 │       ├── renderer.zig      display-tree walk → simdra
@@ -145,11 +159,15 @@ handyflash/
 ├── tools/                    swfinfo · swfdump · trace_runner
 │   ├── avm1dis.py            AVM1 disassembler, RECURSES into fn bodies
 │   ├── swfstruct.py          timeline structure (frames/places/sprites)
-│   └── pngdiff.py            visual gate: pixel diff + bounding box
+│   ├── dumptext.zig          fonts and text tags in a movie, for diagnosis
+│   └── pngdiff.py            visual gate: pixel diff + bounding box, and
+│                             ruffle's per-channel outlier rule for images.sh
 ├── tests/
 │   ├── parse_corpus.sh       swfdump over ruffle's 56 tag SWFs (M1 gate)
 │   └── conformance/          run_avm1.sh + sweep.sh (parallel) +
-│                             pass_list.txt (ratchet) + known_skip.txt
+│                             pass_list.txt (ratchet) + known_skip.txt +
+│                             images.sh + image_pass_list.txt (a SECOND,
+│                             independent score for PNG comparisons)
 ├── vendor/simdra/            vendored rasterizer (MIT, the user's own lib)
 └── docs/
     ├── PROJECT-STATE.md      ← you are here
@@ -413,17 +431,13 @@ rasteriser. It is a clip's SELF bounds, so `_width`/`_height` see it, and
 (interpreter stubs → MovieClip methods/globals → events+buttons → text →
 bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
-list. Gate: **≥300/697**.
+list. Gate: **≥300/697 — cleared.**
 
-**Workstreams A, B and C are CLOSED at 257/680.** Pick up D (text) next:
-it is now by far the largest cluster, and it is what a surprising number
-of already-close dirs are waiting on — every remaining `focus_*`,
-`tab_ordering_*` and `selection*` failure is a TEXT FIELD standing in for
-the thing under test, not a focus or tab bug. `docs/M4-SPEC.md` §4 and §5
-list, by name and cause, every dir those two workstreams could not reach;
-do not re-derive them.
+**Workstreams A, B, C and D are CLOSED at 339/680.** Pick up E (bitmaps)
+next. `docs/M4-SPEC.md` §4, §5 and §6 list, by name and cause, every dir
+those four workstreams could not reach; do not re-derive them.
 
-Five things to know before you start:
+Six things to know before you start:
 
 1. **§A4/§A5 record diagnoses that turned out to be WRONG** and the real
    causes next to them. In particular: `default_names` was NOT
@@ -438,13 +452,13 @@ Five things to know before you start:
    through it; real Flash does not (`super_edge_cases`). If something
    later looks wrong around `__proto__` chains through clips, this is the
    first suspect — it is deliberately marked in both call sites.
-3. **The two dirs workstream A could not reach**, so nobody re-derives
-   them: `interface_implements_op` needs `MovieClipLoader.loadClip` of an
+3. **The one dir workstream A could not reach**, so nobody re-derives it:
+   `interface_implements_op` needs `MovieClipLoader.loadClip` of an
    external SWF plus cross-movie AVM1 (loader subsystem — and `core/`
-   does no I/O, so it needs a host seam); `clone_sprite_edittext` needs
-   essentially all of §D (~30 TextField properties,
-   `TextField.StyleSheet`, `flash.filters.*`, `getNewTextFormat`,
-   `htmlText` `<TEXTFORMAT>` serialisation).
+   does no I/O, so it needs a host seam). Its sibling
+   `clone_sprite_edittext` is now down to one thing: `filters` are
+   reported as an empty array and never stored, so a field cannot carry
+   one.
 4. **The action queue is now three FIFO buckets** (Initialize, Construct,
    Normal) drained highest-first on every pop, and `#initclip` runs at
    PRELOAD rather than on the timeline. Both were needed for
@@ -455,12 +469,18 @@ Five things to know before you start:
    algorithm, not ES3.** Both look like sloppiness and are not — the
    corpus fails either one if it is "corrected". See the workstream-B
    notes at the end of `docs/AVM1.md`.
+6. **Zero device fonts is CORRECT, not a gap.** A face the movie does not
+   embed resolves to nothing and measures zero, which is what Flash does
+   with none installed; the four dirs that need a real one declare
+   `with_default_font` in their toml. Do not "fix" text measurement by
+   inventing a fallback font — see the workstream-D notes in
+   `docs/AVM1.md`.
 
 Then: **M5** libretro core + HFS0 save-states (byte-identical
 serialize→restore→re-run gate; copy the ABI from
 `../handyplay-oss/java-core/frontends/libretro/libretro.zig`) ·
 **M6** audio (ADPCM/PCM → minimp3 → SoundStreamBlock sync) ·
-**M7** polish (morph shapes, EditText, clipDepth masks — simdra's
+**M7** polish (morph shapes, device fonts, clipDepth masks — simdra's
 `clipPath` is ready — PlaceObject3 filters/blend modes).
 
 Afterwards, adoption into handyplay-oss: a `build-cores.sh` entry, the

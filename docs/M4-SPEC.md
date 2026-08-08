@@ -435,30 +435,95 @@ reached and exactly why.
 | The LOADER (M5) | `root_button_mode`, `focusrect_property_swf5/6/7` |
 | A TextField stores `tabIndex` as u32 and declares it ENUMERABLE, unlike Button and MovieClip — this dir's button and movie-clip sections match exactly, only its two text sections do not | `tab_ordering_properties` |
 
-## 6. Static text + fonts (workstream D)
+## 6. Text, fonts and TextField (workstream D) — ✅ CLOSED (339/680)
 
-`DisplayObject.kind == .text` renders nothing today.
-Reference: `reference/ruffle/core/src/display_object/text.rs:135` (~50
-lines — the model) + font.rs.
+Everything below shipped. The plan lives in the git log (`D0`..`D10`); the
+semantics worth keeping are in `docs/AVM1.md`'s "Workstream D notes" and at
+the call sites. What follows is what shipped, then what could NOT be
+reached and exactly why.
 
-- In renderer: for `.text`, walk `swf.font_text.Text.records` with
-  STICKY state (font_id/color/height/x/y persist until overridden).
-  For each glyph entry: look up the font character → glyph →
-  `shape.parseRecords`-style records — glyphs were parsed at preload as
-  `[]shape.ShapeRecord`; distill each glyph ONCE (cache like shapes,
-  key (font_id, glyph_index)) with a single implicit solid fill
-  (StyleChange fill1=1 semantics — glyph records reference fill 1).
-- Transform per glyph: text.matrix ∘ translate(x_offset, y_offset) ∘
-  scale(height/1024) — **DefineFont3 glyphs are 20× resolution: divide
-  by 20480 instead** (`swf.font_text.Font.version == 3`).
-- Advance: `GlyphEntry.advance` is in twips already scaled? Ruffle:
-  advance in the text record is in TWIPS (add to x after each glyph).
-- Color: record color × cxform → paint solid + `setColorTransform`.
-- EditText: render `initial_text`/bound variable via the same glyph
-  pipeline with the field's font — only if corpus/visual targets demand;
-  full EditText is M7.
+**Shipped.** `core/text/` is new (`format.zig`, `spans.zig`, `html.zig`);
+`core/display/` gained `text.zig`, `edit_text.zig`, `font.zig` and
+`text_layout.zig`; `core/avm1/` gained `text_binding.zig` and
+`globals/{text_field,text_format,text_snapshot}.zig`.
 
----
+- **Fonts.** `scale` is 20480 for DefineFont3 and 1024 otherwise — a silent
+  20× bug if missed. A face is resolved by NAME plus the bold/italic pair,
+  never by character id, and only among EMBEDDED fonts; a DefineFont with
+  no glyph table does not count as one. The font's own leading is IGNORED —
+  line spacing comes from `TextFormat.leading` alone. `evaluate` calls back
+  for every character including the ones with no glyph (zero advance), so a
+  caller's per-character bookkeeping stays aligned with the string.
+- **Static text** renders and hit-tests per glyph, with the tag's sticky
+  record state (x/y offset, colour, font id and height each persist until
+  overridden) and the colour applied as a colour-transform MULTIPLIER over
+  white glyph shapes. This is M4's "static text renders glyphs" criterion.
+- **A text field is an owned instance**, not a view onto the frozen tag. It
+  measures its OWN box rather than the union of its content, and writing
+  `_width` resizes the box instead of scaling it.
+- **Layout** lays every box out with the cursor ON THE BASELINE and fixes
+  the line up afterwards, which is what lets two font sizes share one
+  baseline. GUTTER is 40 twips on all four sides; only the FIRST line
+  contributes its leading to the measured height; a non-input field drops a
+  trailing empty line and an input field keeps it; wrapping changed in SWF8
+  (below it every space breaks and only the final one is dropped when
+  measuring); autosize without word wrap lays out TWICE.
+- **Autosize is applied LAZILY** — at the top of a render or a geometry
+  read, never inside the setter that caused it. `autoSize` then `wordWrap`
+  then `autoSize` again must not bake the first answer in.
+- **The TextField class**: 35 properties and 8 methods in an order that is
+  an ABI (`textfield_props_swf5..8` print it four times). Two rules fall
+  out of it — a version-HIDDEN accessor is not virtual on the WRITE path,
+  so the five SWF8 members take an assignment below SWF8 while the other
+  thirty swallow it; and `setTextFormat` writes the SPANS, never the
+  new-text format, so it cannot move `textColor`.
+- **Spans**: a `TextFormat` is tri-state, a `TextSpan` is the resolved
+  form. Spans carry a LENGTH, and `normalize` keeps them summing to the
+  text length with no empty and no two identical neighbours. A range
+  spanning two formats reports `null` for everything they disagree on; an
+  EMPTY range reports the all-null default, which is why `getTextFormat()`
+  on an empty field is nulls while `getNewTextFormat()` is not.
+- **HTML** in and out, and the writer is NOT the reader's inverse: it
+  always emits a `<P>` and a fully-specified first `<FONT>`, splits a
+  paragraph at every newline, and keeps its tags in a fixed order. SWF6 is
+  always multiline, SWF6/7 drop whitespace-only nodes, and parsing HTML
+  below SWF8 leaves the field left-aligned for good.
+- **`variable` binding**, both ways and not symmetric: the binding lives on
+  the TARGET object (a write has only the target in hand and must find
+  every field watching that name), variable→field rides the ordinary write
+  path including the fast one that skips watchers and `DefineLocal`, and
+  field→variable runs behind a re-entrancy guard. A field whose path does
+  not resolve parks on an unbound list and is retried whenever any object
+  is instantiated. Re-pointing `variable` resets the field to the text its
+  TAG was born with.
+- **Selection and input**: a selection is `from`/`to` where `from` is where
+  the drag started, so it may be the larger. A key or a script focus
+  selects the whole field, a mouse focus does not, and losing focus clears
+  the selection — which is why every `Selection` index query answers -1 on
+  an unfocused field. The full `TextControlCode` set is implemented, the
+  player owns the clipboard, and an edit pushes the variable binding then
+  broadcasts `onChanged`.
+- **Rendering**: background, border and glyphs, with scrolling moving the
+  text rather than the box. A SELECTABLE field is pickable through its
+  whole box; a dynamic non-selectable one is invisible to the mouse and
+  neither takes focus nor blocks what is behind it.
+- Also closed here: every §5 dir listed as blocked on EditText, plus a real
+  aliasing bug — `TextField.text` handed out the field's own buffer, so a
+  later edit rewrote a string already stored in a variable.
+
+**Not reached, and why.**
+
+| Blocker | Dirs |
+|---|---|
+| A DEVICE font — the toml sets `with_default_font`, and resolving a face the movie does not embed needs host font I/O (M7) | `gettextextent`, `device_font_spacing`, `edittext_hscroll`, `edittext_drag_select` |
+| `TextField.StyleSheet` — a CSS parser plus `styleSheet`/`stylesheet_transform` | `edittext_stylesheet`, `clone_sprite_edittext_dynamic` |
+| Click → caret index (`screen_position_to_index`): the layout knows where every glyph is, but nothing maps a stage point back to one | `edittext_place_caret` |
+| IME composition | `edittext_ime_focus_lost` |
+| A consumed `keyPress` must suppress the `TextInput` that follows it, and a focused field must swallow Space/Enter instead of pressing the focused clip | `button_keypress_vs_textinput`, `focus_keyboard_press` |
+| `filters` are reported as an empty array and not stored, so a field cannot carry one | `clone_sprite_edittext` |
+| `restrict` corner cases: the exact interaction of Copy on a password field and of a paste whose characters are partly filtered | `edittext_password_copy`, `edittext_restrict`, `edittext_restrict_paste` |
+| `TextSnapshot` over a clip whose static text arrived by cloning | `textsnapshot_available_text` |
+| The LOADER (M5) | `focusrect_property_swf5/6/7` |
 
 ## 7. Bitmaps (workstream E)
 
