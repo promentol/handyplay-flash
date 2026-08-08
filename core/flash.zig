@@ -23,6 +23,7 @@ pub const display = struct {
     pub const bounds = @import("display/bounds.zig");
     pub const movie_clip = @import("display/movie_clip.zig");
     pub const button = @import("display/button.zig");
+    pub const text = @import("display/text.zig");
     pub const mouse = @import("display/mouse.zig");
     pub const tab = @import("display/tab.zig");
     // M4: text.zig.
@@ -140,6 +141,10 @@ pub const Player = struct {
         // Host facts the VM needs BEFORE frame 1: a frame-1 script can read
         // `_url` or call `getBounds` (whose invalid-value latch consults the
         // root movie's version).
+        // AFTER the struct literal above: `Renderer.init` runs inside it,
+        // where `&self.movie` is not yet a valid pointer (same reason the
+        // root placement is fixed up separately).
+        self.renderer.lib = &self.movie.lib;
         self.vm.root_swf_version = self.movie.swf_version;
         self.vm.movie_url = avm1.strings.fromSwf(self.vm.arena(), opts.url, 8) catch &.{};
         self.vm.epoch_ms = opts.epoch_ms;
@@ -1098,6 +1103,7 @@ test {
     _ = @import("display/button.zig");
     _ = @import("display/mouse.zig");
     _ = @import("display/tab.zig");
+    _ = @import("display/text.zig");
     _ = @import("render/canvas.zig");
     _ = @import("render/shape_utils.zig");
     _ = @import("render/renderer.zig");

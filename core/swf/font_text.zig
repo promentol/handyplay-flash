@@ -25,6 +25,33 @@ pub const Glyph = struct {
     bounds: ?rdr.Rectangle = null,
 };
 
+/// Glyph outlines carry NO style array: their records reference fill
+/// style 1 with an implicit style, and the colour arrives separately from
+/// the text record. `shape_utils.distill` drops every segment when the
+/// fill array is empty (`Active.flushFill` indexes `pending[style_id-1]`),
+/// so hand it this one shared WHITE fill and let the text colour arrive as
+/// a colour-transform multiplier, exactly as ruffle does
+/// (render/src/shape_utils.rs `swf_glyph_to_shape`).
+var glyph_fills = [_]shape.FillStyle{.{ .solid = 0xFFFFFFFF }};
+
+/// A glyph viewed as a `Shape`, by value — the style slice points at the
+/// shared global above, so the returned Shape can live on the stack for
+/// as long as it takes to distill or hit-test it.
+pub fn glyphShape(g: *const Glyph) shape.Shape {
+    const box = g.bounds orelse rdr.Rectangle{};
+    return .{
+        .version = 1,
+        .id = 0,
+        .bounds = box,
+        .edge_bounds = box,
+        // Ruffle marks glyph shapes NON-ZERO winding; even-odd punches
+        // holes through overlapping contours.
+        .uses_fill_winding_rule = true,
+        .styles = .{ .fills = &glyph_fills, .lines = &.{} },
+        .records = g.records,
+    };
+}
+
 pub const KerningRecord = struct {
     left_code: u16,
     right_code: u16,

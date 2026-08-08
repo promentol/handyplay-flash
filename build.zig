@@ -44,6 +44,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "swfinfo", .src = "tools/swfinfo.zig" },
         .{ .name = "swfdump", .src = "tools/swfdump.zig" },
         .{ .name = "trace_runner", .src = "tools/trace_runner.zig" },
+        .{ .name = "dumptext", .src = "tools/dumptext.zig" },
     };
     for (tools) |t| {
         const mod = b.createModule(.{

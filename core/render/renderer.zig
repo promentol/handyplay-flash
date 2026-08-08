@@ -21,6 +21,8 @@ const canvas_mod = @import("canvas.zig");
 const display_object = @import("../display/display_object.zig");
 const movie_clip = @import("../display/movie_clip.zig");
 const drawing = @import("../display/drawing.zig");
+const library = @import("../display/library.zig");
+const text_mod = @import("../display/text.zig");
 
 pub const Error = std.mem.Allocator.Error || error{OutOfMemory};
 
@@ -61,10 +63,33 @@ pub const Renderer = struct {
     /// Distilled-path cache, keyed by character id. Allocated from the
     /// movie arena (lives exactly as long as the shapes it references).
     cache: std.AutoHashMapUnmanaged(u16, []shape_utils.DrawPath) = .empty,
+    /// The same, for GLYPHS. A separate map because the key is
+    /// `(font_id, glyph_index)` and a font id would collide with a shape's
+    /// character id in the map above.
+    glyph_cache: std.AutoHashMapUnmanaged(u64, []shape_utils.DrawPath) = .empty,
     arena: std.mem.Allocator,
+    /// Needed to resolve a text record's font id. Assigned by the Player
+    /// AFTER construction — `Renderer.init` runs inside the Player's own
+    /// struct literal, where `&self.movie` is not yet valid.
+    lib: ?*const library.Library = null,
 
     pub fn init(movie_arena: std.mem.Allocator) Renderer {
         return .{ .arena = movie_arena };
+    }
+
+    fn distilledGlyph(
+        self: *Renderer,
+        font_id: u16,
+        glyph_index: u32,
+        glyph: *const swf.font_text.Glyph,
+    ) Error![]shape_utils.DrawPath {
+        const key = (@as(u64, font_id) << 32) | glyph_index;
+        const gop = try self.glyph_cache.getOrPut(self.arena, key);
+        if (!gop.found_existing) {
+            const shape = swf.font_text.glyphShape(glyph);
+            gop.value_ptr.* = try shape_utils.distill(self.arena, &shape);
+        }
+        return gop.value_ptr.*;
     }
 
     fn distilled(self: *Renderer, id: u16, shape: *const swf.shape.Shape) Error![]shape_utils.DrawPath {
@@ -121,7 +146,8 @@ pub const Renderer = struct {
                 // A button draws its current state's children and nothing
                 // else — the hit records are invisible by definition.
                 .button => |b| try self.renderClip(ctx, &b.container, t, cx),
-                .morph_shape, .text, .edit_text, .bitmap => {}, // M4/M7
+                .text => |txt| try self.renderText(ctx, txt, t, cx),
+                .morph_shape, .edit_text, .bitmap => {}, // M4/M7
             }
         }
     }
@@ -135,6 +161,31 @@ pub const Renderer = struct {
         cx: swf.reader.ColorTransform,
     ) Error!void {
         try self.drawPaths(ctx, try self.distilled(id, shape), t, cx);
+    }
+
+    /// Static text: one distilled glyph per entry, tinted by the record's
+    /// colour. The tag's own matrix wraps the whole run, and each glyph
+    /// carries the size scale and the pen position
+    /// (ruffle display_object/text.rs:135-185).
+    fn renderText(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        text: *const swf.font_text.Text,
+        parent_t: Transform,
+        cx: swf.reader.ColorTransform,
+    ) Error!void {
+        const lib = self.lib orelse return;
+        const base = parent_t.concat(text.matrix);
+        var walker = text_mod.Walker.init(text, lib);
+        while (walker.next()) |g| {
+            const paths = try self.distilledGlyph(g.font.id, g.index, g.glyph);
+            try self.drawPaths(
+                ctx,
+                paths,
+                base.concat(g.matrix),
+                concatCxform(cx, text_mod.colorAsMult(g.color)),
+            );
+        }
     }
 
     /// Script drawing-API geometry. Subpaths still open (no `endFill` yet)
