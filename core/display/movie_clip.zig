@@ -295,11 +295,59 @@ pub const MovieClip = struct {
             const child = self.children.items[i];
             switch (child.kind) {
                 .clip => |mc| try mc.broadcastClipEvent(ctx, flag, method),
-                .button => |b| try b.container.broadcastClipEvent(ctx, flag, method),
+                // A button forwards the broadcast to its CHILDREN but is
+                // not itself a listener: `btn.onKeyDown` only fires when
+                // the button has focus (ruffle
+                // Avm1Button::should_fire_event_handlers).
+                .button => |b| {
+                    var j = b.container.children.items.len;
+                    while (j > 0) {
+                        j -= 1;
+                        const inner = b.container.children.items[j];
+                        if (inner.kind == .clip) try inner.kind.clip.broadcastClipEvent(ctx, flag, method);
+                    }
+                },
                 else => {},
             }
         }
         try self.dispatchClipEvent(ctx, flag, method);
+    }
+
+    /// A key press walks the whole tree like any other clip event, but it
+    /// is matched by KEY CODE and CONSUMED by the first handler: a button
+    /// runs the cond actions naming this key, a clip the
+    /// `onClipEvent(keyPress "x")` bodies that do. Unlike mouse events it
+    /// travels in RENDER LIST order — low depth to high — and children
+    /// still go before their parent (ruffle interactive.rs:233-258).
+    /// Fired AFTER the keyDown broadcast (player.rs:1302-1309).
+    pub fn broadcastKeyPress(self: *MovieClip, ctx: *Context, code: u8) Error!bool {
+        for (self.children.items) |child| {
+            if (try keyPressTo(ctx, child, code)) return true;
+        }
+        return self.dispatchKeyPress(ctx, code);
+    }
+
+    /// Offer a key press to one display object, whatever kind it is.
+    pub fn keyPressTo(ctx: *Context, obj: *DisplayObject, code: u8) Error!bool {
+        return switch (obj.kind) {
+            .clip => |mc| try mc.broadcastKeyPress(ctx, code),
+            .button => |b| try b.keyPress(ctx, obj, code),
+            else => false,
+        };
+    }
+
+    fn dispatchKeyPress(self: *MovieClip, ctx: *Context, code: u8) Error!bool {
+        if (ctx.movie.swf_version < 5) return false;
+        const p = self.placement orelse return false;
+        var any = false;
+        for (p.clip_actions) |handler| {
+            if (handler.events & swf.place.ClipEvent.KEY_PRESS == 0) continue;
+            const want = handler.key_code orelse continue;
+            if (want != code) continue;
+            any = true;
+            try ctx.queue(ctx.gpa, .{ .clip = self, .what = .{ .code = handler.actions } });
+        }
+        return any;
     }
 
     /// Clear the "already ticked" marks for the whole subtree. This must

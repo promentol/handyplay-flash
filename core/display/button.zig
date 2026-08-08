@@ -118,7 +118,7 @@ pub const Button = struct {
             .roll_over => Cond.IDLE_TO_OVER_UP,
         };
         if (ctx.mouseEnabled(obj)) {
-            try self.runActions(ctx, obj, cond);
+            _ = try self.runActions(ctx, obj, cond);
             // The script handler is queued AFTER the SWF-defined actions.
             try ctx.queue(ctx.gpa, .{
                 .clip = obj.parent orelse return,
@@ -134,12 +134,31 @@ pub const Button = struct {
     /// Cond actions run on the button's PARENT timeline, not on the button
     /// (ruffle avm1_button.rs:600-613) — which is why `this` inside
     /// `on(release)` is the clip holding the button.
-    pub fn runActions(self: *Button, ctx: *Context, obj: *DisplayObject, cond: u16) Error!void {
-        const parent = obj.parent orelse return;
+    pub fn runActions(self: *Button, ctx: *Context, obj: *DisplayObject, cond: u16) Error!bool {
+        const parent = obj.parent orelse return false;
+        var any = false;
         for (self.def.actions) |action| {
             if (!condMatches(action.conditions, cond)) continue;
+            any = true;
             try ctx.queue(ctx.gpa, .{ .clip = parent, .what = .{ .code = action.actions } });
         }
+        return any;
+    }
+
+    /// One key press offered to this button. Two refusals come before the
+    /// cond actions (ruffle avm1_button.rs filter_clip_event): an INVISIBLE
+    /// button in the `up` state ignores everything, and a button nested
+    /// inside another button never handles keyPress at all.
+    pub fn keyPress(self: *Button, ctx: *Context, obj: *DisplayObject, code: u8) Error!bool {
+        if (!obj.visible and self.state == .up) return false;
+        if (obj.parent) |p| {
+            if (p.owner_button != null) return false;
+        }
+        // Children first, in RENDER LIST order.
+        for (self.container.children.items) |child| {
+            if (try MovieClip.keyPressTo(ctx, child, code)) return true;
+        }
+        return self.runActions(ctx, obj, @as(u16, code) << 9);
     }
 
     /// Every visible child, for the renderer and for bounds.
@@ -166,6 +185,31 @@ pub const Cond = struct {
     pub const OVER_DOWN_TO_IDLE: u16 = 1 << 8;
     pub const KEY_PRESS: u16 = 0b111_1111 << 9;
 };
+
+/// The "button key code" a key press carries — a numbering all its own,
+/// distinct from the Key class's virtual-key codes (ruffle events.rs
+/// ButtonKeyCode). Printable ASCII is its own character code; the special
+/// keys get small ordinals; everything else raises no keyPress at all.
+pub fn buttonKeyCode(vk: i32, char: i32) ?u8 {
+    if (char >= 32 and char <= 126) return @intCast(char);
+    return switch (vk) {
+        37 => 1, // left
+        39 => 2, // right
+        36 => 3, // home
+        35 => 4, // end
+        45 => 5, // insert
+        46 => 6, // delete
+        8 => 8, // backspace
+        13 => 13, // return
+        38 => 14, // up
+        40 => 15, // down
+        33 => 16, // page up
+        34 => 17, // page down
+        9 => 18, // tab
+        27 => 19, // escape
+        else => null,
+    };
+}
 
 /// Ruffle `ButtonActionCondition::matches`: the transition bits must
 /// contain the tested one, and a record that names a KEY only matches a

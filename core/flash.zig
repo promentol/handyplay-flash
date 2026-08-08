@@ -805,7 +805,23 @@ pub const Player = struct {
         self.vm.last_key_code = code;
         self.vm.last_key_char = char;
         try self.dispatchInput(swf.place.ClipEvent.KEY_DOWN, "onKeyDown", self.vm.key_object);
+        // keyPress comes after keyDown, always (ruffle player.rs:1302).
+        if (display.button.buttonKeyCode(code, char)) |bk| try self.dispatchKeyPress(bk);
         try self.updateMouseState(false);
+    }
+
+    fn dispatchKeyPress(self: *Player, code: u8) !void {
+        var ctx = self.makeContext();
+        defer ctx.deinit(self.gpa);
+        self.cur_ctx = &ctx;
+        self.vm.display_ctx = @ptrCast(&ctx);
+        defer {
+            self.cur_ctx = null;
+            self.vm.display_ctx = null;
+        }
+        _ = try self.root.broadcastKeyPress(&ctx, code);
+        try self.drainActions(&ctx);
+        self.retireDead(&ctx);
     }
 
     pub fn keyUp(self: *Player, code: i32, char: i32) !void {
