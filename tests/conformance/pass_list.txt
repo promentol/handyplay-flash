@@ -101,6 +101,7 @@ edittext_html_roundtrip
 edittext_html_swf6
 edittext_html_swf7
 edittext_html_swf8
+edittext_ime_focus_lost
 edittext_input
 edittext_input_newlines
 edittext_leading

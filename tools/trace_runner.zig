@@ -160,6 +160,23 @@ fn feedUntilWait(player: *flash.Player, events: []const std.json.Value, start: u
         } else if (std.mem.eql(u8, name, "KeyUp")) {
             const k = keyOf(ev);
             player.keyUp(k[0], k[1]) catch {};
+        } else if (std.mem.eql(u8, name, "ImePreedit")) {
+            const txt = ev.object.get("text");
+            var buf: [64]u16 = undefined;
+            var n: usize = 0;
+            if (txt) |t| {
+                if (t == .string) n = std.unicode.utf8ToUtf16Le(&buf, t.string) catch 0;
+            }
+            var cursor: ?[2]usize = null;
+            if (ev.object.get("cursor")) |cv| {
+                if (cv == .array and cv.array.items.len >= 2) {
+                    cursor = .{
+                        @intFromFloat(numOf(cv.array.items[0])),
+                        @intFromFloat(numOf(cv.array.items[1])),
+                    };
+                }
+            }
+            player.imePreedit(buf[0..n], cursor) catch {};
         } else if (std.mem.eql(u8, name, "SetClipboardText")) {
             const txt = ev.object.get("text");
             if (txt) |t| {

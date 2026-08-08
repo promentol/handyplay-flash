@@ -1394,11 +1394,18 @@ pub fn setFocusBy(vm: *Vm, new: ObjectHandle, run_now: bool, cause: FocusCause) 
         return;
     }
     vm.focus = new;
-    // Losing focus clears the selection, whatever moved it. This happens
-    // BEFORE the handlers run, as it does in ruffle's set_internal.
+    // Losing focus COMMITS any IME composition and then clears the
+    // selection, whatever moved the focus. Both happen BEFORE the
+    // handlers run, as they do in ruffle's set_internal.
     if (old != 0) {
         if (targetOf(vm, old)) |t| {
-            if (t.obj.kind == .edit_text) t.obj.kind.edit_text.setSelection(null);
+            if (t.obj.kind == .edit_text) {
+                if (displayCtx(vm)) |ctx| {
+                    const changed = t.obj.kind.edit_text.imeCommit(ctx.gpa) catch false;
+                    if (changed) try fieldEdited(vm, t.obj);
+                }
+                t.obj.kind.edit_text.setSelection(null);
+            }
         }
     }
     // The highlight follows the focus (focus_tracker.rs update_highlight).
@@ -1442,6 +1449,19 @@ pub fn highlightVisible(vm: *Vm) bool {
         if (t.obj.focus_rect) |b| return b;
     }
     return vm.stage_focus_rect;
+}
+
+/// A field's text changed from the ENGINE side (an IME commit, typing):
+/// push the variable binding and broadcast `onChanged` from the field.
+pub fn fieldEdited(vm: *Vm, obj: *DisplayObject) !void {
+    try @import("text_binding.zig").propagate(vm, obj);
+    const h = try handleOf(vm, obj);
+    _ = @import("globals/singletons.zig").broadcast(
+        vm,
+        .{ .object = h },
+        S("onChanged"),
+        &.{.{ .object = h }},
+    ) catch {};
 }
 
 /// Extend a field's selection to the pointer. Called while the pointer

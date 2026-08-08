@@ -1029,6 +1029,23 @@ pub const Player = struct {
         self.retireDead(&ctx);
     }
 
+    /// An IME preedit update for the focused field. An empty string ends
+    /// the composition.
+    pub fn imePreedit(self: *Player, preedit: []const u16, cursor: ?[2]usize) !void {
+        var ctx = self.makeContext();
+        defer ctx.deinit(self.gpa);
+        self.cur_ctx = &ctx;
+        self.vm.display_ctx = @ptrCast(&ctx);
+        defer {
+            self.cur_ctx = null;
+            self.vm.display_ctx = null;
+        }
+        const t = self.focusedFieldTarget() orelse return;
+        try t.obj.kind.edit_text.imePreedit(self.gpa, preedit, cursor);
+        try self.drainActions(&ctx);
+        self.retireDead(&ctx);
+    }
+
     /// One editing command (arrow keys, backspace, cut/paste …).
     pub fn textControl(self: *Player, code: display.edit_text.Control) !void {
         var ctx = self.makeContext();

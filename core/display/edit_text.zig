@@ -99,6 +99,17 @@ pub const Control = enum {
     }
 };
 
+/// An in-flight IME composition. The preedit text sits IN the field
+/// (that is what makes it visible) and is replaced wholesale by each new
+/// preedit; committing simply stops tracking it and types it for real.
+pub const Ime = struct {
+    start: usize,
+    end: usize,
+    /// The last preedit string, kept so a COMMIT can re-type it as
+    /// ordinary input — which is what fires `onChanged`.
+    text: []u16,
+};
+
 /// `gridFitType`. Purely reported today — nothing rasterises differently.
 pub const GridFit = enum { none, pixel, subpixel };
 
@@ -185,6 +196,9 @@ pub const EditText = struct {
     /// Where the last click landed. A drag selects from HERE to wherever
     /// the pointer is now, so the anchor has to outlive the press.
     click_anchor: ?usize = null,
+    /// The IME composition in progress: the range it occupies in the text
+    /// and the string it last produced. Null when nothing is composing.
+    ime: ?Ime = null,
 
     /// The object this field's `variable` resolved to, or null while the
     /// field is on the unbound list.
@@ -347,6 +361,7 @@ pub const EditText = struct {
     pub fn deinit(self: *EditText, gpa: std.mem.Allocator) void {
         self.text.deinit(gpa);
         if (self.original_html) |h| gpa.free(h);
+        if (self.ime) |d| gpa.free(d.text);
         self.spans.deinit(gpa);
         self.layout.deinit(gpa);
         gpa.free(self.font_name);
@@ -728,6 +743,60 @@ pub const EditText = struct {
             .kerning = box.kerning,
         }, &finder) catch {};
         return lo + finder.index;
+    }
+
+    /// A preedit update. An EMPTY one ends the composition, discarding
+    /// what it had put in the field.
+    pub fn imePreedit(
+        self: *EditText,
+        gpa: std.mem.Allocator,
+        text: []const u16,
+        cursor: ?[2]usize,
+    ) !void {
+        if (text.len == 0) return self.imeFinish(gpa);
+        const started = try self.imeStart(gpa);
+        try self.replaceRange(gpa, started.start, started.end, text);
+        if (self.ime) |old| gpa.free(old.text);
+        self.ime = .{
+            .start = started.start,
+            .end = started.start + text.len,
+            .text = try gpa.dupe(u16, text),
+        };
+        if (cursor) |c| {
+            self.setSelection(.{ .from = started.start + c[0], .to = started.start + c[1] });
+        } else {
+            self.selection = null;
+        }
+    }
+
+    /// Begin composing at the caret, removing whatever was selected.
+    fn imeStart(self: *EditText, gpa: std.mem.Allocator) !Ime {
+        if (self.ime) |d| return d;
+        const sel = self.selection orelse Selection.at(self.text.items.len);
+        try self.replaceRange(gpa, sel.start(), sel.end(), &.{});
+        const d: Ime = .{ .start = sel.start(), .end = sel.start(), .text = &.{} };
+        self.ime = .{ .start = d.start, .end = d.end, .text = try gpa.dupe(u16, &.{}) };
+        return d;
+    }
+
+    /// Abandon the composition: its text leaves the field.
+    fn imeFinish(self: *EditText, gpa: std.mem.Allocator) !void {
+        const d = self.ime orelse return;
+        try self.replaceRange(gpa, d.start, d.end, &.{});
+        self.setSelection(Selection.at(d.start));
+        gpa.free(d.text);
+        self.ime = null;
+    }
+
+    /// Losing focus COMMITS: the preedit leaves and is typed back as real
+    /// input, which is what makes `onChanged` fire for it.
+    /// Returns whether anything was typed.
+    pub fn imeCommit(self: *EditText, gpa: std.mem.Allocator) !bool {
+        const d = self.ime orelse return false;
+        const text = try gpa.dupe(u16, d.text);
+        defer gpa.free(text);
+        try self.imeFinish(gpa);
+        return self.textInput(gpa, text);
     }
 
     pub fn setFormatRange(
