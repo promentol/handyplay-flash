@@ -39,6 +39,7 @@ pub fn install(vm: *Vm) !void {
     try method(vm, proto, "attachMovie", attachMovie, hidden);
     try method(vm, proto, "createEmptyMovieClip", createEmptyMovieClip, ver(hidden, decl.V6));
     try method(vm, proto, "removeMovieClip", removeMovieClip, hidden);
+    try method(vm, proto, "createTextField", createTextField, hidden);
     try method(vm, proto, "swapDepths", swapDepths, hidden);
     try method(vm, proto, "beginFill", beginFill, ver(hidden, decl.V6));
     try method(vm, proto, "endFill", endFill, ver(hidden, decl.V6));
@@ -498,6 +499,30 @@ fn createEmptyMovieClip(p: *anyopaque, this: Value, args: []const Value) anyerro
     const obj = try stage.createAt(vm, clip, 0, depth, name, null, .undefined_value) orelse
         return .undefined_value;
     return newClipValue(vm, obj);
+}
+
+/// `createTextField(name, depth, x, y, width, height)`. The four
+/// geometry arguments are INTEGERS — ruffle coerces each to i32 before
+/// widening, so 10.9 is 10 and NaN is 0. SWF8 and up get the field back;
+/// earlier versions get undefined and have to look it up by name.
+fn createTextField(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    const clip = t.clip orelse return .undefined_value;
+    const name = try vm.toStringValue(arg(args, 0));
+    const depth = stage.biasDepth(try depthArg(vm, arg(args, 1)));
+    const x = try coerceInt(vm, arg(args, 2));
+    const y = try coerceInt(vm, arg(args, 3));
+    const w = try coerceInt(vm, arg(args, 4));
+    const h = try coerceInt(vm, arg(args, 5));
+    const obj = try stage.createTextFieldAt(vm, clip, depth, name, x, y, w, h) orelse
+        return .undefined_value;
+    if (vm.swf_version < 8) return .undefined_value;
+    return .{ .object = try stage.handleOf(vm, obj) };
+}
+
+fn coerceInt(vm: *Vm, v: Value) !f64 {
+    return @floatFromInt(value_mod.toInt32(try vm.toNumber(v)));
 }
 
 fn removeMovieClip(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {

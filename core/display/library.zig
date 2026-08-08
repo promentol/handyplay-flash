@@ -84,4 +84,40 @@ pub const Library = struct {
     pub fn getConstPtr(self: *const Library, id: u16) ?*const Character {
         return self.characters.getPtr(id);
     }
+
+    pub fn getFont(self: *const Library, id: u16) ?*const swf.font_text.Font {
+        const c = self.getConstPtr(id) orelse return null;
+        return switch (c.*) {
+            .font => |*f| f,
+            else => null,
+        };
+    }
+
+    /// Embedded face by NAME. Text fields resolve their font this way —
+    /// `<font face="…">` and `TextFormat.font` never see a character id —
+    /// and the match is case-insensitive on the style pair as well
+    /// (ruffle library.rs `get_embedded_font_by_name`).
+    ///
+    /// Iteration order over the character map is arbitrary, so an exact
+    /// style match always wins over a name-only one rather than whichever
+    /// came first.
+    pub fn fontByName(
+        self: *const Library,
+        name: []const u8,
+        bold: bool,
+        italic: bool,
+    ) ?*const swf.font_text.Font {
+        var fallback: ?*const swf.font_text.Font = null;
+        var it = self.characters.iterator();
+        while (it.next()) |e| {
+            const f = switch (e.value_ptr.*) {
+                .font => |*x| x,
+                else => continue,
+            };
+            if (!std.ascii.eqlIgnoreCase(f.name, name)) continue;
+            if (f.is_bold == bold and f.is_italic == italic) return f;
+            if (fallback == null) fallback = f;
+        }
+        return fallback;
+    }
 };

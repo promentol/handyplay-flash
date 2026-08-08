@@ -204,6 +204,12 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
                         for (f.glyphs, 0..) |*g, i| {
                             if (i < info.codes.len) g.code = info.codes[i];
                         }
+                        // DefineFont1 carries no name or style — the
+                        // FontInfo beside it is the ONLY place a v1 face
+                        // can be looked up by name from.
+                        if (f.name.len == 0) f.name = info.name;
+                        f.is_bold = info.is_bold;
+                        f.is_italic = info.is_italic;
                     },
                     else => {},
                 };

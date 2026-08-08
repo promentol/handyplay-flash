@@ -199,11 +199,7 @@ pub fn install(vm: *Vm) !void {
         try decl.property(vm, btn_proto, "tabIndex", mc_globals.getTabIndex, mc_globals.setTabIndex, ver(.{}, decl.V6));
         _ = try decl.class(vm, "Button", ctorMovieClip, btn_proto, attrs);
 
-        const tf_proto = try vm.objects.create();
-        vm.objects.get(tf_proto).proto = .{ .object = vm.object_proto };
-        vm.textfield_proto = tf_proto;
-        try decl.method(vm, tf_proto, "getDepth", @import("movie_clip.zig").getDepth, ver(frozen, decl.V6));
-        _ = try decl.class(vm, "TextField", ctorMovieClip, tf_proto, attrs);
+        try @import("text_field.zig").install(vm);
     }
 
     try @import("geom.zig").install(vm);

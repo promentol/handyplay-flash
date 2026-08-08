@@ -112,6 +112,17 @@ fn attach(vm: *Vm, h: ObjectHandle) !*TextFormat {
     return tf;
 }
 
+/// A fresh `TextFormat` object carrying a COPY of `tf` — what
+/// `getTextFormat` and `getNewTextFormat` hand back. The copy matters:
+/// mutating the returned object must not reach back into the field.
+pub fn newObject(vm: *Vm, tf: TextFormat) !ObjectHandle {
+    const h = try vm.objects.create();
+    vm.objects.get(h).proto = .{ .object = vm.textformat_proto };
+    const owned = try attach(vm, h);
+    owned.* = tf;
+    return h;
+}
+
 /// The receiver's format, or null when `this` is not a TextFormat (a read
 /// on the prototype itself, say).
 pub fn formatOf(vm: *Vm, this: Value) ?*TextFormat {

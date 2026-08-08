@@ -667,7 +667,7 @@ pub const MovieClip = struct {
                 .text => |*t| .{ .text = t },
                 .edit_text => |*et| .{ .edit_text = e: {
                     const inst = try ctx.gpa.create(edit_text_mod.EditText);
-                    inst.* = try edit_text_mod.EditText.fromTag(ctx.gpa, et);
+                    inst.* = try edit_text_mod.EditText.fromTag(ctx.gpa, et, &ctx.movie.lib, ctx.movie.swf_version);
                     break :e inst;
                 } },
                 .button => |*btn| .{ .button = b: {
@@ -697,6 +697,29 @@ pub const MovieClip = struct {
             kind.clip.placement = obj;
             kind.clip.parent = self;
         }
+        return obj;
+    }
+
+    /// `createTextField` — a field with no character behind it. Not a
+    /// branch of `instantiateAt` because there is no library entry to look
+    /// up, and `character_id` stays 0 the way an empty clip's does.
+    pub fn instantiateTextField(
+        self: *MovieClip,
+        ctx: *Context,
+        depth: i32,
+        width: f64,
+        height: f64,
+    ) Error!*DisplayObject {
+        const inst = try ctx.gpa.create(edit_text_mod.EditText);
+        inst.* = edit_text_mod.EditText.dynamic(width, height);
+        const obj = try ctx.gpa.create(DisplayObject);
+        obj.* = .{
+            .character_id = 0,
+            .depth = depth,
+            .place_frame = 1,
+            .kind = .{ .edit_text = inst },
+        };
+        obj.parent = self;
         return obj;
     }
 

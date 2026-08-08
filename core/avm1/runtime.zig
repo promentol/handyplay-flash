@@ -731,7 +731,14 @@ pub const Vm = struct {
         // back (ruffle object.rs:232-260, script_object.rs:317-329).
         if (self.objects.findOwn(h, name, self.case_sensitive) == null) {
             if (self.objects.findChainedForWriteLocated(h, name, self.case_sensitive)) |loc| {
-                if (loc.prop.getter != 0 or loc.prop.setter != 0) {
+                // A version-HIDDEN accessor does not count as virtual, so
+                // the write falls through and defines a plain property
+                // that shadows it. `textfield_props_swf6` pins that: the
+                // five SWF8 members take the assignment while the other
+                // thirty swallow it (ruffle `has_own_virtual` ANDs
+                // `is_virtual()` with `allow_swf_version`).
+                const gated = object_mod.versionHidden(loc.prop.attrs, self.objects.swf_version);
+                if (!gated and (loc.prop.getter != 0 or loc.prop.setter != 0)) {
                     const setter = loc.prop.setter;
                     if (setter != 0) {
                         if (self.enterPropertyCall(loc.owner, name)) |_| {

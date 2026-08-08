@@ -10,6 +10,7 @@
 const std = @import("std");
 const swf = @import("../swf/swf.zig");
 const format_mod = @import("../text/format.zig");
+const library = @import("library.zig");
 
 const Rectangle = swf.reader.Rectangle;
 const TextFormat = format_mod.TextFormat;
@@ -18,6 +19,9 @@ const Tag = swf.font_text.EditText;
 /// `autoSize`. Only `none` leaves the bounds alone; the others resize the
 /// field to its content and pin a different edge.
 pub const AutoSize = enum { none, left, center, right };
+
+/// `gridFitType`. Purely reported today — nothing rasterises differently.
+pub const GridFit = enum { none, pixel, subpixel };
 
 /// Immutable padding on all four sides of every text field, and it is
 /// OBSERVABLE: two pixels of it turn up in `textWidth` vs `_width`, in
@@ -32,6 +36,14 @@ pub const EditText = struct {
     text: std.ArrayList(u16) = .empty,
     /// The format new text inherits — `getNewTextFormat`'s answer.
     default_format: TextFormat = .{},
+    /// What `getTextFormat` reports. A real span list arrives with the
+    /// layout engine; until then a field carries ONE run, and keeping it
+    /// apart from `default_format` is what makes `setTextFormat` visible
+    /// to `getTextFormat` without moving `textColor`.
+    span_format: TextFormat = .{},
+    /// UTF-16 copy of the embedded face's name, kept because
+    /// `default_format.font` points into it and the tag's name is bytes.
+    font_name: []u16 = &.{},
     /// Live bounds in the field's OWN space. `_x` and `_width` are read
     /// through these plus the placement matrix, not from the children.
     bounds: Rectangle,
@@ -53,15 +65,38 @@ pub const EditText = struct {
     border_color: u32 = 0xFF000000,
     background_color: u32 = 0xFFFFFFFF,
     autosize: AutoSize = .none,
-    /// 0 = unlimited.
-    max_chars: u16 = 0,
+    /// 0 = unlimited. Script writes an i32 and Flash keeps the whole
+    /// range, so this is NOT the tag's u16.
+    max_chars: i32 = 0,
     /// The timeline variable this field mirrors (D7 wires the sync).
-    variable: ?[]const u16 = null,
+    /// Owned.
+    variable: ?[]u16 = null,
+    /// The allowed-character filter. Owned; null and "" are the same
+    /// thing to AVM1.
+    restrict: ?[]u16 = null,
     hscroll: f64 = 0,
     /// 1-based, like Flash's.
     scroll: u32 = 1,
 
-    pub fn fromTag(gpa: std.mem.Allocator, def: *const Tag) !EditText {
+    /// The AVM1 handle of the `TextField.StyleSheet` assigned to this
+    /// field, or 0. Kept as an opaque number so `core/display` stays
+    /// clear of the interpreter.
+    style_sheet: u32 = 0,
+
+    /// `CSMTextSettings`. Only `antiAliasType` switches engines; the other
+    /// three are RETAINED across the switch, which is why they are stored
+    /// flat rather than inside the variant (ruffle font.rs:1292-1470).
+    advanced_rendering: bool = false,
+    grid_fit: GridFit = .pixel,
+    thickness: f64 = 0,
+    sharpness: f64 = 0,
+
+    pub fn fromTag(
+        gpa: std.mem.Allocator,
+        def: *const Tag,
+        lib: *const library.Library,
+        swf_version: u8,
+    ) !EditText {
         var self: EditText = .{
             .def = def,
             .bounds = def.bounds,
@@ -77,24 +112,64 @@ pub const EditText = struct {
             .use_outlines = def.use_outlines,
             .was_static = def.was_static,
             .autosize = if (def.auto_size) .left else .none,
-            .max_chars = def.max_length orelse 0,
-            .variable = null,
+            .max_chars = @intCast(def.max_length orelse 0),
         };
+        const font = if (def.font_id) |fid| lib.getFont(fid) else null;
+        // The face NAME, not the id: a field resolves its font the same
+        // way `<font face="…">` does. With no embedded font behind the id
+        // Flash names the face "Times New Roman" and then fails to find
+        // it, which is why an unfontted field measures zero.
+        const face: []const u8 = def.font_class orelse
+            if (font) |f| f.name else "Times New Roman";
+        self.font_name = try utf16(gpa, face);
+        // With HTML on, the tag's alignment is IGNORED and left wins —
+        // except from SWF8 when there is initial text to align (ruffle
+        // text_format.rs:210-217). Turning HTML on from script later does
+        // not do this.
+        const html_forces_left = def.is_html and (swf_version < 8 or def.initial_text == null);
         self.default_format = .{
-            .size = @floatFromInt(def.height),
-            .color = def.color,
-            .text_align = switch (def.align_h) {
+            .font = self.font_name,
+            // Every measurement is in PIXELS from here on, and a field
+            // with no font at all still defaults to 12.
+            .size = if (def.font_id != null or def.font_class != null)
+                px(def.height)
+            else
+                12.0,
+            // ALPHA IS DROPPED: script sees the colour as pure RGB, and
+            // `getTextFormat().color` on a fresh black field is 0, not
+            // 0xFF000000 (ruffle `Color::from_rgb(c.to_rgb(), 0)`).
+            .color = def.color & 0x00FF_FFFF,
+            .text_align = if (html_forces_left) .left else switch (def.align_h) {
                 .left => .left,
                 .center => .center,
                 .right => .right,
                 .justify => .justify,
                 .invalid => .left,
             },
-            .left_margin = @floatFromInt(def.left_margin),
-            .right_margin = @floatFromInt(def.right_margin),
-            .indent = @floatFromInt(def.indent),
-            .leading = @floatFromInt(def.leading),
+            // An HTML field reports its face as neither bold nor italic
+            // whatever the embedded font says; the markup carries it.
+            .bold = if (def.is_html) false else if (font) |f| f.is_bold else false,
+            .italic = if (def.is_html) false else if (font) |f| f.is_italic else false,
+            .underline = false,
+            .display = .block,
+            .left_margin = px(def.left_margin),
+            .right_margin = px(def.right_margin),
+            .indent = @round(px(def.indent)),
+            .block_indent = 0,
+            .kerning = false,
+            .leading = px(def.leading),
+            .letter_spacing = 0,
+            .tab_stops = &.{},
+            .bullet = false,
+            .url = &.{},
+            .target = &.{},
         };
+        self.span_format = self.default_format;
+        if (def.variable_name.len > 0) {
+            var buf: std.ArrayList(u16) = .empty;
+            for (def.variable_name) |c| try buf.append(gpa, c);
+            self.variable = try buf.toOwnedSlice(gpa);
+        }
         if (def.initial_text) |t| try setTextAscii(&self, gpa, t);
         return self;
     }
@@ -113,12 +188,26 @@ pub const EditText = struct {
             },
             .read_only = true,
             .selectable = true,
-            .default_format = .{ .size = 240, .color = 0xFF000000 },
+            .default_format = dynamicFormat(),
+            .span_format = dynamicFormat(),
         };
     }
 
     pub fn deinit(self: *EditText, gpa: std.mem.Allocator) void {
         self.text.deinit(gpa);
+        gpa.free(self.font_name);
+        if (self.variable) |v| gpa.free(v);
+        if (self.restrict) |v| gpa.free(v);
+    }
+
+    pub fn setVariable(self: *EditText, gpa: std.mem.Allocator, s: ?[]const u16) !void {
+        if (self.variable) |v| gpa.free(v);
+        self.variable = if (s) |x| try gpa.dupe(u16, x) else null;
+    }
+
+    pub fn setRestrict(self: *EditText, gpa: std.mem.Allocator, s: ?[]const u16) !void {
+        if (self.restrict) |v| gpa.free(v);
+        self.restrict = if (s) |x| try gpa.dupe(u16, x) else null;
     }
 
     pub fn setText(self: *EditText, gpa: std.mem.Allocator, s: []const u16) !void {
@@ -132,8 +221,45 @@ pub const EditText = struct {
     }
 };
 
-fn twips(px: f64) i32 {
-    return @intFromFloat(@trunc(px * @as(f64, swf.reader.TWIPS_PER_PX)));
+/// `EditText::new`'s tag: font id 0 at 12px, black, no layout. The face
+/// resolves to nothing, which is correct — a dynamic field has no
+/// embedded font until script gives it one.
+fn dynamicFormat() TextFormat {
+    return .{
+        .font = &.{},
+        .size = 12.0,
+        .color = 0,
+        .text_align = .left,
+        .bold = false,
+        .italic = false,
+        .underline = false,
+        .display = .block,
+        .left_margin = 0,
+        .right_margin = 0,
+        .indent = 0,
+        .block_indent = 0,
+        .kerning = false,
+        .leading = 0,
+        .letter_spacing = 0,
+        .tab_stops = &.{},
+        .bullet = false,
+        .url = &.{},
+        .target = &.{},
+    };
+}
+
+fn utf16(gpa: std.mem.Allocator, s: []const u8) ![]u16 {
+    const out = try gpa.alloc(u16, s.len);
+    for (s, out) |c, *o| o.* = c;
+    return out;
+}
+
+fn px(t: anytype) f64 {
+    return @as(f64, @floatFromInt(t)) / @as(f64, swf.reader.TWIPS_PER_PX);
+}
+
+fn twips(v: f64) i32 {
+    return @intFromFloat(@trunc(v * @as(f64, swf.reader.TWIPS_PER_PX)));
 }
 
 // --- Tests -----------------------------------------------------------------
@@ -145,7 +271,7 @@ test "a dynamic field is 12px black, read-only and anchored at the origin" {
     try testing.expectEqual(@as(i32, 0), et.bounds.xmin);
     try testing.expectEqual(@as(i32, 2000), et.bounds.xmax);
     try testing.expectEqual(@as(i32, 400), et.bounds.ymax);
-    try testing.expectEqual(@as(?f64, 240), et.default_format.size);
+    try testing.expectEqual(@as(?f64, 12), et.default_format.size);
     try testing.expect(et.read_only);
     try testing.expect(et.selectable);
 }

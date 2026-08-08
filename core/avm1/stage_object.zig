@@ -1064,6 +1064,31 @@ pub fn createAt(
     return obj;
 }
 
+/// `createTextField`'s display-side half: a characterless field placed the
+/// way `createAt` places a character, minus everything that needs a
+/// library entry (no registered class, no init object, no first frame of
+/// its own).
+pub fn createTextFieldAt(
+    vm: *Vm,
+    parent: *MovieClip,
+    depth: i32,
+    name: []const u16,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) !?*DisplayObject {
+    const ctx = displayCtx(vm) orelse return null;
+    try parent.removeAtDepth(ctx, depth);
+    const obj = try parent.instantiateTextField(ctx, depth, width, height);
+    obj.placed_by_script = true;
+    obj.matrix.tx = twipsFromPixels(x);
+    obj.matrix.ty = twipsFromPixels(y);
+    try obj.setName(ctx.gpa, name);
+    try parent.finishInstantiate(ctx, obj, false);
+    return obj;
+}
+
 /// Copy every enumerable key of `init` onto `dest`, in insertion order or
 /// its reverse. The order is observable through setters and content depends
 /// on it (ruffle movie_clip.rs:2042-2054).
