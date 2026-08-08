@@ -428,6 +428,14 @@ pub const Vm = struct {
     /// fire for a focused object whose highlight is active — ruffle
     /// `should_fire_event_handlers`, Flash issue #2120.
     focus_highlight: bool = false,
+    /// One-shot: the next AVM1 call is an ENGINE-initiated event, not a
+    /// script call (ruffle's `ExecutionReason::Special`). Such a call
+    /// keeps the function's DEFINING base clip even below SWF6, where an
+    /// ordinary call would adopt `this`'s instead — which is what lets an
+    /// `XML.onLoad` defined in a loaded movie still see that movie's
+    /// timeline variables (corpus swf5_xml_event_handler_context).
+    /// Consumed by `callAvm1`, so it never leaks into a nested call.
+    call_special: bool = false,
     /// setInterval/setTimeout registrations, ticked by the Player after
     /// each frame's action drain.
     timers: @import("timers.zig").Timers = .{},
@@ -1257,6 +1265,8 @@ pub const Vm = struct {
 
     fn callAvm1(self: *Vm, callee: ObjectHandle, f: object_mod.Avm1Function, this: Value, args: []const Value) anyerror!Value {
         const activation = @import("activation.zig");
+        const special = self.call_special;
+        self.call_special = false;
         // Inside a function body the effective version is AT LEAST 5,
         // even in a SWF4 movie: `DefineFunction` is a SWF5 construct, and
         // its body gets SWF5 semantics — `1 == 1` is `true` rather than
@@ -1376,7 +1386,7 @@ pub const Vm = struct {
         // where they were defined. SWF5 functions are not — they adopt
         // `this`'s clip, which Activation.init already derived.
         // ruffle function.rs:303-310.
-        if (self.swf_version >= 6 and f.base_clip != 0) {
+        if ((self.swf_version >= 6 or special) and f.base_clip != 0) {
             act.base_clip = f.base_clip;
             act.target_clip = f.base_clip;
         }

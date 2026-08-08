@@ -253,8 +253,13 @@ fn constructorFor(comptime cls: Class) object_mod.NativeFn {
         fn ctor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
             const vm = vmOf(p);
             if (this != .object) return this;
+            // A SECOND construction on the same object changes nothing —
+            // the native payload is already there. The arguments are
+            // still evaluated, so a `valueOf` still runs and the corpus
+            // still sees it (native_double_construct calls `super()`
+            // twice and reads the FIRST call's numbers back).
+            const already = vm.objects.findOwn(this.object, S(STATE), false) != null;
             const state = try vm.newObject();
-            try vm.objects.putWithAttrs(this.object, S(STATE), .{ .object = state }, decl.frozen, false);
             // Every property starts at its default and is then overwritten
             // by the matching constructor argument, in declaration order.
             if (comptime hasGradient(cls)) try gradInit(vm, state);
@@ -263,6 +268,9 @@ fn constructorFor(comptime cls: Class) object_mod.NativeFn {
                     try vm.objects.put(state, S(prop.name), try defaultOf(vm, prop), false);
                 }
                 if (i < args.len) try store(vm, state, prop, args[i]);
+            }
+            if (!already) {
+                try vm.objects.putWithAttrs(this.object, S(STATE), .{ .object = state }, decl.frozen, false);
             }
             return this;
         }

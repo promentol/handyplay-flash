@@ -426,6 +426,9 @@ fn onData(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 pub fn callMethod(vm: *Vm, obj: ObjectHandle, name: AvmString, args: []const Value) !void {
     const f = vm.objects.getChained(obj, name, vm.case_sensitive) orelse return;
     if (!vm.isCallable(f)) return;
+    // An engine event, not a script call: below SWF6 that is the only
+    // thing that keeps the handler's own defining timeline in scope.
+    vm.call_special = true;
     _ = vm.callFunction(f, .{ .object = obj }, args) catch |e| {
         if (e == error.Avm1Thrown) {
             vm.pending_throw = .undefined_value;

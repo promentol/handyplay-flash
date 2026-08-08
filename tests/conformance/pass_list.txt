@@ -341,6 +341,7 @@ moviecliploader_flashvars
 mutable_this
 named_shapes
 nan_scale
+native_double_construct
 nested_textfields_in_buttons
 netstream_play_flv_screen
 new_method_wrap
@@ -418,6 +419,7 @@ swf4_bool
 swf4_function_calls
 swf5_encoding
 swf5_global_funcs
+swf5_xml_event_handler_context
 swf6_global_funcs
 swf6_string_as_bool
 swf7_case_sensitive
