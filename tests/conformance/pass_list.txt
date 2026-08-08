@@ -12,6 +12,8 @@ array_prototyping
 array_reverse
 array_shift
 array_slice
+array_sort
+array_sort_random
 array_splice
 array_trivial
 array_unshift

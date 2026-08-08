@@ -77,6 +77,7 @@ pub fn install(vm: *Vm) !void {
     try method(vm, vm.array_proto, "reverse", arrReverse, hidden);
     try method(vm, vm.array_proto, "splice", arrSplice, hidden);
     try method(vm, vm.array_proto, "sort", arrSort, hidden);
+    try method(vm, vm.array_proto, "sortOn", arrSortOn, hidden);
 
     // --- String.prototype -------------------------------------------------
     try method(vm, vm.string_proto, "toString", strToString, hidden);
@@ -104,7 +105,18 @@ pub fn install(vm: *Vm) !void {
     const object_class = try decl.class(vm, "Object", ctorObject, vm.object_proto, attrs);
     try method(vm, object_class, "registerClass", objRegisterClass, frozen);
     _ = try decl.class(vm, "Function", ctorFunction, vm.function_proto, ver(attrs, decl.V6));
-    _ = try decl.class(vm, "Array", ctorArray, vm.array_proto, attrs);
+    const array_class = try decl.class(vm, "Array", ctorArray, vm.array_proto, attrs);
+    // The sort option bits live on the class, and content passes them by
+    // name rather than by number.
+    inline for (.{
+        .{ "CASEINSENSITIVE", SORT_CASE_INSENSITIVE },
+        .{ "DESCENDING", SORT_DESCENDING },
+        .{ "UNIQUESORT", SORT_UNIQUE },
+        .{ "RETURNINDEXEDARRAY", SORT_RETURN_INDEXED },
+        .{ "NUMERIC", SORT_NUMERIC },
+    }) |c| {
+        try vm.objects.putWithAttrs(array_class, S(c[0]), .{ .number = @floatFromInt(c[1]) }, frozen, false);
+    }
     try @import("xml.zig").install(vm, attrs);
     const string_class = try decl.class(vm, "String", ctorString, vm.string_proto, attrs);
     const number_class = try decl.class(vm, "Number", ctorNumber, vm.number_proto, attrs);
@@ -688,41 +700,296 @@ fn spliceMove(vm: *Vm, h: ObjectHandle, from: i64, to: i64) !void {
     }
 }
 
+/// `Array.sort` option bits, also exposed on the class itself.
+const SORT_CASE_INSENSITIVE: i32 = 1;
+const SORT_DESCENDING: i32 = 2;
+const SORT_UNIQUE: i32 = 4;
+const SORT_RETURN_INDEXED: i32 = 8;
+const SORT_NUMERIC: i32 = 16;
+
+const SortCtx = struct {
+    vm: *Vm,
+    compare: ?Value,
+    options: i32,
+    /// `sortOn` only: the property names to compare, in precedence
+    /// order, each with its own option bits.
+    fields: []const strings.AvmString = &.{},
+    field_options: []const i32 = &.{},
+
+    fn has(self: SortCtx, bit: i32) bool {
+        return (self.options & bit) != 0;
+    }
+
+    /// -1, 0 or 1. A custom comparator's return is used as given; the
+    /// built-in one compares as STRINGS unless both sides are numbers
+    /// and NUMERIC was asked for.
+    fn order(self: SortCtx, a: Value, b: Value) !i32 {
+        if (self.fields.len > 0) {
+            if (a == .object and b == .object) {
+                for (self.fields, 0..) |name, i| {
+                    // OWN properties only — `__proto__` is a field name
+                    // like any other here, not the prototype link.
+                    const av = fieldOf(self.vm, a.object, name);
+                    const bv = fieldOf(self.vm, b.object, name);
+                    const sub: SortCtx = .{ .vm = self.vm, .compare = null, .options = self.field_options[i] };
+                    const r = try sub.order(av, bv);
+                    if (r != 0) return r;
+                }
+                return 0;
+            }
+            const plain: SortCtx = .{ .vm = self.vm, .compare = null, .options = self.options };
+            return plain.order(a, b);
+        }
+        if (self.compare) |f| {
+            const r = try self.vm.callFunction(f, .undefined_value, &.{ a, b });
+            const n = try self.vm.toNumber(r);
+            if (std.math.isNan(n)) return 0;
+            return if (n < 0) -1 else if (n > 0) @as(i32, 1) else 0;
+        }
+        var result: i32 = 0;
+        if (self.has(SORT_NUMERIC) and a == .number and b == .number) {
+            if (std.math.isNan(a.number) or std.math.isNan(b.number)) {
+                result = 0;
+            } else {
+                result = if (a.number < b.number) -1 else if (a.number > b.number) @as(i32, 1) else 0;
+            }
+        } else {
+            const sa = try self.vm.toStringValue(a);
+            const sb = try self.vm.toStringValue(b);
+            const ord = if (self.has(SORT_CASE_INSENSITIVE))
+                orderIgnoreCase(sa, sb)
+            else
+                strings.order(sa, sb);
+            result = switch (ord) {
+                .lt => -1,
+                .eq => 0,
+                .gt => 1,
+            };
+        }
+        return if (self.has(SORT_DESCENDING)) -result else result;
+    }
+};
+
+/// Case folding for SORTING, which reaches past ASCII: Flash folds the
+/// Latin-1 supplement and Latin Extended-A as well, so `HËLLO` and
+/// `hëllo` compare equal. Property lookup's folding stays ASCII-only —
+/// that is a different rule and `strings.foldCase` owns it.
+fn foldForSort(c: u16) u16 {
+    if (c >= 'A' and c <= 'Z') return c + 32;
+    // The supplement's uppercase block, minus the multiplication sign
+    // sitting in the middle of it.
+    if (c >= 0xC0 and c <= 0xDE and c != 0xD7) return c + 0x20;
+    // Extended-A pairs an uppercase EVEN unit with its lowercase
+    // successor, twice over with a gap in the middle.
+    if ((c >= 0x100 and c <= 0x137) or (c >= 0x14A and c <= 0x177)) {
+        return if (c % 2 == 0) c + 1 else c;
+    }
+    if (c >= 0x139 and c <= 0x148) return if (c % 2 == 1) c + 1 else c;
+    if (c >= 0x179 and c <= 0x17E) return if (c % 2 == 1) c + 1 else c;
+    return c;
+}
+
+/// The value `sortOn` compares for one field. A boxed String carries a
+/// `length` that is computed rather than stored, and content sorts on
+/// it; everything else is an own property or nothing.
+fn fieldOf(vm: *Vm, h: ObjectHandle, name: strings.AvmString) Value {
+    if (vm.objects.getOwn(h, name, vm.case_sensitive)) |v| return v;
+    if (strings.eql(name, S("length"))) {
+        if (vm.objects.get(h).native == .boxed_string) {
+            return .{ .number = @floatFromInt(vm.objects.get(h).native.boxed_string.len) };
+        }
+    }
+    return .undefined_value;
+}
+
+fn orderIgnoreCase(a: strings.AvmString, b: strings.AvmString) std.math.Order {
+    const n = @min(a.len, b.len);
+    for (a[0..n], b[0..n]) |ca, cb| {
+        const la = foldForSort(ca);
+        const lb = foldForSort(cb);
+        if (la != lb) return if (la < lb) .lt else .gt;
+    }
+    return std.math.order(a.len, b.len);
+}
+
+/// Flash's own quicksort, ported move for move. It is UNSTABLE and its
+/// pivot is always the leftmost element, so the permutation it leaves
+/// equal elements in is observable — a stable sort produces a different
+/// array from the same input (corpus array_sort).
+fn qsort(ctx: SortCtx, idx: []i32, vals: []Value) !void {
+    if (vals.len < 2) return;
+    var stack: std.ArrayList([2]usize) = .empty;
+    defer stack.deinit(ctx.vm.arena());
+    try stack.append(ctx.vm.arena(), .{ 0, vals.len - 1 });
+
+    while (stack.pop()) |range| {
+        const low = range[0];
+        const high = range[1];
+        if (low >= high) continue;
+        const pivot = vals[low];
+        var left = low + 1;
+        var right = high;
+        while (true) {
+            while (left < right and (try ctx.order(pivot, vals[left])) > 0) left += 1;
+            while (right > low and (try ctx.order(pivot, vals[right])) <= 0) right -= 1;
+            if (left >= right) break;
+            std.mem.swap(Value, &vals[left], &vals[right]);
+            std.mem.swap(i32, &idx[left], &idx[right]);
+        }
+        std.mem.swap(Value, &vals[low], &vals[right]);
+        std.mem.swap(i32, &idx[low], &idx[right]);
+        try stack.append(ctx.vm.arena(), .{ right + 1, high });
+        if (right > 0) try stack.append(ctx.vm.arena(), .{ low, right - 1 });
+    }
+}
+
+/// `sortOn(field)` / `sortOn(field, options)` / `sortOn([fields],
+/// [options])`. Fields are compared IN ORDER, each with its own options,
+/// and the first difference decides. An element that is not an object
+/// falls back to comparing the elements themselves.
+///
+/// Unlike `sort`, DESCENDING is folded into the comparison rather than
+/// applied by reversing afterwards.
+fn arrSortOn(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    if (args.len == 0) return .undefined_value;
+
+    var names: std.ArrayList(strings.AvmString) = .empty;
+    var opts: std.ArrayList(i32) = .empty;
+    const a = vm.arena();
+
+    const first = args[0];
+    if (first == .object and vm.objects.get(first.object).native == .array) {
+        const n = vm.arrayLength(first.object);
+        if (n == 0) return this;
+        // An options ARRAY is honoured only when it is exactly as long as
+        // the field list. A mismatch is not an error and not a partial
+        // application — every field falls back to NO options, which is
+        // how `sortOn(["a","b"], [DESCENDING])` sorts ascending.
+        const per_field = args.len > 1 and args[1] == .object and
+            vm.objects.get(args[1].object).native == .array and
+            vm.arrayLength(args[1].object) == n;
+        const shared: i32 = if (!per_field and args.len > 1 and args[1].isPrimitive())
+            value_mod.toInt32(try vm.toNumber(args[1]))
+        else
+            0;
+        var i: u32 = 0;
+        while (i < n) : (i += 1) {
+            try names.append(a, try vm.toStringValue(try indexGet(vm, first.object, i)));
+            const o: i32 = if (per_field)
+                value_mod.toInt32(try vm.toNumber(try indexGet(vm, args[1].object, i)))
+            else
+                shared;
+            try opts.append(a, o);
+        }
+    } else {
+        try names.append(a, try vm.toStringValue(first));
+        // A single field takes its options only from a NUMBER.
+        try opts.append(a, if (args.len > 1 and args[1] == .number)
+            value_mod.toInt32(args[1].number)
+        else
+            0);
+    }
+
+    const len = vm.arrayLength(this.object);
+    const vals = try a.alloc(Value, len);
+    const idx = try a.alloc(i32, len);
+    var k: u32 = 0;
+    while (k < len) : (k += 1) {
+        vals[k] = try indexGet(vm, this.object, k);
+        idx[k] = @intCast(k);
+    }
+
+    const ctx: SortCtx = .{
+        .vm = vm,
+        .compare = null,
+        .options = if (opts.items.len > 0) opts.items[0] else 0,
+        .fields = names.items,
+        .field_options = opts.items,
+    };
+    try qsort(ctx, idx, vals);
+
+    const main_options = if (opts.items.len > 0) opts.items[0] else 0;
+    if ((main_options & SORT_UNIQUE) != 0) {
+        var j: usize = 1;
+        while (j < vals.len) : (j += 1) {
+            if ((try ctx.order(vals[j - 1], vals[j])) == 0) return .{ .number = 0 };
+        }
+    }
+    if ((main_options & SORT_RETURN_INDEXED) != 0) {
+        const out = try vm.newArray();
+        for (idx, 0..) |v, m| try vm.arraySet(out, @intCast(m), .{ .number = @floatFromInt(v) });
+        return .{ .object = out };
+    }
+    for (vals, 0..) |v, m| try vm.arraySet(this.object, @intCast(m), v);
+    return this;
+}
+
+/// `sort()`, `sort(options)`, `sort(compareFn)` or `sort(compareFn,
+/// options)`. Anything else in the first slot — `undefined`, a boolean,
+/// a string — returns UNDEFINED without touching the array.
 fn arrSort(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    const len = vm.arrayLength(this.object);
-    if (len < 2) return this;
-    // Gather, insertion-sort (stable, small arrays), write back. Custom
-    // comparator supported; default is string comparison (ES3).
-    const items = try vm.arena().alloc(Value, len);
-    var i: u32 = 0;
-    while (i < len) : (i += 1) items[i] = try indexGet(vm, this.object, i);
-    const cmp_fn = arg(args, 0);
-    const has_cmp = vm.isCallable(cmp_fn);
-    var a: usize = 1;
-    while (a < items.len) : (a += 1) {
-        const key = items[a];
-        var b: usize = a;
-        while (b > 0) : (b -= 1) {
-            const ord = if (has_cmp) blk: {
-                const r = try vm.callFunction(cmp_fn, .undefined_value, &.{ items[b - 1], key });
-                break :blk try vm.toNumber(r);
-            } else blk: {
-                const sa = try vm.toStringValue(items[b - 1]);
-                const sk = try vm.toStringValue(key);
-                break :blk switch (strings.order(sa, sk)) {
-                    .lt => @as(f64, -1),
-                    .eq => 0,
-                    .gt => 1,
-                };
-            };
-            if (ord <= 0) break;
-            items[b] = items[b - 1];
+
+    var compare: ?Value = null;
+    var options: i32 = 0;
+    if (args.len > 0) {
+        switch (args[0]) {
+            .object => {
+                compare = args[0];
+                if (args.len > 1 and args[1] == .number) options = value_mod.toInt32(args[1].number);
+            },
+            .number => |n| {
+                options = if (args.len > 1 and args[1] == .number)
+                    value_mod.toInt32(args[1].number)
+                else
+                    value_mod.toInt32(n);
+            },
+            else => return .undefined_value,
         }
-        items[b] = key;
     }
-    for (items, 0..) |v, k| try vm.arraySet(this.object, @intCast(k), v);
+    var ctx: SortCtx = .{ .vm = vm, .compare = compare, .options = options };
+
+    const len = vm.arrayLength(this.object);
+    const vals = try vm.arena().alloc(Value, len);
+    const idx = try vm.arena().alloc(i32, len);
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        vals[i] = try indexGet(vm, this.object, i);
+        idx[i] = @intCast(i);
+    }
+
+    // DESCENDING is applied by REVERSING afterwards, not by flipping the
+    // comparison — which matters because the sort is unstable.
+    const descending = ctx.has(SORT_DESCENDING);
+    ctx.options &= ~SORT_DESCENDING;
+    try qsort(ctx, idx, vals);
+    if (descending) {
+        std.mem.reverse(Value, vals);
+        std.mem.reverse(i32, idx);
+    }
+
+    // UNIQUESORT abandons everything and answers 0 when two elements
+    // compare equal — with the BUILT-IN comparison, whatever comparator
+    // was used to order them.
+    if ((options & SORT_UNIQUE) != 0) {
+        const plain: SortCtx = .{ .vm = vm, .compare = null, .options = ctx.options };
+        var k: usize = 1;
+        while (k < vals.len) : (k += 1) {
+            if ((try plain.order(vals[k - 1], vals[k])) == 0) return .{ .number = 0 };
+        }
+    }
+
+    // RETURNINDEXEDARRAY leaves the array alone and hands back the
+    // permutation instead.
+    if ((options & SORT_RETURN_INDEXED) != 0) {
+        const out = try vm.newArray();
+        for (idx, 0..) |v, k| try vm.arraySet(out, @intCast(k), .{ .number = @floatFromInt(v) });
+        return .{ .object = out };
+    }
+    for (vals, 0..) |v, k| try vm.arraySet(this.object, @intCast(k), v);
     return this;
 }
 
