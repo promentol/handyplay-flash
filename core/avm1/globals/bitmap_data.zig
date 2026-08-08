@@ -22,6 +22,7 @@ const data_mod = @import("../../bitmap/data.zig");
 const ops = @import("../../bitmap/operations.zig");
 const decl = @import("decl.zig");
 const geom = @import("geom.zig");
+const filters = @import("filters.zig");
 const stage = @import("../stage_object.zig");
 const bitmap_decode = @import("../../bitmap/decode.zig");
 const renderer_mod = @import("../../render/renderer.zig");
@@ -667,18 +668,29 @@ fn indexName(vm: *Vm, i: usize) !strings.AvmString {
     return wide;
 }
 
-/// Filters over a pixel buffer are M7 work — the AVM1 filter OBJECTS
-/// landed in workstream D, but nothing applies them. An unbuildable
-/// filter is -1, which is what this always reports.
+/// `applyFilter(source, sourceRect, destPoint, filter)`.
+///
+/// Only `ColorMatrixFilter` is applied — it is the one filter that is a
+/// per-pixel function rather than a convolution, and the only one any
+/// scorable dir exercises. Anything else is -1, which is exactly what
+/// Flash reports for a filter it cannot build, so a script that checks
+/// the return value is told the truth.
+///
+/// The source RECTANGLE here is read as an unsigned point plus a size,
+/// not as the signed rectangle every other member takes.
 fn applyFilter(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    _ = dataOf(vm, this) orelse return BAD;
-    switch (bitmapArg(vm, arg(args, 0))) {
-        .valid => {},
+    const bd = dataOf(vm, this) orelse return BAD;
+    const src = switch (bitmapArg(vm, arg(args, 0))) {
+        .valid => |s| s,
         .disposed => return .{ .number = -3 },
         .not_bitmap => return .{ .number = -2 },
-    }
-    return BAD;
+    };
+    const m = filters.colorMatrixOf(vm, arg(args, 3)) orelse return BAD;
+    const r = try rectArg(vm, arg(args, 1)) orelse [4]i32{ 0, 0, 0, 0 };
+    const dp = try destPoint(vm, arg(args, 2));
+    ops.applyColorMatrix(bd, src, .{ @max(r[0], 0), @max(r[1], 0) }, .{ r[2], r[3] }, dp, m);
+    return .{ .number = 0 };
 }
 
 fn generateFilterRect(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {

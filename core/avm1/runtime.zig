@@ -261,6 +261,10 @@ pub const Vm = struct {
     textformat_proto: ObjectHandle = 0,
     stylesheet_proto: ObjectHandle = 0,
     bitmapdata_proto: ObjectHandle = 0,
+    /// `flash.filters.ColorMatrixFilter`'s prototype. The one filter with
+    /// a pixel implementation, so the one that has to be recognised by
+    /// class rather than by shape (`BitmapData.applyFilter`).
+    colormatrix_proto: ObjectHandle = 0,
     /// `TextSnapshot.prototype`.
     textsnapshot_proto: ObjectHandle = 0,
     /// Is the focus HIGHLIGHT active? It follows the focus, and any mouse

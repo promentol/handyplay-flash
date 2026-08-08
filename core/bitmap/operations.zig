@@ -863,6 +863,65 @@ pub fn perlinNoise(
     }
 }
 
+/// `BitmapData.applyFilter` with a `ColorMatrixFilter`: four rows of five
+/// applied to the UN-premultiplied colour, clamped, then premultiplied
+/// again.
+///
+/// The alpha term is the odd one — the matrix's fourth column multiplies
+/// the alpha as it stands, while the other three columns take colour that
+/// has been divided BY that alpha. A fully transparent pixel has no
+/// colour to divide, so its channels read as zero.
+///
+/// The clamp is per-channel on the 0..1 value and happens BEFORE the
+/// premultiply, which is what keeps an over-bright row from bleeding into
+/// the alpha.
+pub fn applyColorMatrix(
+    dst: *BitmapData,
+    src: *const BitmapData,
+    source_point: [2]i32,
+    source_size: [2]i32,
+    dest_point: [2]i32,
+    m: [20]f64,
+) void {
+    if (source_size[0] == 0 or source_size[1] == 0) return;
+    const regions = overlap(dst, src, dest_point, .{ source_point[0], source_point[1], source_size[0], source_size[1] });
+    const dest = regions[0];
+    const source = regions[1];
+    if (dest.width() == 0 or dest.height() == 0) return;
+
+    var y: i64 = 0;
+    while (y < dest.height()) : (y += 1) {
+        var x: i64 = 0;
+        while (x < dest.width()) : (x += 1) {
+            const c = src.get(source.x_min + x, source.y_min + y);
+            const a = @as(f64, @floatFromInt(c.a)) / 255.0;
+            const r = if (c.a == 0) 0.0 else @as(f64, @floatFromInt(c.r)) / @as(f64, @floatFromInt(c.a));
+            const g = if (c.a == 0) 0.0 else @as(f64, @floatFromInt(c.g)) / @as(f64, @floatFromInt(c.a));
+            const b = if (c.a == 0) 0.0 else @as(f64, @floatFromInt(c.b)) / @as(f64, @floatFromInt(c.a));
+
+            var out: [4]f64 = undefined;
+            inline for (0..4) |i| {
+                out[i] = std.math.clamp(
+                    m[i * 5 + 0] * r + m[i * 5 + 1] * g + m[i * 5 + 2] * b + m[i * 5 + 3] * a + m[i * 5 + 4] / 255.0,
+                    0.0,
+                    1.0,
+                );
+            }
+            dst.set(dest.x_min + x, dest.y_min + y, Color.rgba(
+                unorm(out[0] * out[3]),
+                unorm(out[1] * out[3]),
+                unorm(out[2] * out[3]),
+                unorm(out[3]),
+            ));
+        }
+    }
+}
+
+/// A 0..1 float onto a byte the way a render target does: nearest.
+fn unorm(v: f64) u8 {
+    return @intFromFloat(std.math.clamp(@round(v * 255.0), 0, 255));
+}
+
 // --- draw ---------------------------------------------------------------------
 
 /// `BitmapData.draw` when the source is another BitmapData and the matrix

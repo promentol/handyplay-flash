@@ -207,6 +207,7 @@ pub fn install(vm: *Vm, flash_ns: ObjectHandle) !void {
         try vm.objects.putWithAttrs(ctor, S("prototype"), .{ .object = proto }, decl.hidden, false);
         try vm.objects.putWithAttrs(proto, S("constructor"), .{ .object = ctor }, decl.hidden, false);
         try vm.objects.putWithAttrs(filters, S(cls.name), .{ .object = ctor }, .{}, false);
+        if (comptime std.mem.eql(u8, cls.name, "ColorMatrixFilter")) vm.colormatrix_proto = proto;
     }
 }
 
@@ -329,4 +330,36 @@ fn store(vm: *Vm, state: ObjectHandle, comptime p: Prop, v: Value) !void {
 /// the elements that are, which is what makes a stray number vanish.
 pub fn isFilter(vm: *Vm, v: Value) bool {
     return stateOf(vm, v) != null;
+}
+
+/// The twenty numbers of a `ColorMatrixFilter`, or null when the value is
+/// not one. `applyFilter` is the only caller: it needs to tell a real
+/// filter from a duck-typed object, and a matrix that is not twenty long
+/// is not a filter Flash will apply.
+///
+/// Row-major, four rows of five: `out_i = m[i*5+0]*r + …[3]*a + m[i*5+4]`.
+pub fn colorMatrixOf(vm: *Vm, v: Value) ?[20]f64 {
+    if (v != .object) return null;
+    var proto = vm.objects.get(v.object).proto;
+    var guard: u8 = 0;
+    const is_cmf = while (proto == .object and guard < 64) : (guard += 1) {
+        if (proto.object == vm.colormatrix_proto) break true;
+        proto = vm.objects.get(proto.object).proto;
+    } else false;
+    if (!is_cmf) return null;
+
+    const state = stateOf(vm, v) orelse return null;
+    const stored = vm.objects.getChained(state, S("matrix"), false) orelse return null;
+    if (stored != .object) return null;
+
+    var out: [20]f64 = @splat(0);
+    for (&out, 0..) |*slot, i| {
+        var buf: [8]u8 = undefined;
+        const ascii = std.fmt.bufPrint(&buf, "{d}", .{i}) catch unreachable;
+        var wide: [8]u16 = undefined;
+        for (ascii, wide[0..ascii.len]) |c, *w| w.* = c;
+        const got = vm.objects.getChained(stored.object, wide[0..ascii.len], false) orelse return null;
+        slot.* = vm.toNumber(got) catch return null;
+    }
+    return out;
 }
