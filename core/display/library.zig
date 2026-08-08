@@ -62,6 +62,9 @@ pub const Bitmap = union(enum) {
 
 pub const Library = struct {
     characters: std.AutoHashMapUnmanaged(u16, Character) = .empty,
+    /// CSMTextSettings by character id. Kept beside the characters rather
+    /// than folded into them: the tag can precede or follow its target.
+    csm: std.AutoHashMapUnmanaged(u16, swf.font_text.CsmTextSettings) = .empty,
     /// ExportAssets: name → id (attachMovie / AVM1 linkage).
     exports: std.StringHashMapUnmanaged(u16) = .empty,
 

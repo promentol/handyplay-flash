@@ -222,6 +222,10 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
                 const t = try font_text.parseText(a, tag.body, 2);
                 try movie.lib.put(a, t.id, .{ .text = t });
             },
+            .csm_text_settings => {
+                const c = try font_text.parseCsmTextSettings(tag.body);
+                try movie.lib.csm.put(a, c.id, c);
+            },
             .define_edit_text => {
                 const et = try font_text.parseEditText(tag.body);
                 try movie.lib.put(a, et.id, .{ .edit_text = et });

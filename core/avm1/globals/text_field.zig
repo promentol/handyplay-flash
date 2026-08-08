@@ -195,6 +195,9 @@ fn getHtmlText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     const et = etOf(vm, this) orelse return .undefined_value;
+    // A field that is not HTML reports its PLAIN text here; only an HTML
+    // one serialises (ruffle `html_text`).
+    if (!et.html) return .{ .string = et.text.items };
     return .{ .string = try et.htmlText(vm.arena()) };
 }
 
@@ -400,25 +403,28 @@ fn setScroll(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const et = laidOut(vm, this) orelse return .undefined_value;
     const n = try vm.toNumber(arg(args, 0));
-    const clamped = std.math.clamp(n, 1, @as(f64, @floatFromInt(maxScrollOf(et))));
-    et.scroll = if (std.math.isNan(clamped)) 1 else @intFromFloat(clamped);
+    // Derived experimentally: anything negative, NaN, or past this
+    // absurd limit lands on line 1 rather than clamping normally.
+    const OVERFLOW: f64 = 767100486418433.0;
+    const lines: u32 = if (std.math.isNan(n) or n < 0 or n >= OVERFLOW)
+        1
+    else
+        @intFromFloat(@trunc(n));
+    et.scroll = std.math.clamp(lines, 1, maxScrollOf(et));
     return .undefined_value;
 }
 
-/// The topmost line that can still be scrolled to: the last line whose
-/// remaining lines all fit inside the box.
+/// The first line that can be at the TOP of a fully scrolled window:
+/// find where that window begins and take the first line at or below it.
 fn maxScrollOf(et: *const EditText) u32 {
     const lines = et.layout.lines;
     if (lines.len == 0) return 1;
-    const visible = et.bounds.height() - edit_text_mod.GUTTER * 2;
-    var i: usize = lines.len;
-    while (i > 0) : (i -= 1) {
-        const first = lines[i - 1];
-        const last = lines[lines.len - 1];
-        const span = last.bounds.y + last.bounds.h - first.bounds.y;
-        if (span > visible) return @intCast(@min(i + 1, lines.len));
+    const window = et.bounds.height() - edit_text_mod.GUTTER * 2;
+    const target = et.layout.text_height - window;
+    for (lines) |l| {
+        if (l.bounds.y >= target) return @intCast(l.index + 1);
     }
-    return 1;
+    return @intCast(lines[lines.len - 1].index + 1);
 }
 
 fn getMaxscroll(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -428,11 +434,23 @@ fn getMaxscroll(p: *anyopaque, this: Value, args: []const Value) anyerror!Value 
     return .{ .number = @floatFromInt(maxScrollOf(et)) };
 }
 
+/// The LAST line currently visible: the one before the first whose
+/// bottom edge falls past the window (ruffle `bottom_scroll`).
 fn getBottomScroll(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
-    _ = etOf(vm, this) orelse return .undefined_value;
-    return .{ .number = 1 };
+    const et = laidOut(vm, this) orelse return .undefined_value;
+    const lines = et.layout.lines;
+    if (lines.len == 0) return .{ .number = 1 };
+    const top = if (et.scroll >= 1 and et.scroll - 1 < lines.len)
+        lines[et.scroll - 1].bounds.y
+    else
+        0;
+    const target = et.bounds.height() + top - edit_text_mod.GUTTER * 2;
+    for (lines) |l| {
+        if (l.bounds.y + l.bounds.h > target) return .{ .number = @floatFromInt(@max(l.index, 1)) };
+    }
+    return .{ .number = @floatFromInt(lines[lines.len - 1].index + 1) };
 }
 
 fn getHscroll(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -453,11 +471,14 @@ fn setHscroll(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 }
 
 /// Word-wrapped text never scrolls sideways; otherwise it is how far the
-/// widest line overhangs the box.
+/// text overhangs the box — plus a quarter of a window for an INPUT
+/// field, which gets extra room past the end.
 fn maxHscrollOf(et: *const EditText) f64 {
     if (et.word_wrap) return 0;
-    const inner = et.bounds.width() - edit_text_mod.GUTTER * 2;
-    const over = et.layout.bounds.w - inner;
+    const window = @max(et.bounds.width() - edit_text_mod.GUTTER * 2, 0);
+    var w = et.layout.text_width;
+    if (!et.read_only) w += @divTrunc(window, 4);
+    const over = w - window;
     if (over <= 0) return 0;
     return @floatFromInt(@divTrunc(over, 20));
 }

@@ -262,6 +262,11 @@ pub const Spans = struct {
     }
 
     pub fn getFormat(self: *const Spans, from: usize, to: usize) TextFormat {
+        // An EMPTY range touches no span, and merging nothing yields
+        // `TextFormat::default()` — every property null except `display`.
+        // That is why `getTextFormat()` on an empty field reports nulls
+        // while `getNewTextFormat()` reports the real values.
+        if (to <= from) return format_mod.defaultFormat();
         const b = self.boundaries(from, to);
         if (b.start >= self.list.items.len) return .{};
         var merged = self.list.items[b.start].asFormat();

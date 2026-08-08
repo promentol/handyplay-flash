@@ -240,6 +240,19 @@ pub fn actionPropertyCoerce(vm: *Vm, index: usize, v: Value) !Value {
 /// places the box at `bounds.x_min` inside the instance, and `_x` folds
 /// that in (ruffle edit_text.rs:2615-2625). Every other kind reports the
 /// placement matrix directly.
+/// Bring a text field up to date before anything reads its geometry: the
+/// layout is rebuilt if stale and any pending AUTOSIZE box is applied.
+/// Ruffle calls `apply_autosize_bounds` from exactly these places and
+/// never from a setter, and the ordering is observable.
+fn syncField(vm: *Vm, t: Target) void {
+    if (t.obj.kind != .edit_text) return;
+    const et = t.obj.kind.edit_text;
+    if (displayCtx(vm)) |ctx| {
+        et.ensureLayout(ctx.gpa, &ctx.movie.lib, ctx.movie.swf_version) catch {};
+    }
+    et.applyAutosizeBounds();
+}
+
 fn boundsOffset(t: Target) [2]i32 {
     if (t.obj.kind != .edit_text) return .{ 0, 0 };
     const b = t.obj.kind.edit_text.bounds;
@@ -250,11 +263,12 @@ fn boundsOffset(t: Target) [2]i32 {
 }
 
 fn getX(vm: *Vm, t: Target) !Value {
-    _ = vm;
+    syncField(vm, t);
     return .{ .number = pixelsFromTwips(t.obj.matrix.tx +% boundsOffset(t)[0]) };
 }
 
 fn setX(vm: *Vm, t: Target, v: Value) !void {
+    syncField(vm, t);
     const n = try coerceToNumber(vm, v) orelse return;
     // Both infinities land on -inf, which twipsFromPixels saturates.
     const x = twipsFromPixels(if (std.math.isInf(n)) -std.math.inf(f64) else n);
@@ -262,11 +276,12 @@ fn setX(vm: *Vm, t: Target, v: Value) !void {
 }
 
 fn getY(vm: *Vm, t: Target) !Value {
-    _ = vm;
+    syncField(vm, t);
     return .{ .number = pixelsFromTwips(t.obj.matrix.ty +% boundsOffset(t)[1]) };
 }
 
 fn setY(vm: *Vm, t: Target, v: Value) !void {
+    syncField(vm, t);
     const n = try coerceToNumber(vm, v) orelse return;
     const y = twipsFromPixels(if (std.math.isInf(n)) -std.math.inf(f64) else n);
     t.obj.setY(y -% boundsOffset(t)[1]);
@@ -316,7 +331,7 @@ fn setRotation(vm: *Vm, t: Target, v: Value) !void {
 // --- size ------------------------------------------------------------------
 
 fn getWidth(vm: *Vm, t: Target) !Value {
-    _ = vm;
+    syncField(vm, t);
     // A text field measures its own BOX through the placement matrix; it
     // does not union its content (ruffle edit_text.rs:2641-2647).
     if (t.obj.kind == .edit_text) {
@@ -328,7 +343,7 @@ fn getWidth(vm: *Vm, t: Target) !Value {
 }
 
 fn getHeight(vm: *Vm, t: Target) !Value {
-    _ = vm;
+    syncField(vm, t);
     if (t.obj.kind == .edit_text) {
         const b = t.obj.matrix.transformRect(t.obj.kind.edit_text.bounds);
         return .{ .number = pixelsFromTwips(b.height()) };
@@ -338,6 +353,7 @@ fn getHeight(vm: *Vm, t: Target) !Value {
 }
 
 fn setWidth(vm: *Vm, t: Target, v: Value) !void {
+    syncField(vm, t);
     const n = try coerceToNumber(vm, v) orelse return;
     // Writing a field's width RESIZES the box — it does not scale the
     // field the way it would scale a clip.
@@ -351,6 +367,7 @@ fn setWidth(vm: *Vm, t: Target, v: Value) !void {
 }
 
 fn setHeight(vm: *Vm, t: Target, v: Value) !void {
+    syncField(vm, t);
     const n = try coerceToNumber(vm, v) orelse return;
     if (t.obj.kind == .edit_text) {
         const et = t.obj.kind.edit_text;

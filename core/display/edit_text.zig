@@ -196,6 +196,18 @@ pub const EditText = struct {
             .url = &.{},
             .target = &.{},
         };
+        // The field's anti-aliasing comes from a SEPARATE tag that may
+        // sit on either side of the DefineEditText.
+        if (lib.csm.get(def.id)) |c| {
+            self.advanced_rendering = c.use_advanced_rendering;
+            self.grid_fit = switch (c.grid_fit) {
+                0 => .none,
+                1 => .pixel,
+                else => .subpixel,
+            };
+            self.thickness = c.thickness;
+            self.sharpness = c.sharpness;
+        }
         self.spans = spans_mod.Spans.init(gpa);
         try self.spans.reset(gpa, self.default_format, 0);
         if (def.variable_name.len > 0) {
@@ -486,9 +498,13 @@ fn rebuildSpans(
 /// `EditText::new`'s tag: font id 0 at 12px, black, no layout. The face
 /// resolves to nothing, which is correct — a dynamic field has no
 /// embedded font until script gives it one.
+/// `EditText::new`'s tag has font id 0, which resolves to nothing — so
+/// the face NAME defaults the same way a tag with an unknown font does.
+const TIMES: [15]u16 = .{ 'T', 'i', 'm', 'e', 's', ' ', 'N', 'e', 'w', ' ', 'R', 'o', 'm', 'a', 'n' };
+
 fn dynamicFormat() TextFormat {
     return .{
-        .font = &.{},
+        .font = &TIMES,
         .size = 12.0,
         .color = 0,
         .text_align = .left,

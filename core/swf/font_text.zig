@@ -230,6 +230,31 @@ pub fn parseFontInfo(
     };
 }
 
+/// CSMTextSettings (74): the anti-aliasing engine a text field or static
+/// text was authored with. Only `use_advanced_rendering` is observable
+/// today, through `TextField.antiAliasType`.
+pub const CsmTextSettings = struct {
+    id: u16,
+    use_advanced_rendering: bool,
+    /// 0 = none, 1 = pixel, 2 = subpixel.
+    grid_fit: u2,
+    thickness: f32,
+    sharpness: f32,
+};
+
+pub fn parseCsmTextSettings(body: []const u8) Error!CsmTextSettings {
+    var r = rdr.Reader.init(body);
+    const id = try r.readU16();
+    const flags = try r.readU8();
+    return .{
+        .id = id,
+        .use_advanced_rendering = (flags & 0b0100_0000) != 0,
+        .grid_fit = @truncate((flags >> 3) & 0b11),
+        .thickness = @bitCast(try r.readU32()),
+        .sharpness = @bitCast(try r.readU32()),
+    };
+}
+
 // --- DefineText ------------------------------------------------------------
 
 pub const GlyphEntry = struct {

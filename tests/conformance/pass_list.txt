@@ -76,8 +76,15 @@ drag_over_without_startdrag
 duplicate_movie_clip
 duplicate_movie_clip_drawing
 edittext_align
+edittext_align_trailing_spaces_swf7
+edittext_align_trailing_spaces_swf8
+edittext_antialiastype
+edittext_autosize
 edittext_autosize_setter
 edittext_bullet
+edittext_default_format
+edittext_default_format_empty
+edittext_default_format_font_style
 edittext_font_size
 edittext_html_align_swf7
 edittext_html_align_swf8
@@ -95,6 +102,7 @@ edittext_margins
 edittext_newline_stripping
 edittext_newlines
 edittext_password
+edittext_scroll
 edittext_tab_stops
 edittext_text_height_leading
 edittext_underline
