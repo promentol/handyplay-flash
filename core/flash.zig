@@ -24,6 +24,7 @@ pub const display = struct {
     pub const movie_clip = @import("display/movie_clip.zig");
     pub const button = @import("display/button.zig");
     pub const mouse = @import("display/mouse.zig");
+    pub const tab = @import("display/tab.zig");
     // M4: text.zig.
 };
 
@@ -190,6 +191,8 @@ pub const Player = struct {
             .has_button_handler = hostHasButtonHandler,
             .mouse_enabled = hostMouseEnabled,
             .lost_display_object = hostLostDisplayObject,
+            .bool_property = hostBoolProperty,
+            .key_focus = hostKeyFocus,
         };
     }
 
@@ -477,6 +480,30 @@ pub const Player = struct {
         return h;
     }
 
+    fn hostKeyFocus(user: *anyopaque, obj: *display.display_object.DisplayObject) bool {
+        const self: *Player = @ptrCast(@alignCast(user));
+        return avm1.stage_object.hasKeyFocus(self.vm, obj);
+    }
+
+    fn hostBoolProperty(
+        user: *anyopaque,
+        obj: *display.display_object.DisplayObject,
+        name: []const u8,
+    ) ?bool {
+        const self: *Player = @ptrCast(@alignCast(user));
+        const handle = switch (obj.kind) {
+            .clip => |mc| mc.avm_object,
+            else => obj.avm_object,
+        };
+        if (handle == 0) return null;
+        var buf: [24]u16 = undefined;
+        for (name, 0..) |c, i| buf[i] = c;
+        const v = self.vm.objects.getChained(handle, buf[0..name.len], self.vm.case_sensitive) orelse
+            return null;
+        if (v == .undefined_value or v == .null_value) return null;
+        return avm1.value.toBoolean(v, self.vm.swf_version);
+    }
+
     fn hostLostDisplayObject(user: *anyopaque, obj: *display.display_object.DisplayObject) void {
         const self: *Player = @ptrCast(@alignCast(user));
         avm1.stage_object.dropFocusIf(self.vm, obj) catch {};
@@ -607,6 +634,7 @@ pub const Player = struct {
     // input events run script OUTSIDE the frame loop, like timers do.
 
     pub fn mouseMove(self: *Player, x: f64, y: f64) !void {
+        if (self.movie.swf_version < 9) self.resetHighlight();
         self.setMousePosition(x, y);
         try self.dispatchInput(swf.place.ClipEvent.MOUSE_MOVE, "onMouseMove", self.vm.mouse_object);
         try self.updateMouseState(false);
@@ -618,6 +646,30 @@ pub const Player = struct {
     ///
     /// The pick runs on every pointer event AND once per frame, because a
     /// clip can move out from under a stationary pointer.
+    /// The player window lost or gained the OS focus. Losing it drops the
+    /// AVM1 focus entirely (ruffle `handle_focus_event`); gaining it back
+    /// restores nothing.
+    pub fn windowFocus(self: *Player, gained: bool) !void {
+        if (gained) return;
+        var ctx = self.makeContext();
+        defer ctx.deinit(self.gpa);
+        self.cur_ctx = &ctx;
+        self.vm.display_ctx = @ptrCast(&ctx);
+        defer {
+            self.cur_ctx = null;
+            self.vm.display_ctx = null;
+        }
+        try avm1.stage_object.setFocus(self.vm, 0);
+        try self.drainActions(&ctx);
+        self.retireDead(&ctx);
+    }
+
+    /// Any left press clears the focus highlight, and below SWF9 so does
+    /// every other mouse event (ruffle `should_reset_highlight`).
+    fn resetHighlight(self: *Player) void {
+        self.vm.focus_highlight = false;
+    }
+
     pub fn updateMouseState(self: *Player, changed_left: bool) !void {
         var ctx = self.makeContext();
         defer ctx.deinit(self.gpa);
@@ -765,6 +817,11 @@ pub const Player = struct {
     }
 
     pub fn mouseButton(self: *Player, button: u8, down: bool) !void {
+        if (button == 0 and down) {
+            self.resetHighlight();
+        } else if (self.movie.swf_version < 9 and button != 1) {
+            self.resetHighlight();
+        }
         const bit = @as(u8, 1) << @intCast(@min(button, 7));
         if (down) {
             self.vm.mouse_buttons |= bit;
@@ -812,11 +869,24 @@ pub const Player = struct {
         self.vm.last_key_char = char;
         try self.dispatchInput(swf.place.ClipEvent.KEY_DOWN, "onKeyDown", self.vm.key_object);
         // keyPress comes after keyDown, always (ruffle player.rs:1302).
-        if (display.button.buttonKeyCode(code, char)) |bk| try self.dispatchKeyPress(bk);
+        var handled = false;
+        if (display.button.buttonKeyCode(code, char)) |bk| handled = try self.dispatchKeyPress(bk);
+        // Tab cycles the focus — but only when no keyPress claimed the
+        // key first (ruffle player.rs:1328-1340).
+        if (!handled and code == 9) {
+            try self.cycleFocus(self.vm.keys_down[16]);
+        } else if (!handled and (code == 13 or code == 32 or char == 32)) {
+            try self.activateFocus();
+        }
         try self.updateMouseState(false);
     }
 
-    fn dispatchKeyPress(self: *Player, code: u8) !void {
+    /// Enter or Space on a highlighted focused object presses AND
+    /// releases it, without waiting for the key to come up (ruffle
+    /// player.rs:1340-1357).
+    fn activateFocus(self: *Player) !void {
+        if (self.vm.focus == 0 or !self.vm.focus_highlight) return;
+        const t = avm1.stage_object.targetOf(self.vm, self.vm.focus) orelse return;
         var ctx = self.makeContext();
         defer ctx.deinit(self.gpa);
         self.cur_ctx = &ctx;
@@ -825,9 +895,62 @@ pub const Player = struct {
             self.cur_ctx = null;
             self.vm.display_ctx = null;
         }
-        _ = try self.root.broadcastKeyPress(&ctx, code);
+        try display.mouse.dispatch(&ctx, t.obj, .press);
+        try display.mouse.dispatch(&ctx, t.obj, .release);
         try self.drainActions(&ctx);
         self.retireDead(&ctx);
+    }
+
+    /// Move the focus to the next (or previous) tabbable object. Ruffle's
+    /// `set_by_key` path: the roll events fire SYNCHRONOUSLY here, unlike
+    /// a programmatic `Selection.setFocus`, and the actions they queue are
+    /// drained before the focus itself moves (focus_tracker.rs:144-157).
+    fn cycleFocus(self: *Player, reverse: bool) !void {
+        var ctx = self.makeContext();
+        defer ctx.deinit(self.gpa);
+        self.cur_ctx = &ctx;
+        self.vm.display_ctx = @ptrCast(&ctx);
+        defer {
+            self.cur_ctx = null;
+            self.vm.display_ctx = null;
+        }
+        var order = try display.tab.build(&ctx, &self.root_placement, self.gpa);
+        defer order.deinit(self.gpa);
+        const current = if (self.vm.focus != 0)
+            (avm1.stage_object.targetOf(self.vm, self.vm.focus) orelse null)
+        else
+            null;
+        const cur_obj: ?*display.display_object.DisplayObject =
+            if (current) |t| t.obj else null;
+        const target = display.tab.next(&order, cur_obj, reverse) orelse return;
+
+        // Tabbing also moves the HOVER, with the roll events that implies.
+        const old_hovered = self.hovered;
+        if (old_hovered != target) {
+            self.hovered = target;
+            if (old_hovered) |o| try self.sendMouse(&ctx, o, .roll_out);
+            try self.sendMouse(&ctx, target, .roll_over);
+            try self.drainActions(&ctx);
+        }
+        const handle = try avm1.stage_object.handleOf(self.vm, target);
+        try avm1.stage_object.setFocus(self.vm, handle);
+        try self.drainActions(&ctx);
+        self.retireDead(&ctx);
+    }
+
+    fn dispatchKeyPress(self: *Player, code: u8) !bool {
+        var ctx = self.makeContext();
+        defer ctx.deinit(self.gpa);
+        self.cur_ctx = &ctx;
+        self.vm.display_ctx = @ptrCast(&ctx);
+        defer {
+            self.cur_ctx = null;
+            self.vm.display_ctx = null;
+        }
+        const handled = try self.root.broadcastKeyPress(&ctx, code);
+        try self.drainActions(&ctx);
+        self.retireDead(&ctx);
+        return handled;
     }
 
     pub fn keyUp(self: *Player, code: i32, char: i32) !void {
@@ -923,6 +1046,7 @@ test {
     _ = @import("display/movie_clip.zig");
     _ = @import("display/button.zig");
     _ = @import("display/mouse.zig");
+    _ = @import("display/tab.zig");
     _ = @import("render/canvas.zig");
     _ = @import("render/shape_utils.zig");
     _ = @import("render/renderer.zig");

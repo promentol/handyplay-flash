@@ -1190,6 +1190,8 @@ pub fn setFocus(vm: *Vm, new: ObjectHandle) anyerror!void {
     const old = vm.focus;
     if (old == new) return;
     vm.focus = new;
+    // The highlight follows the focus (focus_tracker.rs update_highlight).
+    vm.focus_highlight = new != 0;
 
     const old_v: Value = if (old != 0) .{ .object = old } else .null_value;
     const new_v: Value = if (new != 0) .{ .object = new } else .null_value;
@@ -1225,6 +1227,14 @@ pub fn dropFocusIf(vm: *Vm, obj: *DisplayObject) anyerror!void {
         const parent = o.parent orelse break;
         cur = parent.placement;
     }
+}
+
+/// Does this object have the keyboard focus, highlight and all? Only then
+/// do its `onKeyDown`/`onKeyUp` handlers run.
+pub fn hasKeyFocus(vm: *Vm, obj: *DisplayObject) bool {
+    if (vm.focus == 0 or !vm.focus_highlight) return false;
+    const t = targetOf(vm, vm.focus) orelse return false;
+    return t.obj == obj;
 }
 
 /// `Selection.getFocus()` — the focused object's PATH, or null.

@@ -83,7 +83,7 @@ pub fn install(vm: *Vm) !void {
     try decl.value(vm, proto, "useHandCursor", .{ .boolean = true }, hidden);
     try decl.value(vm, proto, "focusEnabled", .undefined_value, ver(hidden, decl.V6));
     try decl.value(vm, proto, "tabEnabled", .undefined_value, ver(hidden, decl.V6));
-    try decl.value(vm, proto, "tabIndex", .undefined_value, ver(hidden, decl.V6));
+    try decl.property(vm, proto, "tabIndex", getTabIndex, setTabIndex, ver(hidden, decl.V6));
     try decl.value(vm, proto, "tabChildren", .undefined_value, ver(hidden, decl.V6));
     try decl.value(vm, proto, "trackAsMenu", .undefined_value, ver(hidden, decl.V6));
     try decl.value(vm, proto, "menu", .undefined_value, ver(hidden, decl.V7));
@@ -98,6 +98,32 @@ pub fn install(vm: *Vm) !void {
     try decl.property(vm, proto, "blendMode", getBlendMode, setBlendMode, ver(hidden, decl.V8));
     try decl.property(vm, proto, "filters", getFilters, setFilters, ver(hidden, decl.V8));
     try decl.property(vm, proto, "transform", getTransform, setTransform, ver(.{ .dont_enum = true }, decl.V8));
+}
+
+/// `tabIndex` is a NATIVE slot, not an ordinary property: it survives on
+/// the display object and drives the tab order. -1 reads back as
+/// undefined, being ruffle's spelling of "unset" (interactive.rs
+/// set_tab_index).
+pub fn getTabIndex(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    const idx = t.obj.tab_index orelse return .undefined_value;
+    return .{ .number = @floatFromInt(idx) };
+}
+
+pub fn setTabIndex(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    const v = arg(args, 0);
+    t.obj.tab_index = switch (v) {
+        .undefined_value, .null_value => null,
+        else => blk: {
+            const n = value_mod.toInt32(try vm.toNumber(v));
+            break :blk if (n == -1) null else n;
+        },
+    };
+    return .undefined_value;
 }
 
 // --- timeline control ---------------------------------------------------------

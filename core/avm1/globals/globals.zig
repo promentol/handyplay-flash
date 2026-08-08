@@ -196,7 +196,7 @@ pub fn install(vm: *Vm) !void {
         try decl.property(vm, btn_proto, "filters", mc_globals.getFilters, mc_globals.setFilters, ver(.{ .read_only = true }, decl.V8));
         try decl.value(vm, btn_proto, "cacheAsBitmap", .{ .boolean = false }, ver(.{ .read_only = true }, decl.V8));
         try decl.value(vm, btn_proto, "scale9Grid", .undefined_value, ver(.{ .read_only = true }, decl.V8));
-        try decl.value(vm, btn_proto, "tabIndex", .undefined_value, ver(.{}, decl.V6));
+        try decl.property(vm, btn_proto, "tabIndex", mc_globals.getTabIndex, mc_globals.setTabIndex, ver(.{}, decl.V6));
         _ = try decl.class(vm, "Button", ctorMovieClip, btn_proto, attrs);
 
         const tf_proto = try vm.objects.create();

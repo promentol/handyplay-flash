@@ -37,7 +37,11 @@ biturshift
 bitxor
 button_children
 button_goto
+button_key_events
+button_key_events_special
 button_keypress
+button_keypress_vs_press
+button_keypress_vs_tab
 button_order
 button_properties_special_cases
 button_v5
@@ -82,9 +86,11 @@ export_assets
 extends_chain
 extends_native_type
 focus_root_movie
+focusrect_focuslost
 focusrect_mouse_swf8
 focusrect_mouse_swf9
 focusrect_swf5
+focusrect_swf6
 function_base_clip
 get_bytes_total
 getproperty
@@ -204,6 +210,9 @@ swf4_bool
 swf5_encoding
 swf6_string_as_bool
 swf7_case_sensitive
+tab_ordering_automatic_order_grid
+tab_ordering_automatic_order_same_position
+tab_ordering_custom_duplicate_index
 target_clip_removed
 target_clip_swf5
 target_clip_swf6

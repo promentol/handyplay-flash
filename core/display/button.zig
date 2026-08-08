@@ -205,6 +205,7 @@ pub fn buttonKeyCode(vk: i32, char: i32) ?u8 {
         40 => 15, // down
         33 => 16, // page up
         34 => 17, // page down
+        32 => 32, // space — ruffle gets this from a TEXT INPUT event
         9 => 18, // tab
         27 => 19, // escape
         else => null,

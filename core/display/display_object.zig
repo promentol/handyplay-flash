@@ -48,6 +48,10 @@ pub const DisplayObject = struct {
     /// then skips the timeline's placement entirely, so a PlaceObject2 on
     /// a later frame can't undo a script's `_x`.
     transformed_by_script: bool = false,
+    /// `tabIndex`, a NATIVE slot rather than a script property: -1 means
+    /// "unset", and the moment any object in the tree has one the whole
+    /// tab order switches to custom (ruffle InteractiveObjectBase).
+    tab_index: ?i32 = null,
     /// `_focusrect`, per object: null = "follow the stage's setting".
     /// Only SWF6+ reads it; below that every object defers to the stage
     /// (ruffle interactive.rs is_highlight_enabled).

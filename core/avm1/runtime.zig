@@ -226,6 +226,11 @@ pub const Vm = struct {
     focus: ObjectHandle = 0,
     /// The `Selection` singleton, whose listeners hear `onSetFocus`.
     selection_object: ObjectHandle = 0,
+    /// Is the focus HIGHLIGHT active? It follows the focus, and any mouse
+    /// activity below SWF9 clears it. Key handlers (`btn.onKeyDown`) only
+    /// fire for a focused object whose highlight is active — ruffle
+    /// `should_fire_event_handlers`, Flash issue #2120.
+    focus_highlight: bool = false,
     /// setInterval/setTimeout registrations, ticked by the Player after
     /// each frame's action drain.
     timers: @import("timers.zig").Timers = .{},

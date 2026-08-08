@@ -58,6 +58,18 @@ pub const Context = struct {
     /// DoInitAction uses this; everything else goes through the queue.
     run_inline: ?*const fn (user: *anyopaque, clip: *MovieClip, code: []const u8) void = null,
 
+    /// Does this object hold the keyboard focus? A key event's SCRIPT
+    /// handler only runs for the focused object (ruffle
+    /// `should_fire_event_handlers`); its `onClipEvent` bodies run either
+    /// way.
+    key_focus: ?*const fn (user: *anyopaque, obj: *DisplayObject) bool = null,
+
+    /// Read an AVM1 BOOLEAN property off the object's script object.
+    /// Null when it is absent (undefined/null), which is what lets the
+    /// caller apply the per-kind default (ruffle
+    /// `get_avm1_boolean_property`).
+    bool_property: ?*const fn (user: *anyopaque, obj: *DisplayObject, name: []const u8) ?bool = null,
+
     /// The object is leaving the display list: if it had focus, drop it
     /// (ruffle display_object.rs:1896 set_parent -> drop_focus).
     lost_display_object: ?*const fn (user: *anyopaque, obj: *DisplayObject) void = null,
@@ -69,6 +81,16 @@ pub const Context = struct {
     /// `obj.enabled` — a disabled button or clip is not pickable and gets
     /// no events (ruffle InteractiveObject::mouse_enabled).
     mouse_enabled: ?*const fn (user: *anyopaque, obj: *DisplayObject) bool = null,
+
+    pub fn keyFocused(self: *Context, obj: *DisplayObject) bool {
+        const f = self.key_focus orelse return false;
+        return f(self.class_lookup_user.?, obj);
+    }
+
+    pub fn boolProperty(self: *Context, obj: *DisplayObject, name: []const u8) ?bool {
+        const f = self.bool_property orelse return null;
+        return f(self.class_lookup_user.?, obj, name);
+    }
 
     pub fn lostDisplayObject(self: *Context, obj: *DisplayObject) void {
         const f = self.lost_display_object orelse return;
@@ -315,6 +337,15 @@ pub const MovieClip = struct {
                         const inner = b.container.children.items[j];
                         if (inner.kind == .clip) try inner.kind.clip.broadcastClipEvent(ctx, flag, method);
                     }
+                    // …and the button itself hears key events only while
+                    // it holds the focus.
+                    if (isKeyFlag(flag) and ctx.keyFocused(child)) {
+                        try ctx.queue(ctx.gpa, .{
+                            .clip = child.parent orelse self,
+                            .display = child,
+                            .what = .{ .method = method },
+                        });
+                    }
                 },
                 else => {},
             }
@@ -401,11 +432,19 @@ pub const MovieClip = struct {
                 }
             }
         }
+        // A key event's script handler is for the FOCUSED object only.
+        if (isKeyFlag(flag) and !(self.placement != null and ctx.keyFocused(self.placement.?))) {
+            return;
+        }
         try ctx.queue(ctx.gpa, .{
             .clip = self,
             .on_removed = on_removed,
             .what = .{ .method = method },
         });
+    }
+
+    fn isKeyFlag(flag: u32) bool {
+        return flag == swf.place.ClipEvent.KEY_DOWN or flag == swf.place.ClipEvent.KEY_UP;
     }
 
     /// The `onClipEvent(press)` bodies plus the script handler, for one

@@ -123,6 +123,10 @@ fn feedUntilWait(player: *flash.Player, events: []const std.json.Value, start: u
         } else if (std.mem.eql(u8, name, "KeyUp")) {
             const k = keyOf(ev);
             player.keyUp(k[0], k[1]) catch {};
+        } else if (std.mem.eql(u8, name, "FocusLost")) {
+            player.windowFocus(false) catch {};
+        } else if (std.mem.eql(u8, name, "FocusGained")) {
+            player.windowFocus(true) catch {};
         }
     }
     return i;
