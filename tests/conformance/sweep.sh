@@ -78,8 +78,11 @@ one() {
     # the expected output.
     lf=""
     grep -q '^log_fetch *= *true' "$toml" 2>/dev/null && lf="--log-fetch"
+    # socket.json — the scripted far end of an XMLSocket.
+    sk=""
+    [ -f "$CORPUS/$d/socket.json" ] && sk="--socket $CORPUS/$d/socket.json"
     # shellcheck disable=SC2086
-    timeout 20 "$BIN" "$swf" --frames "$n" $inp $vp $df $lf >"$T" 2>/dev/null
+    timeout 20 "$BIN" "$swf" --frames "$n" $inp $vp $df $lf $sk >"$T" 2>/dev/null
     if grep -q '^bare_numbers *= *true' "$toml" 2>/dev/null; then
         eps=$(sed -n 's/^epsilon *= *\([0-9.eE+-]*\).*/\1/p' "$toml" | head -1)
         [ -n "$eps" ] || eps=2.220446049250313e-16

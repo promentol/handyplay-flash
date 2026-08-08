@@ -488,6 +488,11 @@ xml_parent_and_child
 xml_remove_node
 xml_reparenting
 xml_siblings
+xml_socket
+xml_socket_close_in_handler
+xml_socket_connect_null
+xml_socket_on_data
+xml_socket_segmented
 xml_to_string
 xml_to_string_comment
 xml_unescaping

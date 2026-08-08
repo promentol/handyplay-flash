@@ -58,6 +58,13 @@ pub const Host = struct {
     /// both halves of `MovieClipLoader.getProgress`, since a load here is
     /// either not started or wholly done.
     movie_bytes: ?*const fn (ctx: *anyopaque, clip: ObjectHandle) u32 = null,
+    /// `XMLSocket`. Nothing here is synchronous: `connect` says only that
+    /// the attempt was made, and the answer arrives through the Player on
+    /// a later tick. `sock` is the XMLSocket object the reply belongs to.
+    socket_connect: ?*const fn (ctx: *anyopaque, sock: ObjectHandle, host: []const u8, port: u16) void = null,
+    /// One NUL-terminated message, already framed.
+    socket_send: ?*const fn (ctx: *anyopaque, sock: ObjectHandle, data: []const u8) void = null,
+    socket_close: ?*const fn (ctx: *anyopaque, sock: ObjectHandle) void = null,
 };
 
 /// A browser navigation, which unlike a fetch has no reply.

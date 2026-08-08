@@ -121,6 +121,7 @@ pub fn install(vm: *Vm) !void {
     }
     try @import("xml.zig").install(vm, attrs);
     try @import("loader.zig").install(vm);
+    try @import("socket.zig").install(vm);
     const string_class = try decl.class(vm, "String", ctorString, vm.string_proto, attrs);
     const number_class = try decl.class(vm, "Number", ctorNumber, vm.number_proto, attrs);
     _ = try decl.class(vm, "Boolean", ctorBoolean, vm.boolean_proto, attrs);

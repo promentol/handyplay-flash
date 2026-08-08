@@ -126,6 +126,16 @@ pub const Player = struct {
     levels: std.ArrayList(*display.display_object.DisplayObject) = .empty,
     /// Loads whose `onLoadInit` is still owed — see `fireLoadInits`.
     pending_init: std.ArrayList(avm1.runtime.FetchRequest.Movie) = .empty,
+    /// The one open `XMLSocket`, its script object, and whatever of a
+    /// message has arrived so far. Flash frames on NUL and nothing else,
+    /// so a partial message simply waits here for the rest.
+    socket_obj: avm1.runtime.ObjectHandle = 0,
+    socket_buf: std.ArrayList(u8) = .empty,
+    socket_connect: ?*const fn (user: ?*anyopaque, host: []const u8, port: u16) void = null,
+    socket_send: ?*const fn (user: ?*anyopaque, data: []const u8) void = null,
+    socket_close_fn: ?*const fn (user: ?*anyopaque) void = null,
+    socket_poll: ?*const fn (user: ?*anyopaque) ?SocketEvent = null,
+    socket_user: ?*anyopaque = null,
 
     /// Safety valve: max timeline frames advanced per tick call.
     const MAX_FRAMES_PER_TICK = 5;
@@ -166,6 +176,25 @@ pub const Player = struct {
         /// `test.toml`'s `log_fetch`: trace every request and navigation
         /// the way ruffle's test navigator does. Off for a real frontend.
         log_fetch: bool = false,
+        /// `XMLSocket`. One socket at a time — the whole corpus opens one
+        /// and no frontend has needed two. `connect` and `send` are
+        /// fire-and-forget; every reply comes back through `poll`, which
+        /// the Player drains once per tick.
+        socket_connect: ?*const fn (user: ?*anyopaque, host: []const u8, port: u16) void = null,
+        socket_send: ?*const fn (user: ?*anyopaque, data: []const u8) void = null,
+        socket_close: ?*const fn (user: ?*anyopaque) void = null,
+        socket_poll: ?*const fn (user: ?*anyopaque) ?SocketEvent = null,
+        socket_user: ?*anyopaque = null,
+    };
+
+    /// What a socket can tell the movie. `data` is raw bytes, unframed:
+    /// splitting them into NUL-terminated messages is the Player's job,
+    /// because a message can be split across two of these and two
+    /// messages can arrive in one.
+    pub const SocketEvent = union(enum) {
+        connect: bool,
+        data: []const u8,
+        close,
     };
 
     pub fn create(gpa: std.mem.Allocator, file_bytes: []const u8) anyerror!*Player {
@@ -205,6 +234,11 @@ pub const Player = struct {
         self.load_file = opts.load_file;
         self.load_user = opts.load_user;
         self.log_fetch = opts.log_fetch;
+        self.socket_connect = opts.socket_connect;
+        self.socket_send = opts.socket_send;
+        self.socket_close_fn = opts.socket_close;
+        self.socket_poll = opts.socket_poll;
+        self.socket_user = opts.socket_user;
         // The ROOT consumes instance0 without keeping it: ruffle runs
         // post_instantiation (which names it) and only then
         // set_default_root_name, which blanks the name again for AVM1
@@ -284,6 +318,7 @@ pub const Player = struct {
         }
         self.pending_loads.deinit(gpa);
         self.pending_init.deinit(gpa);
+        self.socket_buf.deinit(gpa);
         for (self.levels.items) |lv| {
             lv.deinit(gpa);
             gpa.destroy(lv);
@@ -330,7 +365,8 @@ pub const Player = struct {
     /// next tick — ruffle polls a snapshot of its future set, so a chain of
     /// loads advances one link per tick rather than running to exhaustion.
     fn finishTick(self: *Player) !bool {
-        if (self.pending_loads.items.len == 0) return false;
+        const sockets = self.socket_poll != null and self.socket_obj != 0;
+        if (self.pending_loads.items.len == 0 and !sockets) return false;
         const batch = try self.pending_loads.toOwnedSlice(self.gpa);
         defer self.gpa.free(batch);
         var ctx = self.makeContext();
@@ -341,12 +377,85 @@ pub const Player = struct {
             self.cur_ctx = null;
             self.vm.display_ctx = null;
         }
+        self.drainSocket() catch |e| self.reportUncaught(e);
+        try self.drainActions(&ctx);
         for (batch) |req| {
             self.completeLoad(req) catch |e| self.reportUncaught(e);
             try self.drainActions(&ctx);
         }
         self.retireDead(&ctx);
         return true;
+    }
+
+    /// Ruffle's `update_sockets`, minus the handle table: deliver whatever
+    /// the frontend has for us, framing the byte stream on NUL. A message
+    /// split across two deliveries is one message; two messages in one
+    /// delivery are two.
+    fn drainSocket(self: *Player) !void {
+        const poll = self.socket_poll orelse return;
+        while (poll(self.socket_user)) |ev| {
+            const target = self.socket_obj;
+            if (target == 0) continue;
+            switch (ev) {
+                .connect => |ok| try avm1.loader.callMethod(
+                    self.vm,
+                    target,
+                    avm1.strings.ascii("onConnect"),
+                    &.{.{ .boolean = ok }},
+                ),
+                .data => |bytes| {
+                    try self.socket_buf.appendSlice(self.gpa, bytes);
+                    while (std.mem.indexOfScalar(u8, self.socket_buf.items, 0)) |nul| {
+                        const msg = try self.vm.arena().dupe(u8, self.socket_buf.items[0..nul]);
+                        self.socket_buf.replaceRange(self.gpa, 0, nul + 1, &.{}) catch {};
+                        const s = try avm1.strings.fromSwf(self.vm.arena(), msg, 8);
+                        try avm1.loader.callMethod(
+                            self.vm,
+                            target,
+                            avm1.strings.ascii("onData"),
+                            &.{.{ .string = s }},
+                        );
+                    }
+                },
+                .close => {
+                    self.socket_buf.clearRetainingCapacity();
+                    self.socket_obj = 0;
+                    try avm1.loader.callMethod(
+                        self.vm,
+                        target,
+                        avm1.strings.ascii("onClose"),
+                        &.{},
+                    );
+                },
+            }
+        }
+    }
+
+    fn hostSocketConnect(ctx: *anyopaque, sock: u32, host: []const u8, port: u16) void {
+        const self: *Player = @ptrCast(@alignCast(ctx));
+        if (self.log_fetch) {
+            self.traceFmt("Navigator::connect_socket", .{}) catch {};
+            self.traceFmt("    Host: {s}; Port: {d}", .{ host, port }) catch {};
+        }
+        self.socket_obj = sock;
+        self.socket_buf.clearRetainingCapacity();
+        if (self.socket_connect) |f| f(self.socket_user, host, port);
+    }
+
+    fn hostSocketSend(ctx: *anyopaque, sock: u32, data: []const u8) void {
+        const self: *Player = @ptrCast(@alignCast(ctx));
+        // A send before the socket is open is silently dropped — the
+        // corpus opens with exactly that and expects no complaint.
+        if (self.socket_obj != sock) return;
+        if (self.socket_send) |f| f(self.socket_user, data);
+    }
+
+    fn hostSocketClose(ctx: *anyopaque, sock: u32) void {
+        const self: *Player = @ptrCast(@alignCast(ctx));
+        if (self.socket_obj != sock) return;
+        self.socket_obj = 0;
+        self.socket_buf.clearRetainingCapacity();
+        if (self.socket_close_fn) |f| f(self.socket_user);
     }
 
     /// Ask the host for the bytes and hand them to whichever completion
@@ -1004,6 +1113,9 @@ pub const Player = struct {
             .level = hostLevel,
             .unload_movie = hostUnloadMovie,
             .movie_bytes = hostMovieBytes,
+            .socket_connect = hostSocketConnect,
+            .socket_send = hostSocketSend,
+            .socket_close = hostSocketClose,
         };
     }
 
@@ -1656,6 +1768,7 @@ test {
     _ = @import("avm1/globals/filters.zig");
     _ = @import("avm1/globals/bitmap_data.zig");
     _ = @import("avm1/globals/loader.zig");
+    _ = @import("avm1/globals/socket.zig");
     _ = @import("avm1/text_binding.zig");
     _ = @import("bitmap/pixels.zig");
     _ = @import("bitmap/data.zig");
