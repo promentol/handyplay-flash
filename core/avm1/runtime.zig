@@ -54,6 +54,10 @@ pub const Host = struct {
     /// `unloadMovie` and the empty-URL `loadMovie`. Unlike a load this is
     /// immediate: the timeline is gone before the calling script resumes.
     unload_movie: ?*const fn (ctx: *anyopaque, clip: ObjectHandle) void = null,
+    /// The compressed length of the movie a clip's timeline came from —
+    /// both halves of `MovieClipLoader.getProgress`, since a load here is
+    /// either not started or wholly done.
+    movie_bytes: ?*const fn (ctx: *anyopaque, clip: ObjectHandle) u32 = null,
 };
 
 /// A browser navigation, which unlike a fetch has no reply.

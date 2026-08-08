@@ -137,18 +137,21 @@ pub fn install(vm: *Vm) !void {
     try vm.objects.putWithAttrs(system, S("Capabilities"), .{ .object = caps }, .{}, false);
 
     // --- MovieClipLoader ------------------------------------------------------
-    // Loading needs I/O, which `core/` does not do, so the methods are
-    // honest stubs — `loadClip` reports failure rather than pretending.
-    // The class exists now because it is a BROADCASTER, and content (and
-    // the corpus) checks that its listener protocol is the shared one.
+    // A BROADCASTER wrapped round the load seam: its three methods are in
+    // globals/loader.zig beside the rest of the loading machinery, and the
+    // events reach its `_listeners` from the Player.
     {
         const mcl_proto = try vm.objects.create();
         vm.objects.get(mcl_proto).proto = .{ .object = vm.object_proto };
         try makeBroadcaster(vm, mcl_proto);
-        try method(vm, mcl_proto, "loadClip", falseFn, hidden);
-        try method(vm, mcl_proto, "unloadClip", falseFn, hidden);
-        try method(vm, mcl_proto, "getProgress", noop, hidden);
-        const mcl = try decl.class(vm, "MovieClipLoader", mclCtor, mcl_proto, .{ .dont_enum = true });
+        try @import("loader.zig").installMovieClipLoader(vm, mcl_proto);
+        const mcl = try decl.class(
+            vm,
+            "MovieClipLoader",
+            @import("loader.zig").movieClipLoaderCtor,
+            mcl_proto,
+            .{ .dont_enum = true },
+        );
         // Ruffle initialises the PROTOTYPE, so the statics resolve through
         // it; mirror that by exposing the same shared functions here.
         try makeBroadcasterMethods(vm, mcl);
@@ -162,19 +165,6 @@ pub fn install(vm: *Vm) !void {
     try method(vm, color_proto, "setTransform", colorSetTransform, frozen);
     try method(vm, color_proto, "getTransform", colorGetTransform, frozen);
     _ = try decl.class(vm, "Color", colorCtor, color_proto, .{ .dont_enum = true });
-}
-
-/// A fresh MovieClipLoader listens to ITSELF (ruffle movie_clip_loader.rs
-/// constructor seeds `_listeners` with `this`).
-fn mclCtor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = args;
-    const vm = vmOf(p);
-    if (this != .object) return .undefined_value;
-    const list = try vm.newArray();
-    try vm.arraySet(list, 0, this);
-    try vm.setArrayLength(list, 1);
-    try vm.objects.putWithAttrs(this.object, S("_listeners"), .{ .object = list }, .{ .dont_enum = true }, false);
-    return this;
 }
 
 fn falseFn(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {

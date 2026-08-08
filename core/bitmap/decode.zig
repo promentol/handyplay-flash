@@ -75,6 +75,20 @@ pub fn sizeOf(bmp: library.Bitmap) ?[2]u32 {
 
 // --- JPEG (and whatever else stb recognises) ---------------------------------
 
+/// A bare image FILE — a GIF, JPEG or PNG loaded by `loadMovie`, with no
+/// SWF tag around it. Straight alpha, since nothing in the container says
+/// otherwise. Null when the bytes are not an image at all, which is how
+/// the loader tells "unrecognised content" from "a picture".
+pub fn decodeStandalone(gpa: std.mem.Allocator, data: []const u8) !?Image {
+    var bm = simdra.decode.decodeImage(gpa, data) catch return null;
+    defer simdra.SmBitmap.releaseWithAllocator(gpa, bm);
+    if (bm.width == 0 or bm.height == 0) return null;
+    const n = @as(usize, bm.width) * @as(usize, bm.height);
+    const rgba = try gpa.alloc(u8, n * 4);
+    @memcpy(rgba, bm.data[0 .. n * 4]);
+    return .{ .width = bm.width, .height = bm.height, .rgba = rgba, .premultiplied = false };
+}
+
 fn decodeJpeg(
     gpa: std.mem.Allocator,
     data: []const u8,

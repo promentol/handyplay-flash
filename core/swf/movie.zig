@@ -39,6 +39,10 @@ pub const Movie = struct {
     /// UNCOMPRESSED size, the 8 signature bytes included. This — not
     /// `body.len` — is what `_root.getBytesTotal()` reports.
     file_length: u32,
+    /// The file's size ON DISK — the compressed one for a CWS/ZWS. Ruffle
+    /// calls it `compressed_len`, and it is what `MovieClipLoader`'s
+    /// progress reports, unlike `getBytesTotal`'s uncompressed figure.
+    compressed_len: u32,
     header: header.Header,
 
     lib: library.Library = .{},
@@ -91,6 +95,7 @@ pub fn load(gpa: std.mem.Allocator, file_bytes: []const u8) Error!Movie {
         .compression = dec.compression,
         .body = dec.body,
         .file_length = dec.declared_length,
+        .compressed_len = @intCast(file_bytes.len),
         .header = h,
     };
     movie.frames = try preloadTimeline(&movie, dec.body[h.tags_offset..], true);

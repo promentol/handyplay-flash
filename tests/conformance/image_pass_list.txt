@@ -6,3 +6,7 @@ bitmap_data_pixeldissolve_image
 bitmapdata_applyfilter_colormatrix
 color
 display_object_properties
+mcl_target_gif87a
+mcl_target_gif89a
+mcl_target_jpg
+mcl_target_png

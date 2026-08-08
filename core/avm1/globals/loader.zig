@@ -465,36 +465,158 @@ pub fn completeLoadVars(vm: *Vm, obj: ObjectHandle, data: ?[]const u8) !void {
 }
 
 /// A movie load finished. The bare `loadMovie` forms broadcast nothing —
-/// only a `MovieClipLoader` has listeners, and it hears the whole
-/// sequence at once because the fetch already completed.
-pub fn movieLoadEvents(vm: *Vm, target: FetchRequest.Movie, ok: bool) !void {
+/// only a `MovieClipLoader` has listeners.
+///
+/// `onLoadInit` is deliberately NOT here: it fires a whole tick later,
+/// once the loaded movie has run its own first frame. That is the entire
+/// difference between it and `onLoadComplete`, and the corpus pins the
+/// child's trace landing between the two.
+pub fn movieLoadEvents(vm: *Vm, target: FetchRequest.Movie, size: ?usize) !void {
     if (target.broadcaster == 0) return;
     const clip: Value = .{ .object = target.clip };
-    if (!ok) {
-        try broadcast(vm, target.broadcaster, S("onLoadError"), &.{ clip, .{ .string = S("URLNotFound") }, .{ .number = 0 } });
+    const len = size orelse {
+        try broadcast(vm, target.broadcaster, S("onLoadError"), &.{
+            clip,
+            .{ .string = S("URLNotFound") },
+            .{ .number = 0 },
+        });
         return;
-    }
+    };
+    const n: f64 = @floatFromInt(len);
     try broadcast(vm, target.broadcaster, S("onLoadStart"), &.{clip});
-    try broadcast(vm, target.broadcaster, S("onLoadProgress"), &.{ clip, .{ .number = 0 }, .{ .number = 0 } });
+    try broadcast(vm, target.broadcaster, S("onLoadProgress"), &.{ clip, .{ .number = n }, .{ .number = n } });
     try broadcast(vm, target.broadcaster, S("onLoadComplete"), &.{ clip, .{ .number = 0 } });
-    try broadcast(vm, target.broadcaster, S("onLoadInit"), &.{clip});
 }
 
-/// AsBroadcaster's `broadcastMessage`, called from the Player rather than
-/// from script: walk `_listeners` and invoke the handler each one has.
+pub fn movieLoadInit(vm: *Vm, target: FetchRequest.Movie) !void {
+    if (target.broadcaster == 0) return;
+    try broadcast(vm, target.broadcaster, S("onLoadInit"), &.{.{ .object = target.clip }});
+}
+
+/// Send an event through the broadcaster. It goes through the object's
+/// own `broadcastMessage` METHOD, not straight down `_listeners`: content
+/// replaces that method to intercept the whole stream, and the corpus
+/// (mcl_unloadclip, mcl_mislabeled_target) does exactly that.
 pub fn broadcast(vm: *Vm, obj: ObjectHandle, name: AvmString, args: []const Value) !void {
-    const list = vm.objects.getChained(obj, S("_listeners"), vm.case_sensitive) orelse return;
-    if (list != .object) return;
-    const n = vm.arrayLength(list.object);
-    var i: u32 = 0;
-    while (i < n) : (i += 1) {
-        var buf: [12]u8 = undefined;
-        const idx = try strings.fromSwf(vm.arena(), std.fmt.bufPrint(&buf, "{d}", .{i}) catch continue, 8);
-        const entry = vm.getProperty(list.object, idx, .{ .object = list.object }) catch continue;
-        if (entry != .object) continue;
-        try callMethod(vm, entry.object, name, args);
+    const a = vm.arena();
+    const full = try a.alloc(Value, args.len + 1);
+    full[0] = .{ .string = name };
+    @memcpy(full[1..], args);
+    try callMethod(vm, obj, S("broadcastMessage"), full);
+}
+
+// --- MovieClipLoader -------------------------------------------------------
+
+/// Resolve a `loadClip`/`unloadClip`/`getProgress` target. Four shapes,
+/// each with its own rule: a STRING is a target path, a NUMBER is a level
+/// (truncated, and `create` decides whether a missing one is made), an
+/// OBJECT is taken only if it is a display object, and anything else
+/// fails. Ruffle repeats this switch three times; it lives once here.
+fn resolveClipTarget(vm: *Vm, v: Value, create: bool) !?ObjectHandle {
+    const act = @import("../activation.zig");
+    switch (v) {
+        .string, .object => {
+            const t = try act.targetFromNative(vm, 0, v) orelse return null;
+            if (t.clip) |c| return try stage.clipObject(vm, c);
+            return try stage.displayObject(vm, t.obj);
+        },
+        .number => |n| {
+            if (std.math.isNan(n)) return null;
+            const id: i32 = value_mod.toInt32(@trunc(n));
+            const host = vm.host;
+            if (create) {
+                const f = host.level orelse return null;
+                const obj = f(host.ctx orelse return null, id);
+                return if (obj == 0) null else obj;
+            }
+            if (id == 0) return if (vm.root_object == .object) vm.root_object.object else null;
+            for (vm.levels.items) |lv| {
+                if (lv.id == id) return lv.obj;
+            }
+            return null;
+        },
+        else => return null,
     }
 }
+
+/// `loadClip(url, target)`. The URL must be a genuine string — a Number
+/// or an object is rejected outright rather than coerced.
+fn mclLoadClip(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (args.len < 2) return .undefined_value;
+    if (args[0] != .string) return .{ .boolean = false };
+    if (this != .object) return .{ .boolean = false };
+    const dest = try resolveClipTarget(vm, args[1], true) orelse return .{ .boolean = false };
+    spawn(vm, .{
+        .url = try strings.toUtf8(vm.arena(), args[0].string),
+        .target = .{ .movie = .{ .clip = dest, .broadcaster = this.object } },
+    });
+    return .{ .boolean = true };
+}
+
+fn mclUnloadClip(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    if (args.len == 0) return .undefined_value;
+    const dest = try resolveClipTarget(vm, args[0], false) orelse return .{ .boolean = false };
+    const h = vm.host;
+    const f = h.unload_movie orelse return .{ .boolean = false };
+    f(h.ctx orelse return .{ .boolean = false }, dest);
+    return .{ .boolean = true };
+}
+
+/// `getProgress(target)`. Both counts are the target movie's COMPRESSED
+/// length — there is no streaming here, so a load is either not started
+/// or wholly done. The returned object has no prototype, so it prints as
+/// a bare pair rather than through Object.prototype.toString.
+fn mclGetProgress(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    if (args.len == 0) return .undefined_value;
+    switch (args[0]) {
+        .string, .number, .object => {},
+        else => return .undefined_value,
+    }
+    // A non-display object is not a target at all, and unlike the other
+    // failures it yields undefined rather than an empty progress object.
+    if (args[0] == .object and stage.targetOf(vm, args[0].object) == null) return .undefined_value;
+    const out = try vm.objects.create();
+    const dest = try resolveClipTarget(vm, args[0], false);
+    var loaded: Value = .undefined_value;
+    if (dest) |h| {
+        const host = vm.host;
+        if (host.movie_bytes) |f| {
+            loaded = .{ .number = @floatFromInt(f(host.ctx.?, h)) };
+        }
+    }
+    try vm.objects.putWithAttrs(out, S("bytesLoaded"), loaded, .{}, false);
+    try vm.objects.putWithAttrs(out, S("bytesTotal"), loaded, .{}, false);
+    return .{ .object = out };
+}
+
+/// A fresh MovieClipLoader listens to ITSELF: the constructor seeds
+/// `_listeners` with `this`, so assigning `loader.onLoadInit` is enough.
+fn mclCtor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const list = try vm.newArray();
+    try vm.arraySet(list, 0, this);
+    try vm.setArrayLength(list, 1);
+    try vm.objects.putWithAttrs(this.object, S("_listeners"), .{ .object = list }, .{ .dont_enum = true }, false);
+    // `this`, not undefined: a NATIVE constructor's return value is what
+    // `new` yields here (runtime.zig construct), so dropping it would make
+    // every `new MovieClipLoader()` undefined.
+    return this;
+}
+
+pub fn installMovieClipLoader(vm: *Vm, proto: ObjectHandle) !void {
+    try method(vm, proto, "loadClip", mclLoadClip, hidden);
+    try method(vm, proto, "unloadClip", mclUnloadClip, hidden);
+    try method(vm, proto, "getProgress", mclGetProgress, hidden);
+}
+
+pub const movieClipLoaderCtor = mclCtor;
 
 // --- Tests -----------------------------------------------------------------
 

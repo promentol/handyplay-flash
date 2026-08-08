@@ -124,6 +124,8 @@ pub const Player = struct {
     /// unloadmovienum, where the loaded level traces before the parent's
     /// next frame). Level 0 is `root` and is not in here.
     levels: std.ArrayList(*display.display_object.DisplayObject) = .empty,
+    /// Loads whose `onLoadInit` is still owed — see `fireLoadInits`.
+    pending_init: std.ArrayList(avm1.runtime.FetchRequest.Movie) = .empty,
 
     /// Safety valve: max timeline frames advanced per tick call.
     const MAX_FRAMES_PER_TICK = 5;
@@ -281,6 +283,7 @@ pub const Player = struct {
             gpa.destroy(f);
         }
         self.pending_loads.deinit(gpa);
+        self.pending_init.deinit(gpa);
         for (self.levels.items) |lv| {
             lv.deinit(gpa);
             gpa.destroy(lv);
@@ -367,8 +370,21 @@ pub const Player = struct {
     fn completeMovieLoad(self: *Player, target: avm1.runtime.FetchRequest.Movie, body: ?[]const u8) !void {
         const ctx = self.cur_ctx orelse return;
         const mc = avm1.stage_object.clipOfHandle(self.vm, target.clip) orelse return;
+        // A fetch that succeeded but did not bring a SWF is still a
+        // SUCCESS: ruffle sniffs the content type and substitutes an
+        // "error movie" — an empty timeline — for anything it cannot
+        // recognise. Only a fetch FAILURE reaches `onLoadError`
+        // (corpus mcl_loadclip loads invalid.txt and hears the full
+        // success sequence).
+        const bytes = body orelse {
+            try mc.unloadContents(ctx);
+            self.vm.objects.clearDeletable(target.clip);
+            mc.replaceWithMovie(null);
+            try avm1.loader.movieLoadEvents(self.vm, target, null);
+            return;
+        };
         const loaded: ?*swf.movie.Movie = blk: {
-            const bytes = body orelse break :blk null;
+            if (!isSwf(bytes)) break :blk null;
             const m = try self.gpa.create(swf.movie.Movie);
             m.* = swf.movie.load(self.gpa, bytes) catch {
                 self.gpa.destroy(m);
@@ -382,7 +398,78 @@ pub const Player = struct {
         try mc.unloadContents(ctx);
         self.vm.objects.clearDeletable(target.clip);
         mc.replaceWithMovie(loaded);
-        try avm1.loader.movieLoadEvents(self.vm, target, loaded != null);
+        // An image becomes the clip's only child, at depth 1. Unrecognised
+        // bytes leave the clip empty but still count as loaded.
+        const img_len: usize = if (loaded == null and try self.attachLoadedImage(ctx, mc, bytes))
+            bytes.len
+        else
+            0;
+        try avm1.loader.movieLoadEvents(
+            self.vm,
+            target,
+            if (loaded) |m| m.compressed_len else img_len,
+        );
+        // `onLoadInit` waits for the loaded movie's OWN first frame,
+        // a whole tick behind the rest of the sequence.
+        try self.pending_init.append(self.gpa, target);
+    }
+
+    /// SWF containers: uncompressed, zlib, or LZMA.
+    fn isSwf(b: []const u8) bool {
+        return b.len >= 3 and b[1] == 'W' and b[2] == 'S' and
+            (b[0] == 'F' or b[0] == 'C' or b[0] == 'Z');
+    }
+
+    /// `loadMovie` of a GIF/JPEG/PNG: Flash wraps the image in a one-frame
+    /// movie whose only content is the bitmap, placed at depth 1. Returns
+    /// false for bytes that are not an image at all.
+    fn attachLoadedImage(
+        self: *Player,
+        ctx: *display.movie_clip.Context,
+        mc: *MovieClipT,
+        bytes: []const u8,
+    ) !bool {
+        var img = (bitmap.decode.decodeStandalone(self.gpa, bytes) catch return false) orelse return false;
+        defer img.deinit(self.gpa);
+        const bd = try self.gpa.create(bitmap.data.BitmapData);
+        errdefer self.gpa.destroy(bd);
+        bd.* = try bitmap.data.BitmapData.init(self.gpa, img.width, img.height, true, 0);
+        // A file's alpha is STRAIGHT; BitmapData stores it premultiplied.
+        for (bd.data, 0..) |*px, i| {
+            const s = img.rgba[i * 4 ..][0..4];
+            px.* = bitmap.pixels.Color.fromArgb(
+                (@as(u32, s[3]) << 24) | (@as(u32, s[0]) << 16) | (@as(u32, s[1]) << 8) | s[2],
+            ).toPremultiplied(true);
+        }
+        const obj = try mc.instantiateAttachedBitmap(ctx, 1, bd, false);
+        try mc.finishInstantiate(ctx, obj, false);
+        return true;
+    }
+
+    /// Fire the `onLoadInit`s owed from the previous tick. Called after the
+    /// action drain, so the loaded movie's frame-1 trace lands first.
+    fn fireLoadInits(self: *Player) !void {
+        if (self.pending_init.items.len == 0) return;
+        const batch = try self.pending_init.toOwnedSlice(self.gpa);
+        defer self.gpa.free(batch);
+        // REVERSE order: ruffle collects the loader handles and reverses
+        // them before firing (loader.rs `movie_clip_on_load`), so the last
+        // load started is the first to report itself initialised.
+        var i = batch.len;
+        while (i > 0) {
+            i -= 1;
+            avm1.loader.movieLoadInit(self.vm, batch[i]) catch |e| self.reportUncaught(e);
+        }
+    }
+
+    /// `MovieClipLoader.getProgress`: how big the clip's movie is.
+    fn hostMovieBytes(ctx: *anyopaque, clip: u32) u32 {
+        const self: *Player = @ptrCast(@alignCast(ctx));
+        const mc = avm1.stage_object.clipOfHandle(self.vm, clip) orelse return 0;
+        if (mc.movie) |m| return m.compressed_len;
+        // A clip with no movie of its own reports the root movie's size,
+        // which is what `_level0` and an untouched timeline both are.
+        return self.movie.compressed_len;
     }
 
     /// `_levelN`, made on demand. A level is a parentless clip that ticks
@@ -513,6 +600,8 @@ pub const Player = struct {
             if (lv.kind == .clip) try lv.kind.clip.applyPendingGoto(&ctx);
         }
         try self.root.applyPendingGoto(&ctx);
+        try self.drainActions(&ctx);
+        try self.fireLoadInits();
         try self.drainActions(&ctx);
         try self.updateTimers(&ctx);
         self.root.clearRanThisTick();
@@ -902,6 +991,7 @@ pub const Player = struct {
             .navigate = hostNavigate,
             .level = hostLevel,
             .unload_movie = hostUnloadMovie,
+            .movie_bytes = hostMovieBytes,
         };
     }
 

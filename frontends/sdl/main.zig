@@ -138,11 +138,24 @@ pub fn main(init: std.process.Init) !u8 {
     }
     defer if (device_font) |d| gpa.free(d);
 
+    // Files the movie asks for (`loadMovie`, `XML.load`) come from the
+    // SWF's own directory. `core/` does no I/O, so this is the frontend's
+    // job — same seam the device font uses.
+    var files: FileServer = .{
+        .gpa = gpa,
+        .io = io,
+        .base = std.fs.path.dirname(path) orelse ".",
+        .store = .init(gpa),
+    };
+    defer files.store.deinit();
+
     const player = flash.Player.createWith(gpa, bytes, .{
         .device_font = device_font,
         .url = path,
         .epoch_ms = wallClockMs(),
         .tz_offset_min = localOffsetMinutes(),
+        .load_file = FileServer.read,
+        .load_user = @ptrCast(&files),
     }) catch |err| {
         try err_out.print("{s}: {t}\n", .{ path, err });
         try err_out.flush();
@@ -292,3 +305,32 @@ fn runWindowed(player: *flash.Player, err_out: *std.Io.Writer) !u8 {
     }
     return 0;
 }
+
+
+/// Serves whatever the movie loads, out of the SWF's own directory.
+/// Everything read stays alive for the session: a loaded SWF is parsed in
+/// place and its buffer backs every clip below it.
+const FileServer = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    base: []const u8,
+    store: std.heap.ArenaAllocator,
+
+    fn read(user: ?*anyopaque, url: []const u8) ?[]const u8 {
+        const self: *FileServer = @ptrCast(@alignCast(user orelse return null));
+        var rel = url;
+        // Flash allows a query string on a local URL; the filesystem does not.
+        if (std.mem.indexOfScalar(u8, rel, '?')) |q| rel = rel[0..q];
+        if (std.mem.indexOf(u8, rel, "://")) |_| rel = std.fs.path.basename(rel);
+        while (rel.len > 0 and rel[0] == '/') rel = rel[1..];
+        if (rel.len == 0) return null;
+        const full = std.fs.path.join(self.gpa, &.{ self.base, rel }) catch return null;
+        defer self.gpa.free(full);
+        return std.Io.Dir.cwd().readFileAlloc(
+            self.io,
+            full,
+            self.store.allocator(),
+            .limited(256 << 20),
+        ) catch null;
+    }
+};
