@@ -23,6 +23,9 @@ const movie_clip = @import("../display/movie_clip.zig");
 const drawing = @import("../display/drawing.zig");
 const library = @import("../display/library.zig");
 const text_mod = @import("../display/text.zig");
+const edit_text = @import("../display/edit_text.zig");
+const display_font = @import("../display/font.zig");
+const text_layout = @import("../display/text_layout.zig");
 
 pub const Error = std.mem.Allocator.Error || error{OutOfMemory};
 
@@ -72,6 +75,13 @@ pub const Renderer = struct {
     /// AFTER construction — `Renderer.init` runs inside the Player's own
     /// struct literal, where `&self.movie` is not yet valid.
     lib: ?*const library.Library = null,
+    /// Text layout is version-dependent (wrapping, alignment), so the
+    /// renderer needs the movie's version to rebuild a stale one.
+    swf_version: u8 = 8,
+    /// The DISPLAY allocator, not the movie arena: a field's layout is
+    /// owned by the field and freed when it is, so it must come from the
+    /// same place everything else the field owns does.
+    display_gpa: ?std.mem.Allocator = null,
 
     pub fn init(movie_arena: std.mem.Allocator) Renderer {
         return .{ .arena = movie_arena };
@@ -147,7 +157,8 @@ pub const Renderer = struct {
                 // else — the hit records are invisible by definition.
                 .button => |b| try self.renderClip(ctx, &b.container, t, cx),
                 .text => |txt| try self.renderText(ctx, txt, t, cx),
-                .morph_shape, .edit_text, .bitmap => {}, // M4/M7
+                .edit_text => |et| try self.renderEditText(ctx, et, t, cx),
+                .morph_shape, .bitmap => {}, // M7
             }
         }
     }
@@ -185,6 +196,165 @@ pub const Renderer = struct {
                 base.concat(g.matrix),
                 concatCxform(cx, text_mod.colorAsMult(g.color)),
             );
+        }
+    }
+
+    /// A text field: its background and border first, then the laid-out
+    /// glyphs, each placed by the line it belongs to.
+    ///
+    /// The layout origin is the inside of the GUTTER, and the box's own
+    /// `bounds.xmin/ymin` shift it again — a tag's field is not anchored
+    /// at its placement matrix.
+    fn renderEditText(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        et: *edit_text.EditText,
+        parent_t: Transform,
+        cx: swf.reader.ColorTransform,
+    ) Error!void {
+        const lib = self.lib orelse return;
+        const gpa = self.display_gpa orelse return;
+        et.ensureLayout(gpa, lib, self.swf_version) catch return;
+        et.applyAutosizeBounds();
+
+        if (et.background or et.border) try self.drawFieldBox(ctx, et, parent_t, cx);
+
+        const gutter: f32 = @floatFromInt(edit_text.GUTTER);
+        const ox: f32 = @as(f32, @floatFromInt(et.bounds.xmin)) + gutter;
+        const oy: f32 = @as(f32, @floatFromInt(et.bounds.ymin)) + gutter;
+        // Scrolling moves the text, not the box.
+        const scroll_y: f32 = if (et.scroll >= 1 and et.scroll - 1 < et.layout.lines.len)
+            @floatFromInt(et.layout.lines[et.scroll - 1].bounds.y)
+        else
+            0;
+        const scroll_x: f32 = @floatCast(et.hscroll * @as(f64, swf.reader.TWIPS_PER_PX));
+
+        for (et.layout.lines) |line| {
+            for (line.boxes) |b| {
+                if (b.font.swf_font == null) continue;
+                const params: display_font.Params = .{
+                    .height = b.size,
+                    .letter_spacing = b.letter_spacing,
+                    .kerning = b.kerning,
+                };
+                // Boxes are positioned by their TOP; a glyph sits on the
+                // baseline, which is one ascent down from it.
+                const baseline: f32 = @floatFromInt(b.bounds.y + b.font.ascent(b.size));
+                const bx: f32 = @floatFromInt(b.bounds.x);
+                var painter: GlyphPainter = .{
+                    .r = self,
+                    .ctx = ctx,
+                    .base = parent_t,
+                    .cx = concatCxform(cx, text_mod.colorAsMult(rgbToSwf(b.color))),
+                    .font_id = b.font.swf_font.?.id,
+                    .origin_x = ox + bx - scroll_x,
+                    .origin_y = oy + baseline - scroll_y,
+                };
+                const glyph_text = if (b.is_bullet) &BULLET else self.fieldText(et, b);
+                _ = b.font.evaluate(glyph_text, params, &painter) catch {};
+                if (painter.err) |e| return e;
+            }
+        }
+    }
+
+    const BULLET = [_]u16{0x2022};
+
+    fn fieldText(self: *Renderer, et: *const edit_text.EditText, b: text_layout.Box) []const u16 {
+        _ = self;
+        const t = et.text.items;
+        const end = @min(b.end, t.len);
+        const start = @min(b.start, end);
+        return t[start..end];
+    }
+
+    /// One glyph at a time, each scaled from EM units and translated to
+    /// its pen position.
+    const GlyphPainter = struct {
+        r: *Renderer,
+        ctx: *simdra.SmCanvas,
+        base: Transform,
+        cx: swf.reader.ColorTransform,
+        font_id: u16,
+        origin_x: f32,
+        origin_y: f32,
+        err: ?Error = null,
+
+        pub fn glyph(self: *GlyphPainter, p: display_font.Placed) !void {
+            const g = p.glyph orelse return;
+            if (self.err != null) return;
+            const m: swf.reader.Matrix = .{
+                .a = p.scale,
+                .b = 0,
+                .c = 0,
+                .d = p.scale,
+                .tx = @intFromFloat(self.origin_x + @as(f32, @floatFromInt(p.x))),
+                .ty = @intFromFloat(self.origin_y),
+            };
+            const idx = self.r.glyphIndexOf(self.font_id, g);
+            const paths = self.r.distilledGlyph(self.font_id, idx, g) catch |e| {
+                self.err = e;
+                return;
+            };
+            self.r.drawPaths(self.ctx, paths, self.base.concat(m), self.cx) catch |e| {
+                self.err = e;
+            };
+        }
+    };
+
+    /// The cache is keyed by INDEX, and a resolved glyph is a pointer into
+    /// the font's array, so the index is a subtraction.
+    fn glyphIndexOf(self: *Renderer, font_id: u16, g: *const swf.font_text.Glyph) u32 {
+        const lib = self.lib orelse return 0;
+        const f = lib.getFont(font_id) orelse return 0;
+        const base = @intFromPtr(f.glyphs.ptr);
+        const here = @intFromPtr(g);
+        if (here < base) return 0;
+        return @intCast((here - base) / @sizeOf(swf.font_text.Glyph));
+    }
+
+    /// Script colours are 0xRRGGBB; the engine packs ABGR.
+    fn rgbToSwf(rgb: u32) u32 {
+        return edit_text.swfFromRgb(rgb, 255);
+    }
+
+    /// The field's box: a filled background and/or a one-pixel border,
+    /// both drawn in the field's OWN space.
+    fn drawFieldBox(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        et: *const edit_text.EditText,
+        t: Transform,
+        cx: swf.reader.ColorTransform,
+    ) Error!void {
+        _ = self;
+        // The corners go through the WHOLE transform, in twips, and only
+        // then down to pixels — a rotated field's box is a quad.
+        const x0: f64 = @floatFromInt(et.bounds.xmin);
+        const y0: f64 = @floatFromInt(et.bounds.ymin);
+        const x1: f64 = @floatFromInt(et.bounds.xmax);
+        const y1: f64 = @floatFromInt(et.bounds.ymax);
+        const corners = [4][2]f64{ .{ x0, y0 }, .{ x1, y0 }, .{ x1, y1 }, .{ x0, y1 } };
+        var pts: [4][2]f32 = undefined;
+        for (corners, 0..) |c, i| {
+            const p = t.apply(c[0], c[1]);
+            pts[i] = .{ @floatCast(p[0]), @floatCast(p[1]) };
+        }
+        if (et.background) {
+            ctx.beginPath();
+            ctx.moveTo(pts[0][0], pts[0][1]);
+            for (pts[1..]) |p| ctx.lineTo(p[0], p[1]);
+            ctx.closePath();
+            setSolid(ctx, et.background_color, cx, true);
+            ctx.fill(.nonzero);
+        }
+        if (et.border) {
+            ctx.beginPath();
+            ctx.moveTo(pts[0][0], pts[0][1]);
+            for (pts[1..]) |p| ctx.lineTo(p[0], p[1]);
+            ctx.closePath();
+            setSolid(ctx, et.border_color, cx, false);
+            ctx.setLineWidth(1);
+            ctx.stroke();
         }
     }
 
@@ -286,6 +456,29 @@ fn buildPath(ctx: *simdra.SmCanvas, commands: []const shape_utils.DrawCommand) v
 }
 
 const GRADIENT_HALF: f64 = 16384.0; // gradient square is ±16384 twips
+
+/// A flat colour through the current colour transform. `Color` is packed
+/// ABGR, and the canvas wants the four channels apart.
+fn setSolid(ctx: *simdra.SmCanvas, c: u32, cx: swf.reader.ColorTransform, fill: bool) void {
+    const ch = [4]u8{
+        @truncate(c & 0xFF),
+        @truncate((c >> 8) & 0xFF),
+        @truncate((c >> 16) & 0xFF),
+        @truncate((c >> 24) & 0xFF),
+    };
+    var out: [4]u8 = undefined;
+    for (ch, 0..) |v, i| {
+        const m = @as(i32, cx.mult[i]);
+        const a = @as(i32, cx.add[i]);
+        const n = @divTrunc(@as(i32, v) * m, 256) + a;
+        out[i] = @intCast(std.math.clamp(n, 0, 255));
+    }
+    if (fill) {
+        ctx.setFillStyle(out[0], out[1], out[2], out[3]);
+    } else {
+        ctx.setStrokeStyle(out[0], out[1], out[2], out[3]);
+    }
+}
 
 fn applyFillStyle(
     ctx: *simdra.SmCanvas,
