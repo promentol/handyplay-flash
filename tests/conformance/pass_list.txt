@@ -234,6 +234,7 @@ goto_rewind1
 goto_rewind2
 greaterthan_swf5
 greaterthan_swf8
+has_own_property
 hittest_lockroot
 hittest_winding_rule
 infinite_recursion_virtual_property
@@ -396,8 +397,11 @@ super_edge_cases
 swf4_bool
 swf4_function_calls
 swf5_encoding
+swf5_global_funcs
+swf6_global_funcs
 swf6_string_as_bool
 swf7_case_sensitive
+swf7_global_funcs
 tab_ordering_automatic_basic
 tab_ordering_automatic_order_grid
 tab_ordering_automatic_order_same_position

@@ -368,7 +368,18 @@ fn ctorFunction(p: *anyopaque, this: Value, args: []const Value) anyerror!Value 
 fn objHasOwnProperty(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .{ .boolean = false };
-    const name = try vm.toStringValue(arg(args, 0));
+    // NO argument is false; an explicit `undefined` is the string
+    // "undefined" and may well be a real key.
+    if (args.len == 0) return .{ .boolean = false };
+    const name = try vm.toStringValue(args[0]);
+    // `__proto__` is a real entry in ruffle's property map rather than a
+    // synthesized accessor, so an object that HAS a prototype owns the
+    // property too (corpus has_own_property).
+    const is_proto = if (vm.case_sensitive)
+        strings.eql(name, S("__proto__"))
+    else
+        strings.eqlIgnoreCase(name, S("__proto__"));
+    if (is_proto and vm.objects.get(this.object).proto == .object) return .{ .boolean = true };
     return .{ .boolean = vm.objects.hasOwn(this.object, name, vm.case_sensitive) };
 }
 
@@ -1412,6 +1423,10 @@ fn ctorBoolean(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
         vm.objects.get(this.object).native = .{ .boxed_bool = b };
         return this;
     }
+    // As a FUNCTION with no argument at all, `Boolean()` is undefined —
+    // not `false`, which is what coercing the missing argument would give
+    // (ruffle boolean.rs boolean_function).
+    if (args.len == 0) return .undefined_value;
     return .{ .boolean = b };
 }
 
@@ -1630,7 +1645,11 @@ fn mathRandom(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 fn globalIsNan(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
     const vm = vmOf(p);
-    return .{ .boolean = std.math.isNan(try vm.toNumber(arg(args, 0))) };
+    // No argument at all is TRUE outright, not the coercion of undefined
+    // — which below SWF7 would be zero, and a number. The mirror image of
+    // `isFinite`'s bare-false (ruffle globals.rs is_nan/is_finite).
+    if (args.len == 0) return .{ .boolean = true };
+    return .{ .boolean = std.math.isNan(try vm.toNumber(args[0])) };
 }
 
 fn globalIsFinite(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
