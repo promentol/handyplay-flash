@@ -12,9 +12,45 @@ pub const AvmString = []const u16;
 /// (Shift-JIS best-effort is a recorded follow-up, R6).
 pub fn fromSwf(a: std.mem.Allocator, bytes: []const u8, swf_version: u8) ![]const u16 {
     if (swf_version >= 6) {
-        return std.unicode.utf8ToUtf16LeAlloc(a, bytes) catch latin1(a, bytes);
+        return decodeUtf8(a, bytes) catch latin1(a, bytes);
     }
     return latin1(a, bytes);
+}
+
+/// UTF-8, but ACCEPTING the surrogate encodings a strict decoder rejects.
+/// Flash's compilers emit CESU-8 — a character above the BMP written as
+/// its two surrogate halves, three bytes each — and a strict pass would
+/// throw the whole string back to Latin-1, turning four units into six
+/// and comparing wrong (corpus string_relational_compare).
+fn decodeUtf8(a: std.mem.Allocator, bytes: []const u8) ![]const u16 {
+    var out: std.ArrayList(u16) = .empty;
+    errdefer out.deinit(a);
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const len = std.unicode.utf8ByteSequenceLength(bytes[i]) catch return error.InvalidUtf8;
+        if (i + len > bytes.len) return error.InvalidUtf8;
+        const seq = bytes[i .. i + len];
+        i += len;
+        // A surrogate half: ED A0..BF 80..BF, which `utf8Decode` refuses.
+        if (len == 3 and seq[0] == 0xED and seq[1] >= 0xA0 and seq[1] <= 0xBF and
+            seq[2] >= 0x80 and seq[2] <= 0xBF)
+        {
+            const unit: u16 = 0xD000 |
+                (@as(u16, seq[1] & 0x3F) << 6) |
+                @as(u16, seq[2] & 0x3F);
+            try out.append(a, unit);
+            continue;
+        }
+        const cp = std.unicode.utf8Decode(seq) catch return error.InvalidUtf8;
+        if (cp < 0x10000) {
+            try out.append(a, @intCast(cp));
+        } else {
+            const v = cp - 0x10000;
+            try out.append(a, @intCast(0xD800 + (v >> 10)));
+            try out.append(a, @intCast(0xDC00 + (v & 0x3FF)));
+        }
+    }
+    return out.toOwnedSlice(a);
 }
 
 fn latin1(a: std.mem.Allocator, bytes: []const u8) ![]const u16 {
@@ -62,12 +98,35 @@ pub fn concat(a: std.mem.Allocator, x: AvmString, y: AvmString) ![]const u16 {
 }
 
 /// Code-unit-ordered comparison (ES3 §11.8.5 for strings).
+/// Ordering is by CODE POINT, not code unit. The two differ only when a
+/// surrogate pair meets a BMP character above U+E000 — "\uFF61" sorts
+/// BELOW "\uD800\uDC02" because U+FF61 is below U+10002, though the raw
+/// units say the opposite (corpus string_relational_compare).
 pub fn order(x: AvmString, y: AvmString) std.math.Order {
-    const n = @min(x.len, y.len);
-    for (x[0..n], y[0..n]) |cx, cy| {
+    var i: usize = 0;
+    var j: usize = 0;
+    while (i < x.len and j < y.len) {
+        const cx = codePointAt(x, &i);
+        const cy = codePointAt(y, &j);
         if (cx != cy) return if (cx < cy) .lt else .gt;
     }
-    return std.math.order(x.len, y.len);
+    return std.math.order(x.len - i, y.len - j);
+}
+
+/// The code point at `i`, advancing past the whole surrogate pair. A LONE
+/// surrogate is its own value — Flash keeps unpaired halves and so must
+/// any comparison over them.
+fn codePointAt(s: AvmString, i: *usize) u32 {
+    const hi = s[i.*];
+    if (hi >= 0xD800 and hi <= 0xDBFF and i.* + 1 < s.len) {
+        const lo = s[i.* + 1];
+        if (lo >= 0xDC00 and lo <= 0xDFFF) {
+            i.* += 2;
+            return 0x10000 + ((@as(u32, hi) - 0xD800) << 10) + (@as(u32, lo) - 0xDC00);
+        }
+    }
+    i.* += 1;
+    return hi;
 }
 
 // --- Tests -----------------------------------------------------------------

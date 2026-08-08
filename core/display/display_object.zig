@@ -95,6 +95,17 @@ pub const DisplayObject = struct {
     /// carry the same flag on their MovieClip; buttons and text fields
     /// need it here or a removed one keeps reading as a live object.
     removed: bool = false,
+    /// This object was UNLINKED from its parent, so it no longer has a
+    /// path and stringifies empty.
+    ///
+    /// Flash re-resolves a clip reference by walking DOWN from the level
+    /// by name and answers "" when the walk fails. We unlink immediately
+    /// where Flash defers to the end of the tick, so a descendant of a
+    /// removed subtree would resolve there and not here — hence the flag
+    /// sits only on the object that was actually removed, and its
+    /// children keep reporting their paths through their own `onUnload`
+    /// (corpus string_paths_basic vs string_paths_unload).
+    path_lost: bool = false,
 
     // Decomposed transform cache — valid only while `sr_cached`.
     // Scales are PERCENT (100 = 1.0), stored exactly as ActionScript set

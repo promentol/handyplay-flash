@@ -900,6 +900,7 @@ fn retire(ctx: *Context, obj: *DisplayObject) Error!void {
     // drain's removed-clip filter (they carry `on_removed`).
     try dispatchUnload(ctx, obj);
     markRemoved(obj);
+    obj.path_lost = true;
     try ctx.graveyard.append(ctx.gpa, obj);
 }
 

@@ -551,14 +551,21 @@ fn dotPathOfClip(vm: *Vm, clip: *MovieClip) std.mem.Allocator.Error![]const u16 
 
 /// `dotPath` for callers that only hold the opaque `NativeInfo.clip`
 /// pointer — runtime.zig must not name display types.
+///
+/// A clip that has been REMOVED has no path: it reports the empty string
+/// from the moment `removeMovieClip` runs, not from the end of the tick
+/// when its object is finally cut loose (corpus string_paths_basic).
 pub fn dotPathOf(vm: *Vm, clip: *anyopaque) std.mem.Allocator.Error![]const u16 {
-    return dotPathOfClip(vm, @ptrCast(@alignCast(clip)));
+    const mc: *MovieClip = @ptrCast(@alignCast(clip));
+    if (mc.placement) |pl| if (pl.path_lost) return S("");
+    return dotPathOfClip(vm, mc);
 }
 
 /// Same, for the non-clip scriptable kinds (buttons, text fields) whose
 /// AVM1 object holds the DisplayObject directly.
 pub fn dotPathOfDisplay(vm: *Vm, obj: *anyopaque) std.mem.Allocator.Error![]const u16 {
     const d: *DisplayObject = @ptrCast(@alignCast(obj));
+    if (d.path_lost) return S("");
     return dotPath(vm, .{ .obj = d, .clip = null });
 }
 

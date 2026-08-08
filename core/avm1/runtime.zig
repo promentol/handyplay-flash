@@ -498,6 +498,10 @@ pub const Vm = struct {
                 switch (self.objects.get(h).native) {
                     .clip => |c| return @import("stage_object.zig").dotPathOf(self, c),
                     .display => |d| return @import("stage_object.zig").dotPathOfDisplay(self, d),
+                    // A clip that has been REMOVED has no path left to
+                    // report, and stringifies EMPTY rather than falling
+                    // through to a prototype `toString`.
+                    .removed_display => return S(""),
                     // A String object never has toString() called on it.
                     .boxed_string => |s| return s,
                     else => {},
@@ -1082,15 +1086,20 @@ pub const Vm = struct {
             if (next_reg < registers.len) registers[next_reg] = self.root_object;
             next_reg += 1;
         }
+        // An ABSENT `_parent` does not take a register — it is skipped
+        // outright and `_global` moves up into the slot. Flash's own bug,
+        // and the corpus reads the shifted registers back
+        // (define_function2_preload).
         if (preload and fl.preload_parent) {
-            if (next_reg < registers.len) {
-                const stage = @import("stage_object.zig");
-                registers[next_reg] = if (this == .object)
-                    try stage.parentOf(self, this.object)
-                else
-                    .undefined_value;
+            const stage = @import("stage_object.zig");
+            const parent: Value = if (this == .object)
+                try stage.parentOf(self, this.object)
+            else
+                .undefined_value;
+            if (parent != .undefined_value) {
+                if (next_reg < registers.len) registers[next_reg] = parent;
+                next_reg += 1;
             }
-            next_reg += 1;
         }
         if (preload and fl.preload_global) {
             if (next_reg < registers.len) registers[next_reg] = .{ .object = self.globals };
