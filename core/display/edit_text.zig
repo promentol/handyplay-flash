@@ -23,6 +23,17 @@ pub const AutoSize = enum { none, left, center, right };
 /// `gridFitType`. Purely reported today — nothing rasterises differently.
 pub const GridFit = enum { none, pixel, subpixel };
 
+/// The engine packs a colour ABGR (red in the low byte, matching the
+/// order RGBA arrives in on the wire); script reads and writes 0xRRGGBB.
+/// Every colour crossing the AVM1 boundary goes through these two.
+pub fn rgbFromSwf(c: u32) u32 {
+    return ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF);
+}
+
+pub fn swfFromRgb(rgb: u32, alpha: u8) u32 {
+    return (@as(u32, alpha) << 24) | ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF);
+}
+
 /// Immutable padding on all four sides of every text field, and it is
 /// OBSERVABLE: two pixels of it turn up in `textWidth` vs `_width`, in
 /// `getTextExtent`, and in where the first glyph sits (ruffle
@@ -135,10 +146,10 @@ pub const EditText = struct {
                 px(def.height)
             else
                 12.0,
-            // ALPHA IS DROPPED: script sees the colour as pure RGB, and
+            // ALPHA IS DROPPED and the channels are put in SCRIPT order:
             // `getTextFormat().color` on a fresh black field is 0, not
             // 0xFF000000 (ruffle `Color::from_rgb(c.to_rgb(), 0)`).
-            .color = def.color & 0x00FF_FFFF,
+            .color = rgbFromSwf(def.color),
             .text_align = if (html_forces_left) .left else switch (def.align_h) {
                 .left => .left,
                 .center => .center,

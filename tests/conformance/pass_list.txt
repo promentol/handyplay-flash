@@ -159,6 +159,7 @@ mouse_wheel_enabled
 movieclip_begin_gradient_fill
 movieclip_create_text_field
 movieclip_default_state
+movieclip_focusenabled
 movieclip_get_instance_at_depth
 movieclip_getbounds
 movieclip_gettextsnapshot
@@ -231,9 +232,11 @@ tab_ordering_children
 tab_ordering_custom_basic
 tab_ordering_custom_duplicate_index
 tab_ordering_custom_i32_vs_u32
+tab_ordering_custom_m1
 tab_ordering_events
 tab_ordering_events_mouse
 tab_ordering_movieclip_enabled_default
+tab_ordering_properties
 tab_ordering_reverse
 tab_ordering_tabbable
 target_clip_removed

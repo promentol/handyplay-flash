@@ -71,7 +71,7 @@ pub fn install(vm: *Vm) !void {
     try prop(vm, proto, "borderColor", getBorderColor, setBorderColor);
     try prop(vm, proto, "backgroundColor", getBackgroundColor, setBackgroundColor);
     try prop(vm, proto, "textColor", getTextColor, setTextColor);
-    try prop(vm, proto, "tabIndex", mc_globals.getTabIndex, setTabIndex);
+    try prop(vm, proto, "tabIndex", getTabIndex, setTabIndex);
     try prop(vm, proto, "autoSize", getAutoSize, setAutoSize);
     try prop(vm, proto, "text", getText, setText);
     try prop(vm, proto, "type", getType, setType);
@@ -268,8 +268,8 @@ fn setType(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 
 /// The colour members all read as RGB and write with a FIXED alpha —
 /// 255 for the box colours, 0 for the text (ruffle `Color::from_rgb`).
-fn rgbOf(argb: u32) f64 {
-    return @floatFromInt(argb & 0x00FF_FFFF);
+fn rgbOf(swf_color: u32) f64 {
+    return @floatFromInt(edit_text_mod.rgbFromSwf(swf_color));
 }
 
 fn getBorderColor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -282,7 +282,7 @@ fn getBorderColor(p: *anyopaque, this: Value, args: []const Value) anyerror!Valu
 fn setBorderColor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const et = etOf(vm, this) orelse return .undefined_value;
-    et.border_color = 0xFF00_0000 | try toU32(vm, arg(args, 0));
+    et.border_color = edit_text_mod.swfFromRgb(try toU32(vm, arg(args, 0)), 255);
     return .undefined_value;
 }
 
@@ -296,7 +296,7 @@ fn getBackgroundColor(p: *anyopaque, this: Value, args: []const Value) anyerror!
 fn setBackgroundColor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const et = etOf(vm, this) orelse return .undefined_value;
-    et.background_color = 0xFF00_0000 | try toU32(vm, arg(args, 0));
+    et.background_color = edit_text_mod.swfFromRgb(try toU32(vm, arg(args, 0)), 255);
     return .undefined_value;
 }
 
@@ -307,7 +307,7 @@ fn getTextColor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value 
     const vm = vmOf(p);
     const et = etOf(vm, this) orelse return .undefined_value;
     const c = et.default_format.color orelse return .undefined_value;
-    return .{ .number = rgbOf(c) };
+    return .{ .number = @floatFromInt(c & 0x00FF_FFFF) };
 }
 
 fn setTextColor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -512,8 +512,16 @@ fn setRestrict(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return .undefined_value;
 }
 
-/// A field's `tabIndex` is stored as a u32 where a clip's is an i32. That
-/// is a coercion difference only: `coerce_to_u32` then reinterpret.
+/// A field's `tabIndex` is a u32 where a clip's is an i32 — the same
+/// stored value, reported unsigned. -4 reads back as 4294967292.
+fn getTabIndex(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    const idx = t.obj.tab_index orelse return .undefined_value;
+    return .{ .number = @floatFromInt(@as(u32, @bitCast(idx))) };
+}
+
 fn setTabIndex(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
@@ -522,7 +530,10 @@ fn setTabIndex(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
         t.obj.tab_index = null;
         return .undefined_value;
     }
-    t.obj.tab_index = try toI32(vm, v);
+    // -1 is the spelling of "unset" whatever the object (ruffle
+    // `set_tab_index`), so it never survives as a value.
+    const n = try toI32(vm, v);
+    t.obj.tab_index = if (n == -1) null else n;
     return .undefined_value;
 }
 

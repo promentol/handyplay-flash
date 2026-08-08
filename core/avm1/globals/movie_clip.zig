@@ -83,7 +83,6 @@ pub fn install(vm: *Vm) !void {
     // no-op setter would. Only the ones with real state below get accessors.
     try decl.value(vm, proto, "enabled", .{ .boolean = true }, hidden);
     try decl.value(vm, proto, "useHandCursor", .{ .boolean = true }, hidden);
-    try decl.value(vm, proto, "focusEnabled", .undefined_value, ver(hidden, decl.V6));
     try decl.value(vm, proto, "tabEnabled", .undefined_value, ver(hidden, decl.V6));
     try decl.property(vm, proto, "tabIndex", getTabIndex, setTabIndex, ver(hidden, decl.V6));
     try decl.value(vm, proto, "tabChildren", .undefined_value, ver(hidden, decl.V6));
