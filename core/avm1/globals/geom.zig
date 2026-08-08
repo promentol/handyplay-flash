@@ -51,6 +51,7 @@ pub fn install(vm: *Vm) !void {
     // functions do not exist until singletons.zig has run — so the
     // namespace is made here and filled from there.
     vm.flash_net = try decl.subObject(vm, flash, "net", .{});
+    try @import("external.zig").install(vm, flash);
     const geom = try decl.subObject(vm, flash, "geom", .{});
 
     vm.point_proto = try protoUnder(vm, geom, "Point", ctorPoint);

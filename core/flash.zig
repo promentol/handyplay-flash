@@ -1972,6 +1972,7 @@ test {
     _ = @import("avm1/globals/loader.zig");
     _ = @import("avm1/globals/socket.zig");
     _ = @import("avm1/globals/file_reference.zig");
+    _ = @import("avm1/globals/external.zig");
     _ = @import("avm1/text_binding.zig");
     _ = @import("bitmap/pixels.zig");
     _ = @import("bitmap/data.zig");
