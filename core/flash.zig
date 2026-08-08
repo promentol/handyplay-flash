@@ -872,6 +872,11 @@ pub const Player = struct {
                     events[n] = .{ .obj = over, .ev = .press };
                     n += 1;
                     self.pressed = over;
+                } else {
+                    // A press on NOTHING still moves the focus: it goes
+                    // to the stage, which cannot hold it, so a focused
+                    // text field loses it.
+                    try avm1.stage_object.focusByMousePress(self.vm, null);
                 }
             } else {
                 const down = self.pressed;

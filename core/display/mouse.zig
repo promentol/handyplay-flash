@@ -143,6 +143,14 @@ pub fn pick(
             }
             return null;
         },
+        // A SELECTABLE field is pickable through its whole box — that is
+        // how a click lands the caret. A dynamic, non-selectable one is
+        // invisible to the mouse, which is why it neither takes focus nor
+        // blocks what is behind it (ruffle `mouse_pick_avm1`).
+        .edit_text => |et| {
+            if (!et.selectable) return null;
+            return if (containsPoint(obj, world, point)) obj else null;
+        },
         else => return null,
     }
 }

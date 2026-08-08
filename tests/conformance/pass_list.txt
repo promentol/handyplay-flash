@@ -123,6 +123,9 @@ execution_order3
 export_assets
 extends_chain
 extends_native_type
+focus_mouse
+focus_mouse_focusable
+focus_mouse_rollout
 focus_remove
 focus_root_movie
 focus_visibility_change
