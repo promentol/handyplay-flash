@@ -128,6 +128,7 @@ execution_order3
 export_assets
 extends_chain
 extends_native_type
+focus_keyboard_press
 focus_mouse
 focus_mouse_focusable
 focus_mouse_rollout

@@ -1058,7 +1058,7 @@ pub const Player = struct {
     /// releases it, without waiting for the key to come up (ruffle
     /// player.rs:1340-1357).
     fn activateFocus(self: *Player) !void {
-        if (self.vm.focus == 0 or !self.vm.focus_highlight) return;
+        if (!avm1.stage_object.highlightVisible(self.vm)) return;
         const t = avm1.stage_object.targetOf(self.vm, self.vm.focus) orelse return;
         var ctx = self.makeContext();
         defer ctx.deinit(self.gpa);

@@ -1427,6 +1427,23 @@ fn selectAllOnFocus(vm: *Vm, new: ObjectHandle, cause: FocusCause) void {
     et.setSelection(.{ .from = 0, .to = et.text.items.len });
 }
 
+/// Is the focus highlight actually SHOWING? Being active is not enough:
+/// `_focusrect` (the object's own from SWF6, the stage's otherwise) can
+/// leave it active-but-hidden, and the keyboard's press simulation needs
+/// the VISIBLE state, not the active one (ruffle `calculate_highlight` /
+/// `is_highlight_enabled`).
+///
+/// A text field cannot render a highlight at all, so it is never visible.
+pub fn highlightVisible(vm: *Vm) bool {
+    if (!vm.focus_highlight or vm.focus == 0) return false;
+    const t = targetOf(vm, vm.focus) orelse return false;
+    if (t.obj.kind == .edit_text) return false;
+    if (vm.swf_version >= 6) {
+        if (t.obj.focus_rect) |b| return b;
+    }
+    return vm.stage_focus_rect;
+}
+
 /// The field that currently has the focus, or null.
 pub fn focusedField(vm: *Vm) ?*@import("../display/edit_text.zig").EditText {
     if (vm.focus == 0) return null;
