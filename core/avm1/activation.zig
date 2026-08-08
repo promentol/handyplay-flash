@@ -925,29 +925,52 @@ pub const Activation = struct {
                 const s = try self.popString();
                 try self.push(.{ .number = @floatFromInt(s.len) });
             },
+            // SWF4 `substring`. Both arguments WRAP into an i32 first,
+            // so 4294967303 is 7 — and the index is 1-BASED. A negative
+            // length, or one that would run past the end, takes the rest
+            // of the string.
             .string_extract, .mb_string_extract => {
-                const count = try self.popNumber();
-                const index = try self.popNumber();
+                const count = value_mod.toInt32(try self.popNumber());
+                const index = value_mod.toInt32(try self.popNumber());
                 const s = try self.popString();
-                // 1-based start; out-of-range clamps to empty.
-                const start_i: i64 = @intFromFloat(@max(1, index));
-                const start: usize = @intCast(@min(@as(i64, @intCast(s.len)) + 1, start_i));
-                const avail = s.len + 1 - start;
-                const cnt: usize = if (std.math.isNan(count) or count < 0)
-                    avail
-                else
-                    @min(avail, @as(usize, @intFromFloat(count)));
-                try self.push(.{ .string = s[start - 1 ..][0..cnt] });
+                const start: usize = if (index >= 1) @intCast(index - 1) else 0;
+                if (start >= s.len) {
+                    try self.push(.{ .string = S("") });
+                } else {
+                    var end: usize = s.len;
+                    if (count >= 0) {
+                        const want = start + @as(usize, @intCast(count));
+                        if (want <= s.len) end = want;
+                    }
+                    try self.push(.{ .string = s[@min(start, end)..end] });
+                }
             },
+            // `ord`/`mbord` read one UTF-16 CODE UNIT, and a unit that
+            // is half a surrogate pair is not a character — it reports
+            // U+FFFD rather than the raw unit, so `ord("😋")` is 65533.
             .char_to_ascii, .mb_char_to_ascii => {
                 const s = try self.popString();
-                try self.push(.{ .number = if (s.len > 0) @floatFromInt(s[0]) else 0 });
+                const unit: u16 = if (s.len > 0) s[0] else 0;
+                const code: u16 = if (unit >= 0xD800 and unit <= 0xDFFF) 0xFFFD else unit;
+                try self.push(.{ .number = @floatFromInt(code) });
             },
+            // `chr`/`mbchr` on ZERO give the EMPTY string, not a NUL
+            // character; a code unit that is half a surrogate pair is
+            // not a character and becomes U+FFFD (SWF6 and up — below
+            // that the unit is a byte and passes through).
             .ascii_to_char, .mb_ascii_to_char => {
                 const n = try self.popNumber();
-                const out = try self.vm.arena().alloc(u16, 1);
-                out[0] = value_mod.toUint16(n);
-                try self.push(.{ .string = out });
+                const unit = value_mod.toUint16(n);
+                if (unit == 0) {
+                    try self.push(.{ .string = S("") });
+                } else {
+                    const out = try self.vm.arena().alloc(u16, 1);
+                    out[0] = if (self.vm.swf_version >= 6 and unit >= 0xD800 and unit <= 0xDFFF)
+                        0xFFFD
+                    else
+                        unit;
+                    try self.push(.{ .string = out });
+                }
             },
 
             // --- stack ----------------------------------------------------

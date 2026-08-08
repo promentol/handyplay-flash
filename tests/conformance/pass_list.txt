@@ -330,6 +330,7 @@ string_coercion
 string_methods
 string_methods_negative_args
 string_methods_swfv5
+string_ops_swf6
 string_paths_basic
 string_paths_eval
 string_paths_hidden
