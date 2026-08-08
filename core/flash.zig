@@ -1232,11 +1232,9 @@ pub const Player = struct {
             .tx = -@as(f64, @floatFromInt(self.movie.header.xmin)) * inv_twips,
             .ty = -@as(f64, @floatFromInt(self.movie.header.ymin)) * inv_twips,
         };
-        // Only an EDITABLE focused field shows a caret.
-        self.renderer.caret_field = blk: {
+        self.renderer.focused_field = blk: {
             const t = self.focusedFieldTarget() orelse break :blk null;
-            const et = t.obj.kind.edit_text;
-            break :blk if (et.read_only) null else et;
+            break :blk t.obj.kind.edit_text;
         };
         self.renderer.now_ms = self.elapsed_ms;
         try self.renderer.renderFrame(

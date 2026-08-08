@@ -837,6 +837,24 @@ pub const EditText = struct {
         return null;
     }
 
+    /// The x of character `pos` within `line`, in layout space. Used by
+    /// both the caret and the selection background.
+    pub fn caretXAt(self: *const EditText, line: text_layout.Line, pos: usize) ?i32 {
+        for (line.boxes) |b| {
+            if (b.is_bullet) continue;
+            if (pos < b.start or pos > b.end) continue;
+            const hi = @min(pos, @min(b.end, self.text.items.len));
+            const lo = @min(b.start, hi);
+            const w = b.font.measure(self.text.items[lo..hi], .{
+                .height = b.size,
+                .letter_spacing = b.letter_spacing,
+                .kerning = b.kerning,
+            });
+            return b.bounds.x + w;
+        }
+        return null;
+    }
+
     /// Is the character at this point part of a LINK? A field that is not
     /// selectable is invisible to the mouse everywhere else, but a link
     /// in it is still clickable (ruffle `mouse_pick_avm1`).

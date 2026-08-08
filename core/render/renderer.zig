@@ -76,9 +76,9 @@ pub const Renderer = struct {
     /// AFTER construction — `Renderer.init` runs inside the Player's own
     /// struct literal, where `&self.movie` is not yet valid.
     lib: ?*const library.Library = null,
-    /// The EDITABLE field that currently has focus, if any — the only one
-    /// that shows a caret. Set by the Player each frame.
-    caret_field: ?*const edit_text.EditText = null,
+    /// The field that currently has FOCUS, if any. A caret needs it and
+    /// so does the selection colour. Set by the Player each frame.
+    focused_field: ?*const edit_text.EditText = null,
     /// Milliseconds since the movie started, for the caret's blink.
     now_ms: f64 = 0,
     /// Text layout is version-dependent (wrapping, alignment), so the
@@ -249,7 +249,9 @@ pub const Renderer = struct {
             0;
         const scroll_x: f32 = @floatCast(et.hscroll * @as(f64, swf.reader.TWIPS_PER_PX));
 
-        if (self.caret_field == et) self.drawCaret(ctx, et, parent_t, ox, oy, scroll_x, scroll_y);
+        // The selection sits UNDER the glyphs; the caret goes over them.
+        self.drawSelection(ctx, et, parent_t, ox, oy, scroll_x, scroll_y);
+        self.drawCaret(ctx, et, parent_t, ox, oy, scroll_x, scroll_y);
 
         for (et.layout.lines) |line| {
             for (line.boxes) |b| {
@@ -276,11 +278,83 @@ pub const Renderer = struct {
                 const glyph_text = if (b.is_bullet) &BULLET else self.fieldText(et, b);
                 _ = b.font.evaluate(glyph_text, params, &painter) catch {};
                 if (painter.err) |e| return e;
+                if (b.underline) self.drawUnderline(ctx, b, line, parent_t, ox, oy, scroll_x, scroll_y);
             }
         }
     }
 
     const BULLET = [_]u16{0x2022};
+
+    /// A one-pixel rule under the run, half a descent below the baseline.
+    fn drawUnderline(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        b: text_layout.Box,
+        line: text_layout.Line,
+        t: Transform,
+        ox: f32,
+        oy: f32,
+        scroll_x: f32,
+        scroll_y: f32,
+    ) void {
+        _ = self;
+        const y: f32 = @floatFromInt(b.bounds.y + b.font.ascent(b.size) + @divTrunc(line.descent, 2));
+        const x0: f64 = ox + @as(f32, @floatFromInt(b.bounds.x)) - scroll_x;
+        const x1: f64 = x0 + @as(f64, @floatFromInt(b.bounds.w));
+        const yy: f64 = oy + y - scroll_y;
+        ctx.setTransform(t.a, t.b, t.c, t.d, t.tx, t.ty);
+        ctx.beginPath();
+        ctx.moveTo(x0, yy);
+        ctx.lineTo(x1, yy);
+        setSolid(ctx, edit_text.swfFromRgb(b.color, 255), false);
+        ctx.setLineWidth(1);
+        ctx.stroke();
+    }
+
+    /// The selection's background: BLACK while the field has focus, grey
+    /// when it does not, and nothing at all for a bare caret.
+    fn drawSelection(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        et: *const edit_text.EditText,
+        t: Transform,
+        ox: f32,
+        oy: f32,
+        scroll_x: f32,
+        scroll_y: f32,
+    ) void {
+        const sel = et.selection orelse return;
+        if (sel.isCaret()) return;
+        const focused = self.focused_field == et;
+        if (!focused) return;
+        const start = sel.start();
+        const end = sel.end();
+        ctx.setTransform(t.a, t.b, t.c, t.d, t.tx, t.ty);
+        ctx.setColorTransform(.{});
+        for (et.layout.lines) |line| {
+            if (end <= line.start or start >= line.end) continue;
+            const lo = @max(start, line.start);
+            const hi = @min(end, line.end);
+            const x0 = et.caretXAt(line, lo) orelse continue;
+            const x1 = et.caretXAt(line, hi) orelse line.bounds.x + line.bounds.w;
+            if (x1 <= x0) continue;
+            // The leading is covered only when the selection runs PAST
+            // the end of the line.
+            const extra: i32 = if (hi == line.end) line.leading else 0;
+            const px0: f64 = ox + @as(f32, @floatFromInt(x0)) - scroll_x;
+            const px1: f64 = ox + @as(f32, @floatFromInt(x1)) - scroll_x;
+            const py0: f64 = oy + @as(f32, @floatFromInt(line.bounds.y)) - scroll_y;
+            const py1: f64 = py0 + @as(f64, @floatFromInt(line.bounds.h + extra));
+            ctx.beginPath();
+            ctx.moveTo(px0, py0);
+            ctx.lineTo(px1, py0);
+            ctx.lineTo(px1, py1);
+            ctx.lineTo(px0, py1);
+            ctx.closePath();
+            setSolid(ctx, 0xFF000000, true);
+            ctx.fill(.nonzero);
+        }
+    }
 
     /// A one-pixel bar at the caret, blinking on a one-second cycle: ON
     /// for the first half, off for the second (ruffle `blinks_now`).
@@ -294,6 +368,8 @@ pub const Renderer = struct {
         scroll_x: f32,
         scroll_y: f32,
     ) void {
+        // Only an EDITABLE focused field blinks a caret.
+        if (self.focused_field != et or et.read_only) return;
         const cycle = 1000.0;
         if (@mod(self.now_ms, cycle) * 2 >= cycle) return;
         const c = et.caretBox() orelse return;
