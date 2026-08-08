@@ -21,6 +21,7 @@ pub const avm1 = struct {
 pub const bitmap = struct {
     pub const pixels = @import("bitmap/pixels.zig");
     pub const data = @import("bitmap/data.zig");
+    pub const operations = @import("bitmap/operations.zig");
 };
 
 pub const display = struct {
@@ -1314,6 +1315,7 @@ test {
     _ = @import("avm1/text_binding.zig");
     _ = @import("bitmap/pixels.zig");
     _ = @import("bitmap/data.zig");
+    _ = @import("bitmap/operations.zig");
     _ = @import("text/format.zig");
     _ = @import("text/spans.zig");
     _ = @import("text/html.zig");

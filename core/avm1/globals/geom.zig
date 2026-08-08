@@ -711,6 +711,19 @@ fn fixed8(n: f64) i16 {
     return @intFromFloat(std.math.clamp(@trunc(n * 256.0), -32768, 32767));
 }
 
+/// Was this object MADE by `ColorTransform`? `BitmapData.colorTransform`
+/// rejects a duck-typed stand-in even though it accepts one for the
+/// rectangle, so the two checks cannot be the same one.
+pub fn isColorTransformNominal(vm: *Vm, h: ObjectHandle) bool {
+    var proto = vm.objects.get(h).proto;
+    var guard: u8 = 0;
+    while (proto == .object and guard < 64) : (guard += 1) {
+        if (proto.object == vm.colortransform_proto) return true;
+        proto = vm.objects.get(proto.object).proto;
+    }
+    return false;
+}
+
 /// Is this object shaped like a ColorTransform? Assignment to
 /// `transform.colorTransform` only happens for a real one.
 fn isColorTransform(vm: *Vm, h: ObjectHandle) bool {

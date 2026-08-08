@@ -78,21 +78,27 @@ pub const BitmapData = struct {
         self.data[@intCast(y * @as(i64, self.width) + x)] = c;
     }
 
-    /// What script sees: un-multiplied, and forced opaque on a bitmap
-    /// that does not keep alpha.
+    /// What script sees. An OPAQUE bitmap is not un-multiplied at all —
+    /// its stored alpha is normally 255, so the raw value already IS the
+    /// script value. That stops being true when `threshold` or
+    /// `paletteMap` writes a translucent pixel to an opaque bitmap (both
+    /// premultiply as though it were transparent), and the raw value is
+    /// then exactly what Flash reports back.
     pub fn getPixel32(self: *const BitmapData, x: i64, y: i64) u32 {
         if (!self.inBounds(x, y)) return 0;
-        const c = self.get(x, y).toUnmultiplied();
-        return if (self.transparency) c.toArgb() else c.withAlpha(255).toArgb();
+        const c = self.get(x, y);
+        return if (self.transparency) c.toUnmultiplied().toArgb() else c.toArgb();
     }
 
     pub fn setPixel32(self: *BitmapData, x: i64, y: i64, argb: u32) void {
         self.set(x, y, Color.fromArgb(argb).toPremultiplied(self.transparency));
     }
 
-    /// `getPixel` is `getPixel32` without the alpha byte.
+    /// `getPixel` is not `getPixel32` masked: it un-multiplies whatever
+    /// the transparency flag says, and only then drops the alpha byte.
     pub fn getPixel(self: *const BitmapData, x: i64, y: i64) u32 {
-        return self.getPixel32(x, y) & 0x00FF_FFFF;
+        if (!self.inBounds(x, y)) return 0;
+        return self.get(x, y).toUnmultiplied().withAlpha(0).toArgb();
     }
 
     /// `setPixel` keeps the pixel's EXISTING alpha and replaces only the
