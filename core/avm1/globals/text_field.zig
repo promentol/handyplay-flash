@@ -184,17 +184,18 @@ fn setText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const gpa = gpaOf(vm) orelse return .undefined_value;
     const s = try vm.toStringValue(arg(args, 0));
     try et.setText(gpa, s);
-    // Replacing the text throws the spans away — the whole field takes
-    // the new-text format again.
-    et.span_format = et.default_format;
     try text_binding.propagate(vm, t.obj);
     return .undefined_value;
 }
 
-/// Without the HTML pass (D8) this is the plain text — which is what
-/// ruffle returns too for a field whose `html` flag is clear.
+/// The field's contents rendered back OUT as markup — which is not the
+/// markup that went in: the writer always emits a `<P>` and a
+/// fully-specified first `<FONT>`.
 fn getHtmlText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    return getText(p, this, args);
+    _ = args;
+    const vm = vmOf(p);
+    const et = etOf(vm, this) orelse return .undefined_value;
+    return .{ .string = try et.htmlText(vm.arena()) };
 }
 
 /// Deliberately does NOT propagate the variable binding: only writing
@@ -203,8 +204,7 @@ fn setHtmlText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const et = etOf(vm, this) orelse return .undefined_value;
     const gpa = gpaOf(vm) orelse return .undefined_value;
-    try et.setText(gpa, try vm.toStringValue(arg(args, 0)));
-    et.span_format = et.default_format;
+    try et.setHtml(gpa, try vm.toStringValue(arg(args, 0)), vm.swf_version);
     return .undefined_value;
 }
 
@@ -338,9 +338,9 @@ fn setTextColor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value 
     // and the renderer supplies the opacity. Both the existing text and
     // the next character typed take the new colour.
     const rgb = (try toU32(vm, arg(args, 0))) & 0x00FF_FFFF;
+    const gpa = gpaOf(vm) orelse return .undefined_value;
     et.default_format.color = rgb;
-    et.span_format.color = rgb;
-    et.dirty = true;
+    try et.setFormatRange(gpa, 0, et.text.items.len, .{ .color = rgb });
     return .undefined_value;
 }
 
@@ -535,7 +535,6 @@ fn setVariable(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
         initial = buf[0..n];
     };
     try et.setText(gpa, initial);
-    et.span_format = et.default_format;
 
     if (v == .undefined_value or v == .null_value) {
         try et.setVariable(gpa, null);
@@ -733,13 +732,21 @@ fn setNewTextFormat(p: *anyopaque, this: Value, args: []const Value) anyerror!Va
     return .undefined_value;
 }
 
-/// Spans land with the layout engine; until then a field carries ONE
-/// run, so a range query answers with it whatever the range.
+/// `getTextFormat([begin[, end]])` — no arguments means the whole field,
+/// one means that single character.
 fn getTextFormatFn(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = args;
     const vm = vmOf(p);
     const et = etOf(vm, this) orelse return .undefined_value;
-    return .{ .object = try text_format.newObject(vm, et.span_format) };
+    if (args.len >= 1) {
+        const len = et.text.items.len;
+        const from: usize = @intCast(@as(u32, @bitCast(try toI32(vm, args[0]))));
+        const to: usize = if (args.len >= 2)
+            @intCast(@as(u32, @bitCast(try toI32(vm, args[1]))))
+        else
+            from + 1;
+        return .{ .object = try text_format.newObject(vm, et.formatRange(@min(from, len), @min(to, len))) };
+    }
+    return .{ .object = try text_format.newObject(vm, et.formatRange(0, et.text.items.len)) };
 }
 
 /// This writes the SPANS, never the new-text format — which is why
@@ -748,12 +755,23 @@ fn getTextFormatFn(p: *anyopaque, this: Value, args: []const Value) anyerror!Val
 fn setTextFormatFn(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const et = etOf(vm, this) orelse return .undefined_value;
+    const gpa = gpaOf(vm) orelse return .undefined_value;
     // The format is the LAST argument whatever the arity — (fmt),
-    // (begin, fmt) and (begin, end, fmt) are all legal.
+    // (begin, fmt) and (begin, end, fmt) are all legal, and each arity
+    // means a different range.
     if (args.len == 0 or args.len > 3) return .undefined_value;
     const tf = text_format.formatOf(vm, args[args.len - 1]) orelse return .undefined_value;
-    et.span_format = tf.mixWith(et.span_format);
-    et.dirty = true;
+    const len = et.text.items.len;
+    var from: usize = 0;
+    var to: usize = len;
+    if (args.len >= 2) {
+        from = @intCast(@as(u32, @bitCast(try toI32(vm, args[0]))));
+        to = if (args.len == 3)
+            @intCast(@as(u32, @bitCast(try toI32(vm, args[1]))))
+        else
+            from + 1;
+    }
+    try et.setFormatRange(gpa, @min(from, len), @min(to, len), tf.*);
     return .undefined_value;
 }
 
@@ -766,7 +784,7 @@ fn replaceText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const from = try vm.toNumber(arg(args, 0));
     const to = try vm.toNumber(arg(args, 1));
     const s = try vm.toStringValue(arg(args, 2));
-    try spliceText(et, gpa, clampIndex(from, et.text.items.len), clampIndex(to, et.text.items.len), s);
+    try et.replaceRange(gpa, clampIndex(from, et.text.items.len), clampIndex(to, et.text.items.len), s);
     return .undefined_value;
 }
 
@@ -777,7 +795,7 @@ fn replaceSel(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const et = etOf(vm, this) orelse return .undefined_value;
     const gpa = gpaOf(vm) orelse return .undefined_value;
     const s = try vm.toStringValue(arg(args, 0));
-    try spliceText(et, gpa, 0, 0, s);
+    try et.replaceRange(gpa, 0, 0, s);
     return .undefined_value;
 }
 
@@ -788,13 +806,3 @@ fn clampIndex(n: f64, len: usize) usize {
     return @intFromFloat(t);
 }
 
-fn spliceText(et: *EditText, gpa: std.mem.Allocator, from: usize, to: usize, s: []const u16) !void {
-    const lo = @min(from, to);
-    const hi = @max(from, to);
-    var out: std.ArrayList(u16) = .empty;
-    defer out.deinit(gpa);
-    try out.appendSlice(gpa, et.text.items[0..lo]);
-    try out.appendSlice(gpa, s);
-    try out.appendSlice(gpa, et.text.items[hi..]);
-    try et.setText(gpa, out.items);
-}

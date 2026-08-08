@@ -12,6 +12,8 @@ const swf = @import("../swf/swf.zig");
 const format_mod = @import("../text/format.zig");
 const library = @import("library.zig");
 const text_layout = @import("text_layout.zig");
+const spans_mod = @import("../text/spans.zig");
+const html_mod = @import("../text/html.zig");
 
 const Rectangle = swf.reader.Rectangle;
 const TextFormat = format_mod.TextFormat;
@@ -48,11 +50,11 @@ pub const EditText = struct {
     text: std.ArrayList(u16) = .empty,
     /// The format new text inherits — `getNewTextFormat`'s answer.
     default_format: TextFormat = .{},
-    /// What `getTextFormat` reports. A real span list arrives with the
-    /// layout engine; until then a field carries ONE run, and keeping it
-    /// apart from `default_format` is what makes `setTextFormat` visible
-    /// to `getTextFormat` without moving `textColor`.
-    span_format: TextFormat = .{},
+    /// The runs of formatting over `text`. Kept apart from
+    /// `default_format`, which is what the NEXT character typed would
+    /// take — that separation is why `setTextFormat` cannot move
+    /// `textColor`.
+    spans: spans_mod.Spans = undefined,
     /// UTF-16 copy of the embedded face's name, kept because
     /// `default_format.font` points into it and the tag's name is bytes.
     font_name: []u16 = &.{},
@@ -194,21 +196,35 @@ pub const EditText = struct {
             .url = &.{},
             .target = &.{},
         };
-        self.span_format = self.default_format;
+        self.spans = spans_mod.Spans.init(gpa);
+        try self.spans.reset(gpa, self.default_format, 0);
         if (def.variable_name.len > 0) {
             var buf: std.ArrayList(u16) = .empty;
             for (def.variable_name) |c| try buf.append(gpa, c);
             self.variable = try buf.toOwnedSlice(gpa);
         }
-        if (def.initial_text) |t| try setTextAscii(&self, gpa, t);
+        if (def.initial_text) |t| {
+            var wide: std.ArrayList(u16) = .empty;
+            defer wide.deinit(gpa);
+            for (t) |c| try wide.append(gpa, c);
+            // The AUTHORED text is markup when the field is HTML — a
+            // Flash-authored HTML field is born holding a whole
+            // <P>…</P>, and `text` must report what it says, not what it
+            // is written in.
+            if (def.is_html) {
+                try self.setHtml(gpa, wide.items, swf_version);
+            } else {
+                try self.setText(gpa, wide.items);
+            }
+        }
         return self;
     }
 
     /// `createTextField` — ruffle's `EditText::new`: 12px black text, read
     /// only, selectable, and bounds anchored at the ORIGIN with the
     /// position carried by the placement matrix instead.
-    pub fn dynamic(width: f64, height: f64) EditText {
-        return .{
+    pub fn dynamic(gpa: std.mem.Allocator, width: f64, height: f64) !EditText {
+        var self: EditText = .{
             .def = null,
             .bounds = .{
                 .xmin = 0,
@@ -219,12 +235,15 @@ pub const EditText = struct {
             .read_only = true,
             .selectable = true,
             .default_format = dynamicFormat(),
-            .span_format = dynamicFormat(),
         };
+        self.spans = spans_mod.Spans.init(gpa);
+        try self.spans.reset(gpa, self.default_format, 0);
+        return self;
     }
 
     pub fn deinit(self: *EditText, gpa: std.mem.Allocator) void {
         self.text.deinit(gpa);
+        self.spans.deinit(gpa);
         self.layout.deinit(gpa);
         gpa.free(self.font_name);
         if (self.variable) |v| gpa.free(v);
@@ -241,9 +260,90 @@ pub const EditText = struct {
         self.restrict = if (s) |x| try gpa.dupe(u16, x) else null;
     }
 
+    /// Plain text: the whole field takes the new-text format again.
+    /// A write of the SAME string is a no-op, and that is observable —
+    /// it skips the format reset (ruffle `set_text`).
     pub fn setText(self: *EditText, gpa: std.mem.Allocator, s: []const u16) !void {
+        if (std.mem.eql(u16, self.text.items, s)) return;
         self.text.clearRetainingCapacity();
         try self.text.appendSlice(gpa, s);
+        try self.spans.reset(gpa, self.default_format, s.len);
+        self.dirty = true;
+    }
+
+    /// `htmlText = …` on an HTML field: parse the markup into text and
+    /// spans. On a plain field it is an ordinary text write.
+    pub fn setHtml(
+        self: *EditText,
+        gpa: std.mem.Allocator,
+        markup: []const u16,
+        swf_version: u8,
+    ) !void {
+        if (!self.html) return self.setText(gpa, markup);
+        // Parsing HTML below SWF8 leaves the field LEFT-aligned for good:
+        // `from_html` rewrites the default format it was handed and the
+        // field keeps the rewritten one (corpus edittext_html_align_swf7).
+        if (swf_version < 8) self.default_format.text_align = .left;
+        self.spans.list.clearRetainingCapacity();
+        _ = self.spans.arena.reset(.retain_capacity);
+        const a = self.spans.alloc();
+        const owned_default = try spans_mod.dupeFormat(a, self.default_format);
+        const parsed = try html_mod.parse(a, markup, owned_default, .{
+            .multiline = self.multiline,
+            .condense_white = self.condense_white,
+            .swf_version = swf_version,
+        });
+        self.text.clearRetainingCapacity();
+        try self.text.appendSlice(gpa, parsed.text);
+        try self.spans.list.appendSlice(gpa, parsed.spans);
+        try self.spans.normalize(gpa, owned_default, self.text.items.len);
+        self.dirty = true;
+    }
+
+    /// The field's contents AS MARKUP. A non-HTML field still serialises
+    /// — `htmlText` on a plain field reports the generated tags.
+    pub fn htmlText(self: *const EditText, arena: std.mem.Allocator) ![]const u16 {
+        return html_mod.serialize(arena, self.text.items, self.spans.list.items);
+    }
+
+    pub fn setFormatRange(
+        self: *EditText,
+        gpa: std.mem.Allocator,
+        from: usize,
+        to: usize,
+        tf: TextFormat,
+    ) !void {
+        try self.spans.setFormat(gpa, from, to, tf, self.default_format, self.text.items.len);
+        self.dirty = true;
+    }
+
+    pub fn formatRange(self: *const EditText, from: usize, to: usize) TextFormat {
+        return self.spans.getFormat(from, to);
+    }
+
+    /// Splice `with` into `[from, to)`. The replacement takes the format
+    /// of the run it landed in.
+    pub fn replaceRange(
+        self: *EditText,
+        gpa: std.mem.Allocator,
+        from_in: usize,
+        to_in: usize,
+        with: []const u16,
+    ) !void {
+        const len = self.text.items.len;
+        const to = @min(to_in, len);
+        const from = @min(from_in, to);
+        const fmt = self.spans.getFormat(from, @max(to, from + 1));
+        var out: std.ArrayList(u16) = .empty;
+        defer out.deinit(gpa);
+        try out.appendSlice(gpa, self.text.items[0..from]);
+        try out.appendSlice(gpa, with);
+        try out.appendSlice(gpa, self.text.items[to..]);
+        self.text.clearRetainingCapacity();
+        try self.text.appendSlice(gpa, out.items);
+        // Rebuild the span list around the splice: everything before,
+        // one run for the insertion, everything after.
+        try rebuildSpans(self, gpa, from, to, with.len, fmt);
         self.dirty = true;
     }
 
@@ -285,8 +385,12 @@ pub const EditText = struct {
             shown = m;
         }
 
-        const spans = [_]text_layout.Span{.{ .start = 0, .format = self.span_format }};
-        const fresh = try text_layout.layOut(gpa, lib, shown, &spans, .{
+        const laid = try self.spans.layoutSpans(gpa);
+        defer gpa.free(laid);
+        var conv = try gpa.alloc(text_layout.Span, laid.len);
+        defer gpa.free(conv);
+        for (laid, 0..) |l, i| conv[i] = .{ .start = l.start, .format = l.format };
+        const fresh = try text_layout.layOut(gpa, lib, shown, conv, .{
             .width = content_width,
             .is_input = !self.read_only,
             .word_wrap = self.word_wrap,
@@ -327,11 +431,57 @@ pub const EditText = struct {
         }
     }
 
-    fn setTextAscii(self: *EditText, gpa: std.mem.Allocator, s: []const u8) !void {
-        self.text.clearRetainingCapacity();
-        for (s) |c| try self.text.append(gpa, c);
-    }
 };
+
+fn rebuildSpans(
+    self: *EditText,
+    gpa: std.mem.Allocator,
+    from: usize,
+    to: usize,
+    inserted: usize,
+    fmt: TextFormat,
+) !void {
+    var out: std.ArrayList(spans_mod.TextSpan) = .empty;
+    defer out.deinit(gpa);
+    var base: usize = 0;
+    for (self.spans.list.items) |sp| {
+        const lo = base;
+        const hi = base + sp.len;
+        base = hi;
+        // The part of this run before the splice.
+        if (lo < from) {
+            var head = sp;
+            head.len = @min(hi, from) - lo;
+            if (head.len > 0) try out.append(gpa, head);
+        }
+        // The part after it.
+        if (hi > to) {
+            var tail = sp;
+            tail.len = hi - @max(lo, to);
+            if (tail.len > 0) try out.append(gpa, tail);
+        }
+    }
+    // The insertion goes at the splice point, in the format of the run it
+    // replaced.
+    var run = spans_mod.TextSpan.fromFormat(try spans_mod.dupeFormat(self.spans.alloc(), fmt), inserted);
+    run.len = inserted;
+    var placed: std.ArrayList(spans_mod.TextSpan) = .empty;
+    defer placed.deinit(gpa);
+    var cursor: usize = 0;
+    var done = false;
+    for (out.items) |sp| {
+        if (!done and cursor >= from) {
+            try placed.append(gpa, run);
+            done = true;
+        }
+        try placed.append(gpa, sp);
+        cursor += sp.len;
+    }
+    if (!done) try placed.append(gpa, run);
+    self.spans.list.clearRetainingCapacity();
+    try self.spans.list.appendSlice(gpa, placed.items);
+    try self.spans.normalize(gpa, self.default_format, self.text.items.len);
+}
 
 /// `EditText::new`'s tag: font id 0 at 12px, black, no layout. The face
 /// resolves to nothing, which is correct — a dynamic field has no
@@ -379,7 +529,8 @@ fn twips(v: f64) i32 {
 const testing = std.testing;
 
 test "a dynamic field is 12px black, read-only and anchored at the origin" {
-    const et = EditText.dynamic(100, 20);
+    var et = try EditText.dynamic(testing.allocator, 100, 20);
+    defer et.deinit(testing.allocator);
     try testing.expectEqual(@as(i32, 0), et.bounds.xmin);
     try testing.expectEqual(@as(i32, 2000), et.bounds.xmax);
     try testing.expectEqual(@as(i32, 400), et.bounds.ymax);

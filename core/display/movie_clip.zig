@@ -718,7 +718,7 @@ pub const MovieClip = struct {
         height: f64,
     ) Error!*DisplayObject {
         const inst = try ctx.gpa.create(edit_text_mod.EditText);
-        inst.* = edit_text_mod.EditText.dynamic(width, height);
+        inst.* = try edit_text_mod.EditText.dynamic(ctx.gpa, width, height);
         const obj = try ctx.gpa.create(DisplayObject);
         obj.* = .{
             .character_id = 0,

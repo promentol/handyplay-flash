@@ -35,6 +35,8 @@ pub const display = struct {
 
 pub const text = struct {
     pub const format = @import("text/format.zig");
+    pub const spans = @import("text/spans.zig");
+    pub const html = @import("text/html.zig");
 };
 
 pub const render = struct {
@@ -1153,6 +1155,8 @@ test {
     _ = @import("avm1/globals/text_field.zig");
     _ = @import("avm1/text_binding.zig");
     _ = @import("text/format.zig");
+    _ = @import("text/spans.zig");
+    _ = @import("text/html.zig");
     _ = @import("avm1/globals/movie_clip.zig");
     _ = @import("avm1/globals/globals.zig");
 }

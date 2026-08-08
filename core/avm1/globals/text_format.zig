@@ -481,12 +481,11 @@ fn getTextExtent(p: *anyopaque, this: Value, args: []const Value) anyerror!Value
     else
         null;
 
-    var et = edit_text.EditText.dynamic(width orelse 0, 0);
+    var et = try edit_text.EditText.dynamic(ctx.gpa, width orelse 0, 0);
     defer et.deinit(ctx.gpa);
     et.autosize = .left;
     et.word_wrap = width != null;
     et.default_format = tf.*;
-    et.span_format = tf.*;
     try et.setText(ctx.gpa, text);
     try et.ensureLayout(ctx.gpa, &ctx.movie.lib, ctx.movie.swf_version);
     et.applyAutosizeBounds();

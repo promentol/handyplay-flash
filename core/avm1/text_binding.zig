@@ -159,7 +159,6 @@ pub fn notify(vm: *Vm, target: *DisplayObject, name: strings.AvmString, v: Value
         // field's propagate must not bounce back.
         if (et.firing_binding) continue;
         try et.setText(ctx.gpa, try vm.toStringValue(v));
-        et.span_format = et.default_format;
     }
 }
 

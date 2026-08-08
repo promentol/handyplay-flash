@@ -1111,7 +1111,14 @@ pub const Vm = struct {
 
     pub fn traceLine(self: *Vm, s: strings.AvmString) Error!void {
         const utf8 = strings.toUtf8(self.arena(), s) catch return;
+        const start = self.trace_buf.items.len;
         try self.trace_buf.appendSlice(self.gpa, utf8);
+        // Every CARRIAGE RETURN in a traced string prints as a newline —
+        // which is how a text field's `\r` line breaks come out as real
+        // lines (ruffle `UpdateContext::avm_trace`).
+        for (self.trace_buf.items[start..]) |*c| {
+            if (c.* == '\r') c.* = '\n';
+        }
         try self.trace_buf.append(self.gpa, '\n');
     }
 
