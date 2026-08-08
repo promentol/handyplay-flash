@@ -225,6 +225,15 @@ pub const Activation = struct {
     ///
     /// `first_element` allows `this`/`_root`/`_levelN` at the head only;
     /// `handle_this` enables the `this` keyword at all.
+    /// A TARGET PATH from a native method, resolved against the clip the
+    /// call is running in. Natives hold only the `Vm`, so they reach the
+    /// running frame through `current_activation`.
+    pub fn resolveTargetForNative(vm: *runtime.Vm, start: ObjectHandle, path: strings.AvmString) anyerror!?ObjectHandle {
+        const p = vm.current_activation orelse return null;
+        const act: *Activation = @ptrCast(@alignCast(p));
+        return act.resolveTargetPath(act.rootHandle(), start, path, true, false);
+    }
+
     fn resolveTargetPath(
         self: *Activation,
         root: ObjectHandle,

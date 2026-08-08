@@ -261,8 +261,10 @@ mouse_pos
 mouse_pos_with_scale_factor
 mouse_wheel_enabled
 movieclip_begin_gradient_fill
+movieclip_blend_mode_property
 movieclip_create_text_field
 movieclip_default_state
+movieclip_depth_methods
 movieclip_focusenabled
 movieclip_get_instance_at_depth
 movieclip_getbounds

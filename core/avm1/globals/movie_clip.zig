@@ -400,21 +400,29 @@ pub fn getBlendMode(p: *anyopaque, this: Value, args: []const Value) anyerror!Va
     return .{ .string = BLEND_NAMES[i] };
 }
 
-/// Accepts either the name or the numeric index; anything unrecognised
-/// leaves the current mode alone (ruffle set_blend_mode logs and returns).
+/// Either the name or the numeric index. NULL and UNDEFINED reset it to
+/// `normal`; anything else unrecognised — a wrong-case name, an
+/// out-of-range number, an object — leaves the current mode ALONE. The
+/// name match is case SENSITIVE, so `lAyEr` is not `layer`.
 pub fn setBlendMode(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
     const v = arg(args, 0);
-    if (v == .number) {
-        const n = value_mod.toInt32(v.number);
-        if (n >= 0 and n < BLEND_NAMES.len) t.obj.blend_mode = @intCast(n);
+    if (v == .null_value or v == .undefined_value) {
+        t.obj.blend_mode = 1;
         return .undefined_value;
     }
-    const s = try vm.toStringValue(v);
+    if (v == .number) {
+        // The number is TRUNCATED to a byte first, so 259 is 3 — and
+        // -1 becomes 255, which is out of range and changes nothing.
+        const n: u8 = @truncate(@as(u32, @bitCast(value_mod.toInt32(v.number))));
+        if (n < BLEND_NAMES.len) t.obj.blend_mode = n;
+        return .undefined_value;
+    }
+    if (v != .string) return .undefined_value;
     for (BLEND_NAMES, 0..) |name, i| {
         if (i == 0) continue; // "normal" is canonically 1
-        if (strings.eqlIgnoreCase(s, name)) {
+        if (strings.eql(v.string, name)) {
             t.obj.blend_mode = @intCast(i);
             return .undefined_value;
         }
@@ -612,11 +620,25 @@ fn swapDepths(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
     const a = arg(args, 0);
+    // A NUMBER is a script depth; anything else names another clip —
+    // including as a target PATH, which has to be resolved against the
+    // running frame rather than read as a depth.
     const depth: i32 = switch (a) {
         .number => |n| stage.biasDepth(value_mod.toInt32(n)),
         else => blk: {
-            const other = stage.targetOfValue(vm, a) orelse return .undefined_value;
+            const other = stage.targetOfValue(vm, a) orelse other_blk: {
+                const s = try vm.toStringValue(a);
+                // Relative to the RECEIVER, not to the timeline running
+                // the call: `clip2.swapDepths('../clip1')` walks up from
+                // clip2.
+                const from = if (this == .object) this.object else return .undefined_value;
+                const h = (try activation.Activation.resolveTargetForNative(vm, from, s)) orelse
+                    return .undefined_value;
+                break :other_blk stage.targetOf(vm, h) orelse return .undefined_value;
+            };
             if (other.obj.removed) return .undefined_value;
+            // The two must share a PARENT — a swap across timelines is
+            // refused outright rather than reparenting anything.
             if (other.parent() != t.parent()) return .undefined_value;
             break :blk other.obj.depth;
         },
