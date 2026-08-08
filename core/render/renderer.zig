@@ -369,9 +369,37 @@ pub const Renderer = struct {
         ctx.setColorTransform(.{}); // leave ctx state clean
     }
 
-    /// `BitmapData.draw` with a DISPLAY OBJECT source: render it into the
-    /// target's pixels through an off-screen canvas the size of the
-    /// target.
+    /// SWF blend-mode number → simdra. The numbering is PlaceObject3's
+    /// and `BitmapData.draw` takes the same set, so this is the one place
+    /// the mapping lives. `layer` is source-over until compositing layers
+    /// exist; every other mode simdra implements outright, including the
+    /// four Flash-only ones.
+    pub fn blendModeFromSwf(n: u8) simdra.SmPaint.BlendMode {
+        return switch (n) {
+            3 => .multiply,
+            4 => .screen,
+            5 => .lighten,
+            6 => .darken,
+            7 => .difference,
+            8 => .add,
+            9 => .flash_subtract,
+            10 => .flash_invert,
+            11 => .flash_alpha,
+            12 => .flash_erase,
+            13 => .overlay,
+            14 => .hard_light,
+            else => .src_over,
+        };
+    }
+
+    /// What `BitmapData.draw` was handed.
+    pub const DrawSource = union(enum) {
+        object: *const display_object.DisplayObject,
+        bitmap: *const bitmap_data.BitmapData,
+    };
+
+    /// `BitmapData.draw`: render a source into the target's pixels through
+    /// an off-screen canvas the size of the target.
     ///
     /// The object's OWN placement matrix is not applied — Flash draws the
     /// source as though it sat at the origin, and `t` is the caller's
@@ -386,10 +414,11 @@ pub const Renderer = struct {
         self: *Renderer,
         gpa: std.mem.Allocator,
         dst: *bitmap_data.BitmapData,
-        obj: *const display_object.DisplayObject,
+        source: DrawSource,
         t: Transform,
         cx: swf.reader.ColorTransform,
         clip: ?[4]i32,
+        blend: simdra.SmPaint.BlendMode,
     ) !void {
         if (dst.width == 0 or dst.height == 0) return;
         var canvas = try canvas_mod.Canvas.init(gpa, dst.width, dst.height);
@@ -404,7 +433,14 @@ pub const Renderer = struct {
             ctx.rect(@floatFromInt(c[0]), @floatFromInt(c[1]), @floatFromInt(c[2]), @floatFromInt(c[3]));
             ctx.clip(.nonzero);
         }
-        try self.renderObject(ctx, obj, t, cx);
+        ctx.blendMode = blend;
+        switch (source) {
+            .object => |obj| try self.renderObject(ctx, obj, t, cx),
+            // A bitmap source under a blend mode: the blit path cannot
+            // help, so it goes through the pattern like any other fill.
+            .bitmap => |bd| try self.renderBitmap(ctx, .{ .live = bd }, false, t, cx),
+        }
+        ctx.blendMode = .src_over;
         if (clip != null) ctx.restore();
         ctx.setColorTransform(.{});
 

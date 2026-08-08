@@ -999,6 +999,9 @@ fn feistelIndex(raw: u32, block: u5) u32 {
 /// with `fill_color` (when the source IS the target) or with the matching
 /// source pixel. Returns the raw permutation index to carry into the next
 /// call, which is how a script animates a dissolve frame by frame.
+///
+/// A region that turns out EMPTY hands the seed straight back rather than
+/// reporting zero — there was no permutation to advance.
 pub fn pixelDissolve(
     dst: *BitmapData,
     src: *const BitmapData,
@@ -1010,12 +1013,12 @@ pub fn pixelDissolve(
 ) i32 {
     const src_w = @max(src_rect[2], 0);
     const src_h = @max(src_rect[3], 0);
-    if (src_w == 0 or src_h == 0) return 0;
+    if (src_w == 0 or src_h == 0) return random_seed;
 
     const regions = overlap(dst, src, dest_point, .{ src_rect[0], src_rect[1], src_w, src_h });
     const dest = regions[0];
     const source = regions[1];
-    if (dest.width() == 0 or dest.height() == 0) return 0;
+    if (dest.width() == 0 or dest.height() == 0) return random_seed;
 
     const same = src == @as(*const BitmapData, dst);
     const total: u32 = @intCast(dest.width() * dest.height());

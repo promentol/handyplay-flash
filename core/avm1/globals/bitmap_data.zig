@@ -538,7 +538,9 @@ fn ownPoint(vm: *Vm, v: Value) !?[2]i32 {
 
 fn pixelDissolve(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    if (args.len < 4) return BAD;
+    // FIVE, not four: without a pixel count there is nothing to dissolve,
+    // and the answer is -1 rather than a quiet zero.
+    if (args.len < 5) return BAD;
     const bd = dataOf(vm, this) orelse return BAD;
     const src = switch (bitmapArg(vm, args[0])) {
         .valid => |s| s,
@@ -548,9 +550,6 @@ fn pixelDissolve(p: *anyopaque, this: Value, args: []const Value) anyerror!Value
     const r = try rectArg(vm, args[1]) orelse return .{ .number = -4 };
     const dp = try destPoint(vm, args[2]);
     const seed = value_mod.toInt32(try vm.toNumber(args[3]));
-    // Without a pixel count there is nothing to do — and, notably, not
-    // even the always-written pixel at the origin.
-    if (args.len < 5) return .{ .number = 0 };
     const num = value_mod.toInt32(try vm.toNumber(args[4]));
     const fill = if (args.len > 5) try toU32(vm, args[5]) else 0;
     return .{ .number = @floatFromInt(ops.pixelDissolve(bd, src, r, dp, seed, num, fill)) };
@@ -707,7 +706,9 @@ fn generateFilterRect(p: *anyopaque, this: Value, args: []const Value) anyerror!
 /// the renderer for it, and the result is not the same as one that did.
 /// Anything else is a real render into an off-screen canvas.
 ///
-/// Blend modes are not modelled; every mode draws as `normal`.
+/// A blend mode may be named or numbered; `alpha` and `erase` against a
+/// BitmapData source do nothing at all, which is Flash's behaviour and
+/// not an omission.
 fn draw(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const bd = dataOf(vm, this) orelse return BAD;
@@ -726,15 +727,24 @@ fn draw(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     // but this one arrives through a geom.Rectangle in pixels and is NOT
     // converted to twips.
     const clip = try rectArg(vm, arg(args, 4));
+    const mode = try blendModeArg(vm, arg(args, 3));
+    const blend = renderer_mod.Renderer.blendModeFromSwf(mode);
 
     switch (bitmapArg(vm, arg(args, 0))) {
         .disposed => return .{ .number = -3 },
         .valid => |src| {
-            // The blit path needs an unscaled, unskewed matrix; anything
-            // else has to go through the renderer, and a BitmapData is
-            // not a display object, so there is nothing to render.
-            if (m.a != 1 or m.b != 0 or m.c != 0 or m.d != 1) return .undefined_value;
-            ops.drawBitmapData(bd, src, @divFloor(m.tx, 20), @divFloor(m.ty, 20), clip, ct);
+            // `alpha` and `erase` against a BitmapData source do nothing
+            // whatever the pixels are — a masking op with no layer to
+            // mask. Not the same as drawing a Bitmap with those pixels.
+            if (mode == 11 or mode == 12) return .undefined_value;
+            // The BLIT is only right for an unscaled, unskewed draw under
+            // an ordinary blend; anything else goes through the renderer.
+            if (m.a == 1 and m.b == 0 and m.c == 0 and m.d == 1 and blend == .src_over) {
+                ops.drawBitmapData(bd, src, @divFloor(m.tx, 20), @divFloor(m.ty, 20), clip, ct);
+                return .undefined_value;
+            }
+            const r = rendererOf(vm) orelse return .undefined_value;
+            try r.drawObjectInto(vm.gpa, bd, .{ .bitmap = src }, matrixToPixels(m), .{}, clip, blend);
             return .undefined_value;
         },
         .not_bitmap => {},
@@ -742,15 +752,37 @@ fn draw(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 
     const t = stage.targetOfValue(vm, arg(args, 0)) orelse return .{ .number = -2 };
     const r = rendererOf(vm) orelse return .undefined_value;
-    // Twips in, destination PIXELS out — the ÷20 the stage transform
-    // normally supplies has to come from here instead.
-    const px = 1.0 / 20.0;
-    const full: renderer_mod.Transform = (renderer_mod.Transform{
-        .a = px,
-        .d = px,
-    }).concat(m);
-    try r.drawObjectInto(vm.gpa, bd, t.obj, full, .{}, clip);
+    try r.drawObjectInto(vm.gpa, bd, .{ .object = t.obj }, matrixToPixels(m), .{}, clip, blend);
     return .undefined_value;
+}
+
+/// Twips in, destination PIXELS out — the ÷20 the stage transform
+/// normally supplies has to come from the draw call instead.
+fn matrixToPixels(m: swf_mod.reader.Matrix) renderer_mod.Transform {
+    const px = 1.0 / 20.0;
+    return (renderer_mod.Transform{ .a = px, .d = px }).concat(m);
+}
+
+/// The blend mode as its SWF NUMBER. Script may pass either the number or
+/// the name; anything unrecognised is `normal`.
+fn blendModeArg(vm: *Vm, v: Value) !u8 {
+    switch (v) {
+        .undefined_value, .null_value => return 1,
+        .number => |n| return if (n >= 1 and n <= 14) @intFromFloat(@trunc(n)) else 1,
+        else => {},
+    }
+    const s = try vm.toStringValue(v);
+    const names = [_][]const u8{
+        "normal",     "layer",  "multiply", "screen", "lighten",
+        "darken",     "difference", "add",  "subtract", "invert",
+        "alpha",      "erase",  "overlay",  "hardlight",
+    };
+    inline for (names, 1..) |name, i| {
+        if (strings.eqlIgnoreCase(s, S(name))) return i;
+    }
+    // A NUMBER arriving as a string still counts.
+    const n = value_mod.toInt32(try vm.toNumber(v));
+    return if (n >= 1 and n <= 14) @intCast(n) else 1;
 }
 
 /// The eight properties of a `flash.geom.ColorTransform`, snapped to the
