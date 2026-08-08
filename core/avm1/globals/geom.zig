@@ -45,6 +45,8 @@ const pixelsFromTwips = display_object.pixelsFromTwips;
 pub fn install(vm: *Vm) !void {
     const flash = try decl.namespace(vm, "flash", decl.ver(.{ .dont_enum = true }, decl.V8));
     try @import("filters.zig").install(vm, flash);
+    const display = try decl.subObject(vm, flash, "display", .{});
+    try @import("bitmap_data.zig").install(vm, display);
     const geom = try decl.subObject(vm, flash, "geom", .{});
 
     vm.point_proto = try protoUnder(vm, geom, "Point", ctorPoint);

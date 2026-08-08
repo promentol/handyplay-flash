@@ -30,8 +30,15 @@ bad_swf_tag_past_eof
 bitand
 bitmap_data_colortransform
 bitmap_data_fillrect
+bitmap_data_max_size_swf10
+bitmap_data_max_size_swf9
 bitmap_data_perlinnoise
 bitmap_data_pixeldissolve_image
+bitmap_data_thorough/constructor
+bitmap_data_thorough/getPixel
+bitmap_data_thorough/getPixel32
+bitmap_data_thorough/setPixel
+bitmap_data_thorough/setPixel32
 bitmapdata_applyfilter_colormatrix
 bitor
 biturshift

@@ -122,6 +122,9 @@ pub const NativeInfo = union(enum) {
     /// A `TextFormat`'s value struct, owned by the VM arena. Opaque here
     /// so the object model keeps no dependency on the text module.
     text_format: *anyopaque,
+    /// A `BitmapData`'s pixel buffer, owned by the VM arena. Opaque so
+    /// the object model keeps no dependency on the bitmap module.
+    bitmap_data: *anyopaque,
     /// flash.geom.Transform — a live view of the display object whose AVM1
     /// handle this holds. A handle rather than a pointer so a removed clip
     /// simply stops resolving, like every other retained reference.
