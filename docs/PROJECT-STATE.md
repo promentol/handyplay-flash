@@ -473,10 +473,8 @@ Seven things to know before you start:
    `bitmap_data_copypixels` sit at `tolerance = 0`; simdra composites
    straight RGBA with `(x + 128) >> 8` where Flash composites
    premultiplied values with a truncating `/255`, and the two disagree by
-   one unit on a translucent bitmap over the stage. `copypixels` is max
-   channel delta **1**. Do not go looking for a BitmapData bug — and note
-   `fillrect` also has an unexplained 18-pixel patch at y=27 where the
-   wrong bitmap is drawn, which IS worth chasing.
+   one unit on a translucent bitmap over the stage. Both are max channel
+   delta **1**. Do not go looking for a BitmapData bug.
 2. **§A4/§A5 record diagnoses that turned out to be WRONG** and the real
    causes next to them. In particular: `default_names` was NOT
    action-queue priority (our FIFO matches Flash — it was the loop

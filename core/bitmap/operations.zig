@@ -19,34 +19,18 @@ const data_mod = @import("data.zig");
 const Color = pixels.Color;
 const BitmapData = data_mod.BitmapData;
 
-/// The clamped intersection of a requested region with the bitmap.
-pub const Region = struct {
-    x0: i64,
-    y0: i64,
-    x1: i64,
-    y1: i64,
-
-    pub fn isEmpty(self: Region) bool {
-        return self.x1 <= self.x0 or self.y1 <= self.y0;
-    }
-};
-
-pub fn clampRegion(bd: *const BitmapData, x: i32, y: i32, w: i32, h: i32) Region {
-    const x0 = @max(@as(i64, x), 0);
-    const y0 = @max(@as(i64, y), 0);
-    const x1 = @min(@as(i64, x) + @as(i64, w), @as(i64, bd.width));
-    const y1 = @min(@as(i64, y) + @as(i64, h), @as(i64, bd.height));
-    return .{ .x0 = x0, .y0 = y0, .x1 = @max(x1, x0), .y1 = @max(y1, y0) };
-}
-
+/// A NEGATIVE width or height is not an empty rectangle: it names the
+/// box its two corners span, so `Rectangle(10, 10, -3, -3)` fills 7..9 on
+/// both axes. `PixelRegion.forRegionI32` is what normalises it.
 pub fn fillRect(bd: *BitmapData, x: i32, y: i32, w: i32, h: i32, argb: u32) void {
-    const r = clampRegion(bd, x, y, w, h);
-    if (r.isEmpty()) return;
+    var r = PixelRegion.forRegionI32(x, y, w, h);
+    r.clampTo(bd.width, bd.height);
+    if (r.width() == 0 or r.height() == 0) return;
     const c = Color.fromArgb(argb).toPremultiplied(bd.transparency);
-    var py = r.y0;
-    while (py < r.y1) : (py += 1) {
-        var px = r.x0;
-        while (px < r.x1) : (px += 1) bd.set(px, py, c);
+    var py = r.y_min;
+    while (py < r.y_max) : (py += 1) {
+        var px = r.x_min;
+        while (px < r.x_max) : (px += 1) bd.set(px, py, c);
     }
 }
 
@@ -930,6 +914,15 @@ test "fillRect clips to the bitmap and drops an empty region" {
     try testing.expectEqual(@as(u32, 0xFF000000), b.getPixel32(1, 1));
     fillRect(&b, 10, 10, 4, 4, 0xFF00FF00);
     try testing.expectEqual(@as(u32, 0xFFFFFFFF), b.getPixel32(3, 3));
+}
+
+test "a negative size names the box between the two corners" {
+    var b = try BitmapData.init(testing.allocator, 4, 4, true, 0xFF000000);
+    defer b.deinit(testing.allocator);
+    fillRect(&b, 4, 4, -2, -2, 0xFFFFFFFF);
+    try testing.expectEqual(@as(u32, 0xFFFFFFFF), b.getPixel32(3, 3));
+    try testing.expectEqual(@as(u32, 0xFFFFFFFF), b.getPixel32(2, 2));
+    try testing.expectEqual(@as(u32, 0xFF000000), b.getPixel32(1, 1));
 }
 
 test "flood fill refuses to replace a colour with itself" {

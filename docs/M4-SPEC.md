@@ -619,6 +619,10 @@ an off-screen draw path; `DisplayObject.Kind` gained `attached_bitmap`.
   alpha is left alone entirely. Invisible in the trace dirs, whose
   multipliers all happen to be exact, and worth 127 units of channel
   error in the image ones.
+- **A negative width or height is not an empty rectangle.** It names the
+  box its two corners span, so `fillRect(new Rectangle(10, 10, -3, -3))`
+  fills 7..9 on both axes. Missing that is invisible in the traces and
+  cost an 18-pixel patch in `bitmap_data_fillrect`'s image.
 - **`noise` raises a `high` below its `low`** rather than emptying the
   range, and its PRNG is Lehmer (`x = x * 16807 % 2147483647`) with the
   channel draws in R, G, B, A order — a skipped channel does not consume a
@@ -682,9 +686,8 @@ an off-screen draw path; `DisplayObject.Kind` gained `attached_bitmap`.
   0`. simdra composites straight RGBA with `x/255 ≈ (x + 128) >> 8`;
   Flash composites premultiplied values with a truncating `/255`. The two
   disagree by one unit on a translucent bitmap over the stage —
-  `copypixels` is max channel delta **1** across 14% of its pixels, and
-  `fillrect` is the same ±1 plus an unexplained 18-pixel patch at y=27
-  where the wrong bitmap is drawn. Making these exact means changing the
+  both are max channel delta **1** — `copypixels` across 14% of its
+  pixels, `fillrect` across 0.6%. Making them exact means changing the
   vendored rasteriser's blend rounding, which touches every image dir;
   it belongs to a rendering-fidelity pass, not to E.
 

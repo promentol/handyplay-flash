@@ -183,7 +183,14 @@ pub const Renderer = struct {
             .character => |id| if (!gop.found_existing or stale) {
                 const img = self.decodedBitmap(id) orelse return null;
                 if (img.premultiplied) {
-                    // A pattern samples STRAIGHT RGBA.
+                    // A pattern samples STRAIGHT RGBA, so a tag that
+                    // stored premultiplied colour has to be converted.
+                    //
+                    // `Color`'s channel NAMES do not line up here: the
+                    // bytes are R,G,B,A and `fromArgb` reads the low byte
+                    // as `.b`, so `.b` holds R and `.r` holds B. Only
+                    // `.a` has to be right, because the un-premultiply
+                    // applies one factor to all three — and it is.
                     for (0..@as(usize, size[0]) * size[1]) |i| {
                         const u = bitmap_pixels.Color.fromArgb(
                             std.mem.readInt(u32, img.rgba[i * 4 ..][0..4], .little),
