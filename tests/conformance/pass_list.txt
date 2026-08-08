@@ -396,6 +396,8 @@ use_hand_cursor
 variable_args
 virtual_property_recursion_double_swf7
 virtual_property_recursion_swf7
+waitforframe
+waitforframe2
 watch
 watch_infinite_recursion
 watch_proto_recursion

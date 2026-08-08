@@ -793,9 +793,30 @@ pub const Activation = struct {
             },
             .goto_label => |label| self.hostGotoLabel(try self.swfStr(label), null),
             .set_target => |t| try self.setTarget(try self.swfStr(t)),
-            .wait_for_frame => {}, // everything is always loaded
-            .wait_for_frame2 => {
-                _ = self.pop();
+            // Everything a movie already holds IS loaded — there is no
+            // streaming here — but a frame number past Flash's 16000-frame
+            // ceiling is never loaded, and the guarded actions are then
+            // SKIPPED. The count is in ACTIONS, not bytes.
+            .wait_for_frame => |w| {
+                if (w.frame > 16000) self.skipActions(w.skip_count);
+            },
+            // The dynamic form differs in three ways: the ceiling is
+            // 16001 rather than 16000, a value that is not a whole number
+            // goes through its STRING form and lands on frame 0 if that
+            // will not parse either, and the frame wraps into an i32 — so
+            // 2147483649 is negative, and loaded.
+            .wait_for_frame2 => |w| {
+                const v = self.pop();
+                var frame: i32 = 0;
+                if (v == .number and std.math.isFinite(v.number) and v.number == @trunc(v.number)) {
+                    frame = value_mod.toInt32(v.number);
+                } else {
+                    const str = try self.vm.toStringValue(v);
+                    const n = value_mod.stringToNumber(str, self.vm.swf_version);
+                    if (std.math.isFinite(n) and n == @trunc(n)) frame = value_mod.toInt32(n);
+                }
+                if (frame == std.math.minInt(i32)) frame = std.math.maxInt(i32);
+                if (frame > 16001) self.skipActions(w.skip_count);
             },
             .get_url => {}, // network: out of scope
             .get_url2 => {
@@ -806,6 +827,16 @@ pub const Activation = struct {
             .unknown => {},
         }
         return .next;
+    }
+
+    /// Decode and discard `n` actions. `WaitForFrame` counts ACTIONS, so
+    /// the bytes cannot simply be added up.
+    fn skipActions(self: *Activation, n: u8) void {
+        var i: u8 = 0;
+        while (i < n) : (i += 1) {
+            const a = opcodes.readAction(&self.r) catch return;
+            if (a == null) return;
+        }
     }
 
     fn execSimple(self: *Activation, op: opcodes.OpCode) anyerror!Flow {
