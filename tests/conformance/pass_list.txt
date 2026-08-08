@@ -210,6 +210,8 @@ greaterthan_swf8
 hittest_lockroot
 hittest_winding_rule
 infinite_recursion_virtual_property
+init_array_invalid
+init_object_invalid
 init_object_order
 is_finite
 is_finite_swf6
@@ -275,6 +277,7 @@ object_string_coerce_swf6
 on_construct
 primitive_instanceof
 property_invalid_base_clip
+prototype_delete
 prototype_enumerate
 prototype_properties
 recursive_prototypes

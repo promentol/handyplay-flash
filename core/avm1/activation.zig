@@ -1076,30 +1076,41 @@ pub const Activation = struct {
                 const target = self.pop();
                 try self.memberSet(target, name, v);
             },
+            // A count outside 0..i32::MAX pops NOTHING and pushes
+            // undefined — the elements already on the stack stay there
+            // (corpus init_array_invalid).
             .init_array => {
                 const n = try self.popNumber();
-                const count: usize = if (std.math.isNan(n) or n < 0) 0 else @intFromFloat(n);
-                const arr = try self.vm.newArray();
-                var i: usize = 0;
-                while (i < count) : (i += 1) {
-                    try self.vm.arraySet(arr, @intCast(i), self.pop());
+                if (std.math.isNan(n) or n < 0 or n > 2147483647) {
+                    try self.push(.undefined_value);
+                } else {
+                    const count: usize = @intFromFloat(n);
+                    const arr = try self.vm.newArray();
+                    var i: usize = 0;
+                    while (i < count) : (i += 1) {
+                        try self.vm.arraySet(arr, @intCast(i), self.pop());
+                    }
+                    try self.push(.{ .object = arr });
                 }
-                try self.push(.{ .object = arr });
             },
             .init_object => {
                 const n = try self.popNumber();
-                const count: usize = if (std.math.isNan(n) or n < 0) 0 else @intFromFloat(n);
-                const obj = try self.vm.newObject();
-                var i: usize = 0;
-                while (i < count) : (i += 1) {
-                    const v = self.pop();
-                    const key = try self.popString();
-                    // A full `set`, not a raw put: an object literal may
-                    // name `__proto__`, and that reparents the literal
-                    // (ruffle action_init_object -> Object::set).
-                    try self.memberSet(.{ .object = obj }, key, v);
+                if (std.math.isNan(n) or n < 0 or n > 2147483647) {
+                    try self.push(.undefined_value);
+                } else {
+                    const count: usize = @intFromFloat(n);
+                    const obj = try self.vm.newObject();
+                    var i: usize = 0;
+                    while (i < count) : (i += 1) {
+                        const v = self.pop();
+                        const key = try self.popString();
+                        // A full `set`, not a raw put: an object literal
+                        // may name `__proto__`, and that reparents the
+                        // literal (ruffle action_init_object -> set).
+                        try self.memberSet(.{ .object = obj }, key, v);
+                    }
+                    try self.push(.{ .object = obj });
                 }
-                try self.push(.{ .object = obj });
             },
             .enumerate => {
                 const name = try self.popString();
@@ -1162,7 +1173,7 @@ pub const Activation = struct {
                     self.vm.objects.get(proto).proto = super_proto;
                     try self.vm.objects.putWithAttrs(proto, S("constructor"), superclass, .{ .dont_enum = true }, self.vm.case_sensitive);
                     try self.vm.objects.putWithAttrs(proto, S("__constructor__"), superclass, .{ .dont_enum = true }, self.vm.case_sensitive);
-                    try self.vm.objects.putWithAttrs(subclass.object, S("prototype"), .{ .object = proto }, .{ .dont_enum = true }, self.vm.case_sensitive);
+                    try self.vm.objects.putWithAttrs(subclass.object, S("prototype"), .{ .object = proto }, .{ .dont_enum = true, .dont_delete = true }, self.vm.case_sensitive);
                 }
             },
 

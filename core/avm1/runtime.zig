@@ -373,7 +373,9 @@ pub const Vm = struct {
         // Every function gets a fresh .prototype whose constructor is it.
         const proto = try self.newObject();
         try self.objects.putWithAttrs(proto, S("constructor"), .{ .object = h }, .{ .dont_enum = true }, self.case_sensitive);
-        try self.objects.putWithAttrs(h, S("prototype"), .{ .object = proto }, .{ .dont_enum = true }, self.case_sensitive);
+        // UNDELETABLE: `delete f.prototype` fails on every function,
+        // native or script-defined (corpus prototype_delete).
+        try self.objects.putWithAttrs(h, S("prototype"), .{ .object = proto }, .{ .dont_enum = true, .dont_delete = true }, self.case_sensitive);
         return h;
     }
 
