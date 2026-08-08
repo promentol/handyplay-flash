@@ -311,6 +311,7 @@ textfield_props_swf7
 textfield_props_swf8
 textfield_text
 textfield_variable
+textsnapshot_available_text
 textsnapshot_findtext
 textsnapshot_gettext
 textsnapshot_props_swf5

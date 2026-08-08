@@ -49,27 +49,21 @@ pub fn install(vm: *Vm) !void {
 
 /// `new TextSnapshot(clip)` — the clip arrives as the first argument, put
 /// there by `MovieClip.getTextSnapshot`.
+///
+/// The text is captured HERE, not read live: a snapshot taken before the
+/// clip changed still reports what the clip said then. A receiver with no
+/// snapshot behind it answers `undefined` to everything, which is what a
+/// non-clip argument leaves behind.
 fn construct(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return this;
-    const clip = arg(args, 0);
-    if (clip == .object) {
-        try vm.objects.putWithAttrs(this.object, S("__clip"), clip, decl.frozen, false);
-    }
-    return this;
-}
+    if (args.len != 1) return this;
+    const t = stage_object.targetOfValue(vm, arg(args, 0)) orelse return this;
+    const clip = t.clip orelse return this;
+    const ctx = stage_object.displayCtxOf(vm) orelse return this;
 
-/// The static-text runs directly under the snapshot's clip. Each
-/// `DefineText` is one CHUNK: ruffle walks the render list of the target
-/// ONLY (no recursion into child clips) and keeps the runs separate,
-/// because `getText`'s `includeNewlines` joins them with a newline
-/// (text.rs:348-366).
-fn collect(vm: *Vm, this: Value, out: *std.ArrayList([]const u16)) !void {
-    if (this != .object) return;
-    const clip_v = vm.objects.getChained(this.object, S("__clip"), false) orelse return;
-    const t = stage_object.targetOfValue(vm, clip_v) orelse return;
-    const clip = t.clip orelse return;
-    const ctx = stage_object.displayCtxOf(vm) orelse return;
+    const chunks = try vm.newArray();
+    var n: u32 = 0;
     for (clip.children.items) |child| {
         if (child.kind != .text) continue;
         var chunk: std.ArrayList(u16) = .empty;
@@ -77,8 +71,35 @@ fn collect(vm: *Vm, this: Value, out: *std.ArrayList([]const u16)) !void {
         while (w.next()) |g| {
             if (g.glyph.code != 0) try chunk.append(vm.arena(), g.glyph.code);
         }
-        try out.append(vm.arena(), chunk.items);
+        try vm.arraySet(chunks, n, .{ .string = chunk.items });
+        n += 1;
     }
+    try vm.objects.putWithAttrs(this.object, S("__chunks"), .{ .object = chunks }, decl.frozen, false);
+    return this;
+}
+
+/// The chunks captured at construction. Null — as opposed to empty —
+/// means this receiver never had a clip, and every method then answers
+/// `undefined`.
+///
+/// Each `DefineText` directly under the clip is one CHUNK (no recursion
+/// into child clips), kept separate because `getText`'s `includeNewlines`
+/// joins them with a newline (ruffle text.rs:348-366).
+fn collect(vm: *Vm, this: Value, out: *std.ArrayList([]const u16)) !bool {
+    if (this != .object) return false;
+    const v = vm.objects.getChained(this.object, S("__chunks"), false) orelse return false;
+    if (v != .object) return false;
+    const len = vm.arrayLength(v.object);
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        var buf: [16]u8 = undefined;
+        const key = try std.fmt.bufPrint(&buf, "{d}", .{i});
+        var wide: [16]u16 = undefined;
+        for (key, 0..) |c, k| wide[k] = c;
+        const e = vm.objects.getChained(v.object, wide[0..key.len], false) orelse continue;
+        if (e == .string) try out.append(vm.arena(), e.string);
+    }
+    return true;
 }
 
 /// Every chunk concatenated, with an optional newline between them.
@@ -98,10 +119,10 @@ fn totalLen(chunks: []const []const u16) usize {
 }
 
 fn getCount(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = args;
     const vm = vmOf(p);
+    if (args.len != 0) return .undefined_value;
     var chunks: std.ArrayList([]const u16) = .empty;
-    try collect(vm, this, &chunks);
+    if (!try collect(vm, this, &chunks)) return .undefined_value;
     return .{ .number = @floatFromInt(totalLen(chunks.items)) };
 }
 
@@ -114,7 +135,7 @@ fn getText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (args.len < 2 or args.len > 3) return .undefined_value;
     var chunks: std.ArrayList([]const u16) = .empty;
-    try collect(vm, this, &chunks);
+    if (!try collect(vm, this, &chunks)) return .undefined_value;
     const count = totalLen(chunks.items);
     if (count == 0) return .{ .string = S("") };
 
@@ -176,7 +197,7 @@ fn findText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (args.len != 3) return .undefined_value;
     var chunks: std.ArrayList([]const u16) = .empty;
-    try collect(vm, this, &chunks);
+    if (!try collect(vm, this, &chunks)) return .undefined_value;
     const hay = try flatten(vm, chunks.items, false);
     const start = value_mod.toInt32(try vm.toNumber(args[0]));
     const needle = try vm.toStringValue(args[1]);
