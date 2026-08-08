@@ -205,6 +205,9 @@ fn runWindowed(player: *flash.Player, err_out: *std.Io.Writer) !u8 {
     var last_ms = c.SDL_GetTicks();
     var running = true;
     var dirty = true; // first frame already rendered by create()
+    // `trace()` goes to stderr as it happens. The player's buffer only
+    // grows, so remember how much of it has been printed.
+    var traced: usize = 0;
     while (running) {
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event)) {
@@ -240,6 +243,13 @@ fn runWindowed(player: *flash.Player, err_out: *std.Io.Writer) !u8 {
         const elapsed: f64 = @floatFromInt(now - last_ms);
         last_ms = now;
         if (try player.tick(elapsed) > 0) dirty = true;
+
+        const all = player.takeTrace();
+        if (all.len > traced) {
+            try err_out.writeAll(all[traced..]);
+            try err_out.flush();
+            traced = all.len;
+        }
 
         if (dirty) {
             _ = c.SDL_UpdateTexture(
