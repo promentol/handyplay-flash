@@ -53,8 +53,14 @@ one() {
     # Input-driven dirs ship an input.json; `Wait` in it marks a tick.
     inp=""
     [ -f "$CORPUS/$d/input.json" ] && inp="--input $CORPUS/$d/input.json"
+    # [player_options] viewport_dimensions = { width, height, scale_factor }
+    vp=$(sed -n 's/^viewport_dimensions *= *{ *width *= *\([0-9]*\) *, *height *= *\([0-9]*\) *\(, *scale_factor *= *\([0-9.]*\)\)\{0,1\}.*/\1x\2@\4/p' "$toml" 2>/dev/null | head -1)
+    case "$vp" in
+        *@) vp="${vp}1" ;;
+    esac
+    [ -n "$vp" ] && vp="--viewport $vp"
     # shellcheck disable=SC2086
-    timeout 20 "$BIN" "$swf" --frames "$n" $inp >"$T" 2>/dev/null
+    timeout 20 "$BIN" "$swf" --frames "$n" $inp $vp >"$T" 2>/dev/null
     if grep -q '^bare_numbers *= *true' "$toml" 2>/dev/null; then
         eps=$(sed -n 's/^epsilon *= *\([0-9.eE+-]*\).*/\1/p' "$toml" | head -1)
         [ -n "$eps" ] || eps=2.220446049250313e-16

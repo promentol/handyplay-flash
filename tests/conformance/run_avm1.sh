@@ -105,6 +105,17 @@ scorable_dirs() {
 }
 
 # Input-driven dirs ship an input.json; `Wait` in it marks a tick boundary.
+# [player_options] viewport_dimensions = { width, height, scale_factor }
+viewport_for() {
+    vp=$(sed -n 's/^viewport_dimensions *= *{ *width *= *\([0-9]*\) *, *height *= *\([0-9]*\) *\(, *scale_factor *= *\([0-9.]*\)\)\{0,1\}.*/\1x\2@\4/p' \
+        "$CORPUS/$1/test.toml" 2>/dev/null | head -1)
+    case "$vp" in
+        "") return 0 ;;
+        *@) vp="${vp}1" ;;
+    esac
+    printf -- '--viewport %s' "$vp"
+}
+
 input_for() {
     [ -f "$CORPUS/$1/input.json" ] && printf -- '--input %s' "$CORPUS/$1/input.json"
 }
@@ -118,7 +129,7 @@ run_one() {
     # normalizes them (framework/src/runner/trace.rs:14), so we must too.
     exp="$TMP.exp"; tr -d '\r' <"$CORPUS/$d/output.txt" >"$exp"
     # shellcheck disable=SC2086
-    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") >"$TMP" 2>/dev/null || return 1
+    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") >"$TMP" 2>/dev/null || return 1
     if have_approx "$toml"; then
         # `approx`'s defaults are f64::EPSILON for both knobs.
         approx_cmp "$TMP" "$exp" \
@@ -179,7 +190,7 @@ case "${1:-}" in
     have_approx "$toml" && verdict="$verdict (approximate)"
     # Re-run with stderr merged so panics show up in the diff.
     # shellcheck disable=SC2086
-    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") >"$TMP" 2>&1
+    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") >"$TMP" 2>&1
     echo "--- $verdict: ours vs expected ($d):"
     tr -d '\r' <"$CORPUS/$d/output.txt" >"$TMP.exp"
     diff "$TMP" "$TMP.exp" | head -40

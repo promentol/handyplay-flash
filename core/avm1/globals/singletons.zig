@@ -457,8 +457,14 @@ fn stageSetScaleMode(p: *anyopaque, this: Value, args: []const Value) anyerror!V
     for (SCALE_MODES, 0..) |name, i| {
         if (strings.eqlIgnoreCase(s, name)) {
             vm.stage_scale_mode = @intCast(i);
-            return .undefined_value;
+            break;
         }
+    }
+    // The stage SIZE follows the mode — under noScale it becomes the
+    // viewport's — and a size change fires `Stage.onResize` IMMEDIATELY,
+    // without queueing (ruffle stage.rs fire_resize_event).
+    if (stage_object.recomputeView(vm)) {
+        _ = broadcast(vm, .{ .object = vm.stage_object_handle }, S("onResize"), &.{}) catch {};
     }
     return .undefined_value;
 }

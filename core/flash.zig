@@ -89,6 +89,13 @@ pub const Player = struct {
         /// passes the real clock.
         epoch_ms: f64 = avm1.runtime.MOCK_EPOCH_MS,
         tz_offset_min: i32 = 345,
+        /// The presentation area in DEVICE pixels, and the HiDPI factor.
+        /// Zero means "the movie's own stage box at 1:1", which is what a
+        /// windowed frontend wants; `test.toml`'s `viewport_dimensions`
+        /// overrides it.
+        viewport_width: u32 = 0,
+        viewport_height: u32 = 0,
+        scale_factor: f64 = 1.0,
     };
 
     pub fn create(gpa: std.mem.Allocator, file_bytes: []const u8) LoadError!*Player {
@@ -138,6 +145,16 @@ pub const Player = struct {
         self.vm.epoch_ms = opts.epoch_ms;
         self.vm.stage_width = w;
         self.vm.stage_height = h;
+        self.vm.movie_width = @floatFromInt(w);
+        self.vm.movie_height = @floatFromInt(h);
+        self.vm.viewport_width = if (opts.viewport_width != 0) opts.viewport_width else w;
+        self.vm.viewport_height = if (opts.viewport_height != 0) opts.viewport_height else h;
+        self.vm.viewport_scale = if (opts.scale_factor > 0) opts.scale_factor else 1.0;
+        // The screen the capabilities report is the viewport corrected for
+        // HiDPI (ruffle's test harness feeds them from the same option).
+        self.vm.screen_width = @intFromFloat(@round(@as(f64, @floatFromInt(self.vm.viewport_width)) / self.vm.viewport_scale));
+        self.vm.screen_height = @intFromFloat(@round(@as(f64, @floatFromInt(self.vm.viewport_height)) / self.vm.viewport_scale));
+        _ = avm1.stage_object.recomputeView(self.vm);
         self.vm.use_network_sandbox = self.movie.use_network_sandbox;
         self.vm.tz_offset_min = opts.tz_offset_min;
         // Bind `_root` BEFORE frame 1. Lazily creating it in the action
@@ -810,9 +827,12 @@ pub const Player = struct {
     /// Move the pointer WITHOUT raising a move event. A button event
     /// carries a position too, and delivering it as a move as well would
     /// double every `onMouseMove` handler.
-    pub fn setMousePosition(self: *Player, x: f64, y: f64) void {
-        self.vm.mouse_x = x;
-        self.vm.mouse_y = y;
+    pub fn setMousePosition(self: *Player, x_view: f64, y_view: f64) void {
+        // The caller speaks VIEWPORT pixels; the stage may be scaled or
+        // letterboxed inside it.
+        const p = avm1.stage_object.viewportToStage(self.vm, x_view, y_view);
+        self.vm.mouse_x = p[0];
+        self.vm.mouse_y = p[1];
         avm1.stage_object.applyDrag(self.vm);
     }
 

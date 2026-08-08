@@ -5,6 +5,11 @@
 //! output to stdout, exit 0. The conformance script diffs stdout against
 //! the corpus dir's output.txt.
 //!
+//! `--viewport WxH@S` is `test.toml`'s `[player_options] viewport_dimensions`
+//! — the presentation area in device pixels and the HiDPI factor. It feeds
+//! the stage size under `noScale`, `System.capabilities.screenResolution*`
+//! and the window→stage mapping for pointer coordinates.
+//!
 //! `--input` replays ruffle's `input.json` format: an array of events,
 //! where `Wait` marks the end of a tick. Everything before the next `Wait`
 //! is delivered, then one frame runs — that is exactly what ruffle's
@@ -26,6 +31,9 @@ pub fn main(init: std.process.Init) !u8 {
     var swf_path: ?[]const u8 = null;
     var input_path: ?[]const u8 = null;
     var frames: u32 = 1;
+    var viewport_w: u32 = 0;
+    var viewport_h: u32 = 0;
+    var scale_factor: f64 = 1.0;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--frames")) {
@@ -36,6 +44,10 @@ pub fn main(init: std.process.Init) !u8 {
             i += 1;
             if (i >= args.len) return 2;
             input_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--viewport")) {
+            i += 1;
+            if (i >= args.len) return 2;
+            parseViewport(args[i], &viewport_w, &viewport_h, &scale_factor) catch return 2;
         } else if (swf_path == null) {
             swf_path = args[i];
         } else return 2;
@@ -52,7 +64,12 @@ pub fn main(init: std.process.Init) !u8 {
     // each corpus SWF from the root of a virtual filesystem, so the
     // expected output says "/test.swf" — mirror that with the basename.
     const url = try std.fmt.allocPrint(arena, "/{s}", .{std.fs.path.basename(path)});
-    const player = flash.Player.createWith(gpa, bytes, .{ .url = url }) catch {
+    const player = flash.Player.createWith(gpa, bytes, .{
+        .url = url,
+        .viewport_width = viewport_w,
+        .viewport_height = viewport_h,
+        .scale_factor = scale_factor,
+    }) catch {
         // A movie we can't run produces no trace output (several corpus
         // dirs are AVM2/image-comparison tests whose expected stdout is
         // empty). Diagnostics go to stderr, never stdout.
@@ -84,8 +101,8 @@ pub fn main(init: std.process.Init) !u8 {
     cursor = feedUntilWait(player, events, cursor);
     var f: u32 = 1;
     while (f < frames) : (f += 1) {
-        cursor = feedUntilWait(player, events, cursor);
         _ = player.tick(1000.0 / player.fps()) catch break;
+        cursor = feedUntilWait(player, events, cursor);
     }
 
     try out.writeAll(player.takeTrace());
@@ -130,6 +147,17 @@ fn feedUntilWait(player: *flash.Player, events: []const std.json.Value, start: u
         }
     }
     return i;
+}
+
+/// `WIDTHxHEIGHT@SCALE`, the shape the conformance script passes through
+/// from `test.toml`.
+fn parseViewport(spec: []const u8, w: *u32, h: *u32, scale: *f64) !void {
+    const x = std.mem.indexOfScalar(u8, spec, 'x') orelse return error.BadViewport;
+    const at = std.mem.indexOfScalar(u8, spec, '@');
+    const h_end = at orelse spec.len;
+    w.* = try std.fmt.parseInt(u32, spec[0..x], 10);
+    h.* = try std.fmt.parseInt(u32, spec[x + 1 .. h_end], 10);
+    if (at) |a| scale.* = try std.fmt.parseFloat(f64, spec[a + 1 ..]);
 }
 
 fn posOf(ev: std.json.Value) [2]f64 {

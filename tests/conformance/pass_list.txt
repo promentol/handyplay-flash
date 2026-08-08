@@ -48,6 +48,7 @@ button_v5
 button_v6
 call
 call_method_empty_name
+capabilities_resolution
 catch_references_registers
 click_block
 clip_constructors
@@ -198,6 +199,7 @@ stage_object_properties
 stage_object_properties_get_var
 stage_object_properties_swf6
 stage_property_representation
+stage_scale_mode
 strictequals_swf6
 strictly_equals
 string_coercion

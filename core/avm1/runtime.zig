@@ -171,6 +171,23 @@ pub const Vm = struct {
     stage_align_bottom: bool = false,
     stage_show_menu: bool = true,
     stage_full_screen: bool = false,
+    /// The VIEWPORT: the window area the movie is presented in, in device
+    /// pixels, plus the HiDPI factor. Defaults to the movie's own stage
+    /// box at 1:1, which is what every frontend but the conformance
+    /// runner uses.
+    viewport_width: u32 = 0,
+    viewport_height: u32 = 0,
+    viewport_scale: f64 = 1.0,
+    /// The view matrix's scale and letterbox offset — stage space to
+    /// device pixels. Recomputed whenever the scale mode or the viewport
+    /// changes (ruffle Stage::build_matrices).
+    view_scale_x: f64 = 1.0,
+    view_scale_y: f64 = 1.0,
+    view_tx: f64 = 0,
+    view_ty: f64 = 0,
+    /// The movie's own stage box in pixels, for the matrices above.
+    movie_width: f64 = 0,
+    movie_height: f64 = 0,
     /// The screen `System.capabilities.screenResolution*` reports.
     screen_width: u32 = 1920,
     screen_height: u32 = 1080,

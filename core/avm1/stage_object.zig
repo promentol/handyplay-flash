@@ -648,9 +648,35 @@ fn getYMouse(vm: *Vm, t: Target) !Value {
 }
 
 /// Stage mouse position pushed down into the clip's own space.
+/// Ruffle `local_mouse_position` (display_object.rs:1538). The pointer is
+/// quantised to whole DEVICE PIXELS before being pushed into the object's
+/// space — which is why `_xmouse` is a whole number on an unscaled clip
+/// however fractional the clip's position is. A singular matrix (a clip
+/// scaled to zero) falls back to the IDENTITY, so the reading becomes the
+/// device pixel count read as twips (corpus mouse_pos's `zs`).
 fn localMouse(vm: *Vm, t: Target) [2]f64 {
-    const inv = localToGlobalMatrix(t).invert() orelse return .{ 0, 0 };
-    const p = inv.transformPoint(twipsFromPixels(vm.mouse_x), twipsFromPixels(vm.mouse_y));
+    const ratio = vm.view_scale_x;
+    const dev_x = @floor(vm.mouse_x * ratio);
+    const dev_y = @floor(vm.mouse_y * ratio);
+
+    const l2g = localToGlobalMatrix(t);
+    // KNOWN GAP: ruffle composes this chain in 16.16 FIXED POINT, where
+    // twips→pixels is 3277/65536 = 0.05000305… and every step floors. We
+    // use f64 and floor once, which lands one pixel out for a clip sitting
+    // a hair below an integer position — the last line of corpus mouse_pos.
+    const k = ratio / @as(f64, swf.reader.TWIPS_PER_PX);
+    const to_device: swf.reader.Matrix = .{
+        .a = @floatCast(l2g.a * k),
+        .b = @floatCast(l2g.b * k),
+        .c = @floatCast(l2g.c * k),
+        .d = @floatCast(l2g.d * k),
+        .tx = @intFromFloat(@floor(@as(f64, @floatFromInt(l2g.tx)) * k)),
+        .ty = @intFromFloat(@floor(@as(f64, @floatFromInt(l2g.ty)) * k)),
+    };
+    const inv = to_device.invert() orelse {
+        return .{ pixelsFromTwips(@intFromFloat(dev_x)), pixelsFromTwips(@intFromFloat(dev_y)) };
+    };
+    const p = inv.transformPoint(@intFromFloat(dev_x), @intFromFloat(dev_y));
     return .{ pixelsFromTwips(p[0]), pixelsFromTwips(p[1]) };
 }
 
@@ -1163,6 +1189,58 @@ pub fn gotoFrameNumber(vm: *Vm, clip: *MovieClip, n: i32, scene_offset: u16, pla
     f = f +% @as(i32, scene_offset);
     f = if (f == std.math.maxInt(i32)) f else f + 1;
     if (f > 0) hostGoto(vm, clip, @truncate(@as(u32, @bitCast(f))), play);
+}
+
+// --- viewport ----------------------------------------------------------------
+
+/// Rebuild the stage→viewport matrix and the stage size from the current
+/// scale mode. Returns whether the STAGE SIZE changed, which is what makes
+/// `Stage.onResize` fire (ruffle Stage::build_matrices).
+pub fn recomputeView(vm: *Vm) bool {
+    const mw = vm.movie_width;
+    const mh = vm.movie_height;
+    if (mw <= 0 or mh <= 0) return false;
+    const vw: f64 = @floatFromInt(vm.viewport_width);
+    const vh: f64 = @floatFromInt(vm.viewport_height);
+    switch (vm.stage_scale_mode) {
+        0 => { // showAll: fit inside, letterboxed
+            const s = @min(vw / mw, vh / mh);
+            vm.view_scale_x = s;
+            vm.view_scale_y = s;
+        },
+        1 => { // noBorder: fill, cropping
+            const s = @max(vw / mw, vh / mh);
+            vm.view_scale_x = s;
+            vm.view_scale_y = s;
+        },
+        2 => { // exactFit: stretch
+            vm.view_scale_x = vw / mw;
+            vm.view_scale_y = vh / mh;
+        },
+        3 => { // noScale: device pixels, HiDPI aside
+            vm.view_scale_x = vm.viewport_scale;
+            vm.view_scale_y = vm.viewport_scale;
+        },
+    }
+    vm.view_tx = (vw - mw * vm.view_scale_x) / 2;
+    vm.view_ty = (vh - mh * vm.view_scale_y) / 2;
+
+    const old_w = vm.stage_width;
+    const old_h = vm.stage_height;
+    if (vm.stage_scale_mode == 3) {
+        vm.stage_width = @intFromFloat(@round(vw / vm.viewport_scale));
+        vm.stage_height = @intFromFloat(@round(vh / vm.viewport_scale));
+    } else {
+        vm.stage_width = @intFromFloat(mw);
+        vm.stage_height = @intFromFloat(mh);
+    }
+    return old_w != vm.stage_width or old_h != vm.stage_height;
+}
+
+/// A pointer position in VIEWPORT pixels, in stage pixels.
+pub fn viewportToStage(vm: *Vm, x: f64, y: f64) [2]f64 {
+    if (vm.view_scale_x == 0 or vm.view_scale_y == 0) return .{ x, y };
+    return .{ (x - vm.view_tx) / vm.view_scale_x, (y - vm.view_ty) / vm.view_scale_y };
 }
 
 // --- focus -------------------------------------------------------------------
