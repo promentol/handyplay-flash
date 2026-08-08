@@ -15,6 +15,7 @@ const swf = @import("../swf/swf.zig");
 const strings = @import("../avm1/string.zig");
 const library = @import("library.zig");
 const movie_clip = @import("movie_clip.zig");
+const button_mod = @import("button.zig");
 
 pub const DisplayObject = struct {
     character_id: u16,
@@ -86,7 +87,9 @@ pub const DisplayObject = struct {
         morph_shape: u16, // character id; decoded in M7
         text: *const swf.font_text.Text,
         edit_text: *const swf.font_text.EditText,
-        button: *const swf.button.Button,
+        /// Owned: a button is a container with its own child lists
+        /// (button.zig), not a bare pointer into the library.
+        button: *button_mod.Button,
         bitmap: u16, // character id; decoded pixels cached in M4
         /// Sprites instantiate their own timeline.
         clip: *movie_clip.MovieClip,
@@ -98,6 +101,10 @@ pub const DisplayObject = struct {
             .clip => |mc| {
                 mc.deinit(gpa);
                 gpa.destroy(mc);
+            },
+            .button => |b| {
+                b.deinit(gpa);
+                gpa.destroy(b);
             },
             else => {},
         };

@@ -103,6 +103,21 @@ pub fn handleOf(vm: *Vm, obj: *DisplayObject) !ObjectHandle {
 pub fn displayValue(vm: *Vm, obj: *DisplayObject) !Value {
     if (vm.swf_version < 5) return .undefined_value;
     if (obj.kind == .clip) return .{ .object = try clipObject(vm, obj.kind.clip) };
+    // SWF5 has no object model for buttons and text fields: a reference to
+    // one resolves UP to the first MovieClip ancestor, so a button reads
+    // back as the timeline holding it (ruffle
+    // MovieClipReference::process_swf5_references; corpus button_v5).
+    if (vm.swf_version <= 5) {
+        var p = obj.parent;
+        while (p) |c| {
+            if (c.owner_button) |b| {
+                p = b.parent;
+                continue;
+            }
+            return .{ .object = try clipObject(vm, c) };
+        }
+        return .undefined_value;
+    }
     return .{ .object = try displayObject(vm, obj) };
 }
 
@@ -655,6 +670,10 @@ pub fn globalToLocalMatrix(t: Target) ?swf.reader.Matrix {
 /// as their timeline's variable scope, so `scope_parent` stays 0 and lookup
 /// falls through to _global.
 pub fn clipObject(vm: *Vm, mc: *MovieClip) !ObjectHandle {
+    // A button's child container has no identity of its own: it IS the
+    // button as far as scripts are concerned, which is what makes
+    // `_parent` from inside a button the button itself.
+    if (mc.owner_button) |obj| return displayObject(vm, obj);
     if (mc.avm_object != 0) return mc.avm_object;
     const h = try vm.objects.create();
     vm.objects.get(h).proto = .{ .object = if (vm.movieclip_proto != 0) vm.movieclip_proto else vm.object_proto };
@@ -670,6 +689,7 @@ pub fn clipObject(vm: *Vm, mc: *MovieClip) !ObjectHandle {
 /// through `clipObject` and is unaffected.
 pub fn clipValue(vm: *Vm, mc: *MovieClip) !Value {
     if (vm.swf_version < 5) return .undefined_value;
+    if (mc.owner_button) |obj| return displayValue(vm, obj);
     return .{ .object = try clipObject(vm, mc) };
 }
 
@@ -680,7 +700,7 @@ pub fn clipValue(vm: *Vm, mc: *MovieClip) !Value {
 /// name still enumerates.
 pub fn enumerateKeys(vm: *Vm, handle: ObjectHandle, out: *std.ArrayList([]const u16)) !void {
     const t = targetOf(vm, handle) orelse return;
-    const c = t.clip orelse return;
+    const c = containerOf(t) orelse return;
     const kids = c.children.items;
     var i = kids.len;
     while (i > 0) { // children are depth-ascending, so walk back to front
@@ -698,6 +718,14 @@ pub fn enumerateKeys(vm: *Vm, handle: ObjectHandle, out: *std.ArrayList([]const 
 pub fn childValue(vm: *Vm, container: *MovieClip, child: *DisplayObject) !Value {
     if (!isScriptable(child.kind)) return clipValue(vm, container);
     return displayValue(vm, child);
+}
+
+/// The child list a target exposes to scripts: a clip's own, or the
+/// button's CURRENT STATE children (ruffle's Avm1Button is a container).
+pub fn containerOf(t: Target) ?*MovieClip {
+    if (t.clip) |c| return c;
+    if (t.obj.kind == .button) return &t.obj.kind.button.container;
+    return null;
 }
 
 pub fn childByName(mc: *MovieClip, name: []const u16, case_sensitive: bool) ?*DisplayObject {
@@ -728,7 +756,7 @@ pub fn resolveMember(vm: *Vm, handle: ObjectHandle, name: []const u16) !?Value {
         if (try resolvePathProperty(vm, t, name)) |v| return v;
     }
 
-    const container = t.clip orelse return null;
+    const container = containerOf(t) orelse return null;
     if (childByName(container, name, vm.case_sensitive)) |child| {
         return try childValue(vm, container, child);
     }
@@ -747,7 +775,7 @@ pub fn resolvePathProperty(vm: *Vm, t: Target, name: []const u16) !?Value {
     if (nameEql(vm, name, S("_root"))) return try rootValueFor(vm, t);
     if (nameEql(vm, name, S("_parent"))) {
         const parent = t.parent() orelse return .undefined_value;
-        return .{ .object = try clipObject(vm, parent) };
+        return try clipValue(vm, parent);
     }
     if (vm.swf_version >= 6 and nameEql(vm, name, S("_global"))) {
         return .{ .object = vm.globals };

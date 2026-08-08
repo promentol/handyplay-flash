@@ -35,6 +35,10 @@ bitmapdata_applyfilter_colormatrix
 bitor
 biturshift
 bitxor
+button_children
+button_order
+button_v5
+button_v6
 call
 call_method_empty_name
 catch_references_registers
@@ -65,6 +69,7 @@ equals
 equals_swf4_alt
 equals_swf5
 error
+execution_order2
 execution_order3
 export_assets
 extends_chain
@@ -102,12 +107,14 @@ issue_1086
 issue_1104
 issue_1671
 issue_1906
+issue_2084
 issue_2166
 issue_3169
 issue_3446
 issue_4377
 issue_710
 issue_768
+issue_9885
 key_isToggled
 lessthan
 lessthan_swf4_alt

@@ -26,9 +26,10 @@ pub fn selfBounds(obj: *const DisplayObject) ?Rectangle {
         .shape => |s| s.bounds,
         .text => |t| t.bounds,
         .edit_text => |et| et.bounds,
-        // Buttons need their state records (M4-C) and bitmaps their decoded
-        // size (M4-E); morph shapes stay undecoded until M7. Ruffle reports
-        // the start shape for a morph under BoundsMode::Script — a known gap.
+        // A button's geometry is entirely its state children, like a
+        // clip's is its own. Bitmaps need their decoded size (M4-E) and
+        // morph shapes stay undecoded until M7 — ruffle reports the start
+        // shape for a morph under BoundsMode::Script, a known gap.
         .button, .bitmap, .morph_shape => null,
         // A clip's own geometry is whatever the drawing API put there
         // (ruffle MovieClip::self_bounds -> drawing.self_bounds).
@@ -39,11 +40,9 @@ pub fn selfBounds(obj: *const DisplayObject) ?Rectangle {
 /// Bounds of `obj` including its children, everything pushed through `m`.
 pub fn boundsWithTransform(obj: *const DisplayObject, m: Matrix) ?Rectangle {
     var acc: ?Rectangle = if (selfBounds(obj)) |b| m.transformRect(b) else null;
-    if (obj.kind == .clip) {
-        for (obj.kind.clip.children.items) |child| {
-            const child_box = boundsWithTransform(child, m.mul(child.matrix)) orelse continue;
-            acc = if (acc) |a| unionRect(a, child_box) else child_box;
-        }
+    for (childrenOf(obj)) |child| {
+        const child_box = boundsWithTransform(child, m.mul(child.matrix)) orelse continue;
+        acc = if (acc) |a| unionRect(a, child_box) else child_box;
     }
     return acc;
 }
@@ -56,6 +55,17 @@ pub fn localBounds(obj: *const DisplayObject) ?Rectangle {
 /// In the object's OWN space — setting `_width` / `_height` scales this.
 pub fn ownBounds(obj: *const DisplayObject) ?Rectangle {
     return boundsWithTransform(obj, .identity);
+}
+
+/// The children a container contributes to bounds and hit tests. A
+/// button's are its CURRENT state's — the hit records are a separate list
+/// and never count towards `_width`.
+pub fn childrenOf(obj: *const DisplayObject) []const *DisplayObject {
+    return switch (obj.kind) {
+        .clip => |mc| mc.children.items,
+        .button => |b| b.container.children.items,
+        else => &.{},
+    };
 }
 
 pub fn unionRect(a: Rectangle, b: Rectangle) Rectangle {
@@ -109,9 +119,22 @@ pub fn hitTestShape(obj: *const DisplayObject, point: [2]i32, parent_to_global: 
             }
             return false;
         },
-        // Text renders in M4-D, buttons in M4-C, bitmaps in M4-E; until
-        // then their box IS their geometry.
-        .text, .edit_text, .button, .bitmap, .morph_shape => {
+        // A button is hit through its HIT-AREA records when there are any,
+        // and through what it is currently showing when there are not
+        // (ruffle avm1_button.rs hit_area).
+        .button => |b| {
+            const list = if (b.hit_area.children.items.len > 0)
+                b.hit_area.children.items
+            else
+                b.container.children.items;
+            for (list) |child| {
+                if (hitTestShape(child, point, to_global)) return true;
+            }
+            return false;
+        },
+        // Text renders in M4-D and bitmaps in M4-E; until then their box
+        // IS their geometry.
+        .text, .edit_text, .bitmap, .morph_shape => {
             const box = selfBounds(obj) orelse return false;
             return contains(box, local[0], local[1]);
         },

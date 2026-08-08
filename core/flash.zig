@@ -625,6 +625,7 @@ test {
     _ = @import("display/display_object.zig");
     _ = @import("display/bounds.zig");
     _ = @import("display/movie_clip.zig");
+    _ = @import("display/button.zig");
     _ = @import("render/canvas.zig");
     _ = @import("render/shape_utils.zig");
     _ = @import("render/renderer.zig");

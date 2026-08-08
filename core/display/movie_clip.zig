@@ -17,6 +17,7 @@ const swf = @import("../swf/swf.zig");
 const library = @import("library.zig");
 const display_object = @import("display_object.zig");
 const drawing_mod = @import("drawing.zig");
+const button_mod = @import("button.zig");
 
 const DisplayObject = display_object.DisplayObject;
 
@@ -160,6 +161,11 @@ pub const MovieClip = struct {
     /// `_lockroot`: when set, `_root` inside this clip resolves to the clip
     /// itself rather than the main timeline.
     lock_root: bool = false,
+    /// Set when this clip is one of a BUTTON's child containers. It is not
+    /// scriptable in its own right: every request for its AVM1 object
+    /// yields the button's, so `_parent` from inside a button is the
+    /// button (avm1/stage_object.zig clipObject).
+    owner_button: ?*DisplayObject = null,
 
     pub fn init(frames: []const library.Frame) MovieClip {
         return .{ .frames = frames };
@@ -225,13 +231,29 @@ pub const MovieClip = struct {
         // Tick child clips (M3 replaces this tree walk with the global
         // instantiation-order exec list). Clips placed during THIS tick
         // already ran their first frame in `instantiate`.
-        for (self.children.items) |child| {
+        try self.tickChildren(ctx);
+    }
+
+    /// Advance every child timeline. A button is not a timeline itself but
+    /// its state children are, so it forwards the tick — an animated clip
+    /// inside a button keeps playing (corpus button_order).
+    pub fn tickChildren(self: *MovieClip, ctx: *Context) Error!void {
+        // HIGHEST DEPTH FIRST. Ruffle does not walk the tree at all here:
+        // it iterates one global list that new clips are PREPENDED to
+        // (avm1/runtime.rs add_to_exec_list), so siblings tick in reverse
+        // instantiation order — which for timeline placements is reverse
+        // depth (corpus button_order, clip_event_propagation_order).
+        var i = self.children.items.len;
+        while (i > 0) {
+            i -= 1;
+            const child = self.children.items[i];
             switch (child.kind) {
                 .clip => |mc| {
                     // Placed this tick: it already ran its first frame.
                     if (mc.ran_this_tick) continue;
                     try mc.runFrame(ctx);
                 },
+                .button => |b| try b.container.tickChildren(ctx),
                 else => {},
             }
         }
@@ -249,7 +271,11 @@ pub const MovieClip = struct {
         while (i > 0) {
             i -= 1;
             const child = self.children.items[i];
-            if (child.kind == .clip) try child.kind.clip.broadcastClipEvent(ctx, flag, method);
+            switch (child.kind) {
+                .clip => |mc| try mc.broadcastClipEvent(ctx, flag, method),
+                .button => |b| try b.container.broadcastClipEvent(ctx, flag, method),
+                else => {},
+            }
         }
         try self.dispatchClipEvent(ctx, flag, method);
     }
@@ -262,7 +288,11 @@ pub const MovieClip = struct {
     pub fn clearRanThisTick(self: *MovieClip) void {
         self.ran_this_tick = false;
         for (self.children.items) |child| {
-            if (child.kind == .clip) child.kind.clip.clearRanThisTick();
+            switch (child.kind) {
+                .clip => |mc| mc.clearRanThisTick(),
+                .button => |b| b.container.clearRanThisTick(),
+                else => {},
+            }
         }
     }
 
@@ -501,7 +531,11 @@ pub const MovieClip = struct {
                 .morph_shape => .{ .morph_shape = id },
                 .text => |*t| .{ .text = t },
                 .edit_text => |*et| .{ .edit_text = et },
-                .button => |*btn| .{ .button = btn },
+                .button => |*btn| .{ .button = b: {
+                    const bt = try ctx.gpa.create(button_mod.Button);
+                    bt.* = button_mod.Button.init(btn);
+                    break :b bt;
+                } },
                 .bitmap => .{ .bitmap = id },
                 .sprite => |sprite| .{ .clip = c: {
                     const mc = try ctx.gpa.create(MovieClip);
@@ -552,6 +586,10 @@ pub const MovieClip = struct {
         try self.children.insert(ctx.gpa, insert_at, obj);
         // New clips run their first frame on the tick they appear (and
         // are skipped by this tick's child loop — see `ran_this_tick`).
+        // A button builds its initial state (and its hit area) as soon as
+        // it is on the list, so its children are named right after it and
+        // `_width` measures something on the very first frame.
+        if (obj.kind == .button) try obj.kind.button.ensureInit(ctx, obj);
         if (obj.kind == .clip) {
             // Construct is queued BEFORE the first frame runs. Ruffle's
             // instantiate_child passes `run_frame = false` to
@@ -660,6 +698,14 @@ fn retire(ctx: *Context, obj: *DisplayObject) Error!void {
 }
 
 fn dispatchUnload(ctx: *Context, obj: *DisplayObject) Error!void {
+    if (obj.kind == .button) {
+        var j = obj.kind.button.container.children.items.len;
+        while (j > 0) {
+            j -= 1;
+            try dispatchUnload(ctx, obj.kind.button.container.children.items[j]);
+        }
+        return;
+    }
     if (obj.kind != .clip) return;
     const mc = obj.kind.clip;
     var i = mc.children.items.len;
@@ -672,6 +718,11 @@ fn dispatchUnload(ctx: *Context, obj: *DisplayObject) Error!void {
 
 fn markRemoved(obj: *DisplayObject) void {
     obj.removed = true;
+    if (obj.kind == .button) {
+        for (obj.kind.button.container.children.items) |child| markRemoved(child);
+        for (obj.kind.button.hit_area.children.items) |child| markRemoved(child);
+        return;
+    }
     if (obj.kind != .clip) return;
     const mc = obj.kind.clip;
     mc.removed = true;

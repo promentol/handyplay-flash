@@ -118,7 +118,10 @@ pub const Renderer = struct {
             switch (child.kind) {
                 .shape => |s| try self.renderShape(ctx, child.character_id, s, t, cx),
                 .clip => |mc| try self.renderClip(ctx, mc, t, cx),
-                .morph_shape, .text, .edit_text, .button, .bitmap => {}, // M4/M7
+                // A button draws its current state's children and nothing
+                // else — the hit records are invisible by definition.
+                .button => |b| try self.renderClip(ctx, &b.container, t, cx),
+                .morph_shape, .text, .edit_text, .bitmap => {}, // M4/M7
             }
         }
     }
