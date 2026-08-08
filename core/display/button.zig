@@ -188,10 +188,15 @@ pub const Cond = struct {
 
 /// The "button key code" a key press carries — a numbering all its own,
 /// distinct from the Key class's virtual-key codes (ruffle events.rs
-/// ButtonKeyCode). Printable ASCII is its own character code; the special
-/// keys get small ordinals; everything else raises no keyPress at all.
-pub fn buttonKeyCode(vk: i32, char: i32) ?u8 {
-    if (char >= 32 and char <= 126) return @intCast(char);
+/// ButtonKeyCode).
+///
+/// It comes from TWO different events and the split matters: a SPECIAL
+/// key raises its keyPress from the key-down, while printable ASCII —
+/// SPACE included — raises it from the TEXT INPUT that follows. Deriving
+/// the ASCII one from the key-down too would fire the handler and then
+/// still let the character reach the focused text field, which is what
+/// `button_keypress_vs_textinput` exists to catch.
+pub fn buttonKeyFromKeyCode(vk: i32) ?u8 {
     return switch (vk) {
         37 => 1, // left
         39 => 2, // right
@@ -205,11 +210,15 @@ pub fn buttonKeyCode(vk: i32, char: i32) ?u8 {
         40 => 15, // down
         33 => 16, // page up
         34 => 17, // page down
-        32 => 32, // space — ruffle gets this from a TEXT INPUT event
         9 => 18, // tab
         27 => 19, // escape
         else => null,
     };
+}
+
+pub fn buttonKeyFromChar(cp: u16) ?u8 {
+    if (cp >= 32 and cp <= 126) return @intCast(cp);
+    return null;
 }
 
 /// Ruffle `ButtonActionCondition::matches`: the transition bits must

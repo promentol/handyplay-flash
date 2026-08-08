@@ -187,6 +187,10 @@ fn runWindowed(player: *flash.Player, err_out: *std.Io.Writer) !u8 {
     defer c.SDL_DestroyRenderer(sdl_renderer);
     defer c.SDL_DestroyWindow(window);
     window_handle = window;
+    // Printable characters raise their button `keyPress` from the TEXT
+    // INPUT event, not the key-down, so the window has to be asking for
+    // one — and it is also what lets a text field be typed into.
+    _ = c.SDL_StartTextInput(window);
 
     const tex = c.SDL_CreateTexture(
         sdl_renderer,
@@ -230,6 +234,13 @@ fn runWindowed(player: *flash.Player, err_out: *std.Io.Writer) !u8 {
                 c.SDL_EVENT_KEY_DOWN => {
                     if (event.key.key == c.SDLK_ESCAPE) running = false;
                     try player.keyDown(flashKeyCode(event.key.key), asciiOf(event.key.key));
+                    dirty = true;
+                },
+                c.SDL_EVENT_TEXT_INPUT => {
+                    const utf8 = std.mem.span(event.text.text);
+                    var buf: [16]u16 = undefined;
+                    const n = std.unicode.utf8ToUtf16Le(&buf, utf8) catch 0;
+                    if (n > 0) try player.textInput(buf[0..n]);
                     dirty = true;
                 },
                 c.SDL_EVENT_KEY_UP => {

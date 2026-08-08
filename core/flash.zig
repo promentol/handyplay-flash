@@ -974,8 +974,21 @@ pub const Player = struct {
         };
     }
 
-    /// Text typed into the focused field. Nothing happens without one.
+    /// Text typed by the user. This is also where printable ASCII raises
+    /// its button `keyPress`, and a handler that CLAIMS the key stops the
+    /// character reaching the focused field.
     pub fn textInput(self: *Player, typed: []const u16) !void {
+        for (typed) |cp| try self.textInputOne(cp);
+    }
+
+    fn textInputOne(self: *Player, cp: u16) !void {
+        var handled = false;
+        if (display.button.buttonKeyFromChar(cp)) |bk| handled = try self.dispatchKeyPress(bk);
+        if (handled) return;
+        // Space activates the highlighted focus, and it does so from the
+        // TEXT INPUT rather than the key-down (ruffle player.rs:1348).
+        if (cp == ' ') try self.activateFocus();
+
         var ctx = self.makeContext();
         defer ctx.deinit(self.gpa);
         self.cur_ctx = &ctx;
@@ -985,7 +998,7 @@ pub const Player = struct {
             self.vm.display_ctx = null;
         }
         const t = self.focusedFieldTarget() orelse return;
-        const changed = try t.obj.kind.edit_text.textInput(self.gpa, typed);
+        const changed = try t.obj.kind.edit_text.textInput(self.gpa, &.{cp});
         if (changed) try self.afterFieldEdit(t.obj);
         try self.drainActions(&ctx);
         self.retireDead(&ctx);
@@ -1043,12 +1056,12 @@ pub const Player = struct {
         try self.dispatchInput(swf.place.ClipEvent.KEY_DOWN, "onKeyDown", self.vm.key_object);
         // keyPress comes after keyDown, always (ruffle player.rs:1302).
         var handled = false;
-        if (display.button.buttonKeyCode(code, char)) |bk| handled = try self.dispatchKeyPress(bk);
+        if (display.button.buttonKeyFromKeyCode(code)) |bk| handled = try self.dispatchKeyPress(bk);
         // Tab cycles the focus — but only when no keyPress claimed the
         // key first (ruffle player.rs:1328-1340).
         if (!handled and code == 9) {
             try self.cycleFocus(self.vm.keys_down[16]);
-        } else if (!handled and (code == 13 or code == 32 or char == 32)) {
+        } else if (!handled and code == 13) {
             try self.activateFocus();
         }
         try self.updateMouseState(false, false);

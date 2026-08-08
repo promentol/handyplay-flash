@@ -42,6 +42,7 @@ button_key_events_special
 button_keypress
 button_keypress_vs_press
 button_keypress_vs_tab
+button_keypress_vs_textinput
 button_order
 button_properties_special_cases
 button_v5
