@@ -26,6 +26,10 @@ pub const bitmap = struct {
     pub const turbulence = @import("bitmap/turbulence.zig");
 };
 
+pub const xml = struct {
+    pub const parser = @import("xml/parser.zig");
+};
+
 pub const display = struct {
     pub const library = @import("display/library.zig");
     pub const display_object = @import("display/display_object.zig");
@@ -1322,6 +1326,7 @@ test {
     _ = @import("bitmap/operations.zig");
     _ = @import("bitmap/decode.zig");
     _ = @import("bitmap/turbulence.zig");
+    _ = @import("xml/parser.zig");
     _ = @import("text/format.zig");
     _ = @import("text/spans.zig");
     _ = @import("text/html.zig");

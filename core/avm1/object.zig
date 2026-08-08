@@ -125,6 +125,12 @@ pub const NativeInfo = union(enum) {
     /// A `BitmapData`'s pixel buffer, owned by the VM arena. Opaque so
     /// the object model keeps no dependency on the bitmap module.
     bitmap_data: *anyopaque,
+    /// One node of an XML tree, and the document-level state an `XML`
+    /// adds on top of its root. A document object carries `xml_doc` and
+    /// answers to every node accessor through its root, so the two are
+    /// resolved together (`globals/xml.zig` `nodeOf`).
+    xml_node: *anyopaque,
+    xml_doc: *anyopaque,
     /// flash.geom.Transform — a live view of the display object whose AVM1
     /// handle this holds. A handle rather than a pointer so a removed clip
     /// simply stops resolving, like every other retained reference.

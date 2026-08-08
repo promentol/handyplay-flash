@@ -265,6 +265,12 @@ pub const Vm = struct {
     /// a pixel implementation, so the one that has to be recognised by
     /// class rather than by shape (`BitmapData.applyFilter`).
     colormatrix_proto: ObjectHandle = 0,
+    xmlnode_proto: ObjectHandle = 0,
+    /// The CONSTRUCTOR, not its prototype: a node made by the parser
+    /// takes whatever `XMLNode.prototype` says AT THAT MOMENT, and
+    /// content reassigns it (corpus xmlnode_proto).
+    xmlnode_ctor: ObjectHandle = 0,
+    xml_proto: ObjectHandle = 0,
     /// Every `flash.filters` prototype, indexed by the class's position
     /// in `globals/filters.zig`'s table. Needed to build a filter object
     /// from a PlaceObject3 record, which has no constructor to call.

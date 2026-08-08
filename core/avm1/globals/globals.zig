@@ -105,6 +105,7 @@ pub fn install(vm: *Vm) !void {
     try method(vm, object_class, "registerClass", objRegisterClass, frozen);
     _ = try decl.class(vm, "Function", ctorFunction, vm.function_proto, ver(attrs, decl.V6));
     _ = try decl.class(vm, "Array", ctorArray, vm.array_proto, attrs);
+    try @import("xml.zig").install(vm, attrs);
     const string_class = try decl.class(vm, "String", ctorString, vm.string_proto, attrs);
     const number_class = try decl.class(vm, "Number", ctorNumber, vm.number_proto, attrs);
     _ = try decl.class(vm, "Boolean", ctorBoolean, vm.boolean_proto, attrs);
