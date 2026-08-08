@@ -1005,9 +1005,35 @@ fn boolValueOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 
 // --- Math --------------------------------------------------------------------
 
+/// How many arguments a Math method really wants, for the SWF6 arity
+/// check.
+const MathArity = enum { one, two, pow, min_max };
+
+/// Every Math method coerces its FIRST TWO arguments, whether or not it
+/// uses them — a `valueOf` on either runs, and the corpus counts the
+/// calls. Below SWF7 the ARITY is checked as well, and a call with too
+/// few arguments is NaN before the method itself is reached.
+fn mathPrep(vm: *Vm, args: []const Value, arity: MathArity) !?[2]f64 {
+    const x = try vm.toNumber(arg(args, 0));
+    const y = try vm.toNumber(arg(args, 1));
+    if (vm.swf_version <= 6) {
+        const ok = switch (arity) {
+            .min_max => args.len == 0 or args.len >= 2,
+            // `Math.pow(1)` is the one single-argument call that passes:
+            // the answer would be 1 whatever the exponent.
+            .pow => args.len >= 2 or (args.len == 1 and x == 1.0),
+            .two => args.len >= 2,
+            .one => args.len >= 1,
+        };
+        if (!ok) return null;
+    }
+    return .{ x, y };
+}
+
 fn math1(p: *anyopaque, args: []const Value, comptime f: fn (f64) f64) anyerror!Value {
     const vm = vmOf(p);
-    return .{ .number = f(try vm.toNumber(arg(args, 0))) };
+    const a = try mathPrep(vm, args, .one) orelse return .{ .number = std.math.nan(f64) };
+    return .{ .number = f(a[0]) };
 }
 
 fn mathAbs(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -1119,43 +1145,41 @@ fn mathLog(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 fn mathPow(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
     const vm = vmOf(p);
-    const a = try vm.toNumber(arg(args, 0));
-    const b = try vm.toNumber(arg(args, 1));
-    return .{ .number = std.math.pow(f64, a, b) };
+    const a = try mathPrep(vm, args, .pow) orelse return .{ .number = std.math.nan(f64) };
+    return .{ .number = std.math.pow(f64, a[0], a[1]) };
 }
 
 fn mathAtan2(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
     const vm = vmOf(p);
-    const y = try vm.toNumber(arg(args, 0));
-    const x = try vm.toNumber(arg(args, 1));
-    return .{ .number = std.math.atan2(y, x) };
+    const a = try mathPrep(vm, args, .two) orelse return .{ .number = std.math.nan(f64) };
+    return .{ .number = std.math.atan2(a[0], a[1]) };
+}
+
+/// BINARY, not variadic: a third argument is ignored and a MISSING
+/// second one is undefined, which above SWF6 is NaN — so `Math.min(1)`
+/// is NaN, not 1. With no arguments at all the answer is the identity
+/// for the operation.
+fn mathMinMax(vm: *Vm, args: []const Value, comptime want_min: bool) anyerror!Value {
+    const a = try mathPrep(vm, args, .min_max) orelse return .{ .number = std.math.nan(f64) };
+    // With NO arguments the answer is the identity for the operation.
+    if (args.len == 0) {
+        return .{ .number = if (want_min) std.math.inf(f64) else -std.math.inf(f64) };
+    }
+    // A NaN in EITHER argument wins, unlike the usual min/max which
+    // prefer the number.
+    if (std.math.isNan(a[0]) or std.math.isNan(a[1])) return .{ .number = std.math.nan(f64) };
+    return .{ .number = if (want_min) @min(a[0], a[1]) else @max(a[0], a[1]) };
 }
 
 fn mathMin(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
-    const vm = vmOf(p);
-    if (args.len == 0) return .{ .number = std.math.inf(f64) };
-    var best = try vm.toNumber(args[0]);
-    for (args[1..]) |a| {
-        const n = try vm.toNumber(a);
-        if (std.math.isNan(n) or std.math.isNan(best)) return .{ .number = std.math.nan(f64) };
-        if (n < best) best = n;
-    }
-    return .{ .number = best };
+    return mathMinMax(vmOf(p), args, true);
 }
 
 fn mathMax(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
-    const vm = vmOf(p);
-    if (args.len == 0) return .{ .number = -std.math.inf(f64) };
-    var best = try vm.toNumber(args[0]);
-    for (args[1..]) |a| {
-        const n = try vm.toNumber(a);
-        if (std.math.isNan(n) or std.math.isNan(best)) return .{ .number = std.math.nan(f64) };
-        if (n > best) best = n;
-    }
-    return .{ .number = best };
+    return mathMinMax(vmOf(p), args, false);
 }
 
 fn mathRandom(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {

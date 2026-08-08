@@ -243,6 +243,7 @@ looping_real_2_declared_1
 looping_real_2_declared_2
 mask_reapply
 mask_with_drawing
+math_min_max
 mcl_as_broadcaster
 mouse_events
 mouse_events_visible_enabled
