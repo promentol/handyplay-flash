@@ -253,6 +253,7 @@ pub const Vm = struct {
     selection_object: ObjectHandle = 0,
     /// `TextFormat.prototype`.
     textformat_proto: ObjectHandle = 0,
+    stylesheet_proto: ObjectHandle = 0,
     /// `TextSnapshot.prototype`.
     textsnapshot_proto: ObjectHandle = 0,
     /// Is the focus HIGHLIGHT active? It follows the focus, and any mouse

@@ -113,6 +113,7 @@ edittext_programmatic_focus
 edittext_restrict
 edittext_restrict_paste
 edittext_scroll
+edittext_stylesheet
 edittext_tab_focus
 edittext_tab_stops
 edittext_text_height_leading

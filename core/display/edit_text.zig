@@ -190,14 +190,22 @@ pub const EditText = struct {
     /// straight back (ruffle FIRING_VARIABLE_BINDING).
     firing_binding: bool = false,
 
-    /// The AVM1 handle of the `TextField.StyleSheet` assigned to this
-    /// field, or 0. Kept as an opaque number so `core/display` stays
-    /// clear of the interpreter.
-    style_sheet: u32 = 0,
+    /// The `TextField.StyleSheet` assigned to this field, or null. It is
+    /// a callback rather than a type because the sheet lives in the
+    /// interpreter (M4-D8).
+    styles: ?html_mod.StyleResolver = null,
+    /// The markup a styled field was last given, VERBATIM. A field with a
+    /// style sheet reports that string back from `htmlText` instead of
+    /// re-serialising, and re-parses it when the sheet changes.
+    original_html: ?[]u16 = null,
 
     /// `CSMTextSettings`. Only `antiAliasType` switches engines; the other
     /// three are RETAINED across the switch, which is why they are stored
     /// flat rather than inside the variant (ruffle font.rs:1292-1470).
+    /// The SWF version the last parse ran at, so a re-parse triggered by
+    /// a style-sheet change uses the same rules.
+    parse_version: u8 = 8,
+
     advanced_rendering: bool = false,
     grid_fit: GridFit = .pixel,
     thickness: f64 = 0,
@@ -335,6 +343,7 @@ pub const EditText = struct {
 
     pub fn deinit(self: *EditText, gpa: std.mem.Allocator) void {
         self.text.deinit(gpa);
+        if (self.original_html) |h| gpa.free(h);
         self.spans.deinit(gpa);
         self.layout.deinit(gpa);
         gpa.free(self.font_name);
@@ -352,14 +361,48 @@ pub const EditText = struct {
         self.restrict = if (s) |x| try gpa.dupe(u16, x) else null;
     }
 
+    /// A field is HTML if its flag says so OR it has a style sheet —
+    /// setting CSS does not turn the flag on, but it does turn the
+    /// behaviour on.
+    pub fn isEffectivelyHtml(self: *const EditText) bool {
+        return self.html or self.styles != null;
+    }
+
     /// Plain text: the whole field takes the new-text format again.
     /// A write of the SAME string is a no-op, and that is observable —
     /// it skips the format reset (ruffle `set_text`).
+    ///
+    /// With CSS set, even a plain `text =` is parsed as MARKUP.
     pub fn setText(self: *EditText, gpa: std.mem.Allocator, s: []const u16) !void {
         if (std.mem.eql(u16, self.text.items, s)) return;
+        if (self.styles != null) return self.parseHtml(gpa, s, self.parse_version);
         self.text.clearRetainingCapacity();
         try self.text.appendSlice(gpa, s);
         try self.spans.reset(gpa, self.default_format, s.len);
+        self.dirty = true;
+    }
+
+    /// Assign or drop the style sheet. Dropping it forgets the original
+    /// markup; assigning one re-parses whatever markup is remembered.
+    pub fn setStyleSheet(
+        self: *EditText,
+        gpa: std.mem.Allocator,
+        resolver: ?html_mod.StyleResolver,
+        swf_version: u8,
+    ) !void {
+        self.styles = resolver;
+        self.parse_version = swf_version;
+        if (resolver == null) {
+            if (self.original_html) |h| gpa.free(h);
+            self.original_html = null;
+            self.dirty = true;
+            return;
+        }
+        if (self.original_html) |h| {
+            const copy = try gpa.dupe(u16, h);
+            defer gpa.free(copy);
+            try self.parseHtml(gpa, copy, swf_version);
+        }
         self.dirty = true;
     }
 
@@ -371,11 +414,27 @@ pub const EditText = struct {
         markup: []const u16,
         swf_version: u8,
     ) !void {
-        if (!self.html) return self.setText(gpa, markup);
+        if (!self.isEffectivelyHtml()) return self.setText(gpa, markup);
+        try self.parseHtml(gpa, markup, swf_version);
+    }
+
+    fn parseHtml(
+        self: *EditText,
+        gpa: std.mem.Allocator,
+        markup: []const u16,
+        swf_version: u8,
+    ) !void {
         // Parsing HTML below SWF8 leaves the field LEFT-aligned for good:
         // `from_html` rewrites the default format it was handed and the
         // field keeps the rewritten one (corpus edittext_html_align_swf7).
         if (swf_version < 8) self.default_format.text_align = .left;
+        self.parse_version = swf_version;
+        // The markup is remembered ONLY while a style sheet is set: it is
+        // what `htmlText` reports and what a change of sheet re-parses.
+        const remembered = if (self.styles != null) try gpa.dupe(u16, markup) else null;
+        if (self.original_html) |h| gpa.free(h);
+        self.original_html = remembered;
+
         self.spans.list.clearRetainingCapacity();
         _ = self.spans.arena.reset(.retain_capacity);
         const a = self.spans.alloc();
@@ -384,6 +443,7 @@ pub const EditText = struct {
             .multiline = self.multiline,
             .condense_white = self.condense_white,
             .swf_version = swf_version,
+            .styles = self.styles,
         });
         self.text.clearRetainingCapacity();
         try self.text.appendSlice(gpa, parsed.text);
@@ -392,9 +452,10 @@ pub const EditText = struct {
         self.dirty = true;
     }
 
-    /// The field's contents AS MARKUP. A non-HTML field still serialises
-    /// — `htmlText` on a plain field reports the generated tags.
+    /// The field's contents AS MARKUP: the string it was GIVEN when a
+    /// style sheet is set, and the re-serialised spans otherwise.
     pub fn htmlText(self: *const EditText, arena: std.mem.Allocator) ![]const u16 {
+        if (self.original_html) |h| return h;
         return html_mod.serialize(arena, self.text.items, self.spans.list.items);
     }
 

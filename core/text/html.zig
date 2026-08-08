@@ -47,10 +47,30 @@ pub const Parsed = struct {
     spans: []TextSpan,
 };
 
+/// How the parser asks for a CSS rule. The style sheet itself is an AVM1
+/// object, so the lookup is a callback rather than a type this module
+/// knows: `core/text` stays clear of the interpreter.
+pub const StyleResolver = struct {
+    ctx: *anyopaque,
+    sheet: u32,
+    /// Selectors are matched LOWERCASED: `p`, `a`, `li`, or `.class`.
+    lookup: *const fn (ctx: *anyopaque, sheet: u32, selector: []const u16) ?TextFormat,
+
+    fn apply(self: StyleResolver, f: TextFormat, selector: []const u8) TextFormat {
+        var buf: [64]u16 = undefined;
+        if (selector.len > buf.len) return f;
+        for (selector, 0..) |c, i| buf[i] = c;
+        const style = self.lookup(self.ctx, self.sheet, buf[0..selector.len]) orelse return f;
+        return style.mixWith(f);
+    }
+};
+
 pub const Options = struct {
     multiline: bool,
     condense_white: bool,
     swf_version: u8,
+    /// Null when the field has no style sheet, which is the common case.
+    styles: ?StyleResolver = null,
 };
 
 /// Parse `html` into text plus spans. Both slices are allocated from
@@ -168,6 +188,10 @@ pub fn parse(
         }
         if (std.mem.eql(u8, name, "p")) {
             p_open = true;
+            if (opts.styles) |st| {
+                fmt = st.apply(fmt, "p");
+                fmt = applyClass(st, fmt, html, tag);
+            }
             if (attr(html, tag, "align")) |a| {
                 var abuf: [16]u8 = undefined;
                 const al = lowerAscii(&abuf, a);
@@ -184,6 +208,10 @@ pub fn parse(
         } else if (std.mem.eql(u8, name, "a")) {
             if (attr(html, tag, "href")) |v| fmt.url = try arena.dupe(u16, v);
             if (attr(html, tag, "target")) |v| fmt.target = try arena.dupe(u16, v);
+            if (opts.styles) |st| {
+                fmt = st.apply(fmt, "a");
+                fmt = applyClass(st, fmt, html, tag);
+            }
         } else if (std.mem.eql(u8, name, "font")) {
             if (attr(html, tag, "face")) |v| fmt.font = try arena.dupe(u16, v);
             if (attr(html, tag, "size")) |v| applySize(&fmt, v, opts.swf_version);
@@ -205,6 +233,7 @@ pub fn parse(
         } else if (std.mem.eql(u8, name, "u")) {
             fmt.underline = true;
         } else if (std.mem.eql(u8, name, "li")) {
+            if (opts.styles) |st| fmt = st.apply(fmt, "li");
             // An unclosed paragraph is closed here, but only if something
             // was written since the last newline.
             const last_is_nl = text.items.len > 0 and text.items[text.items.len - 1] == NEWLINE;
@@ -221,10 +250,26 @@ pub fn parse(
             if (attr(html, tag, "leading")) |v| fmt.leading = parseF64(v);
             if (attr(html, tag, "tabstops")) |v| fmt.tab_stops = try parseStops(arena, v);
         } else if (std.mem.eql(u8, name, "span")) {
-            // Only meaningful with a style sheet, which we do not apply.
+            // `<span>` carries nothing but its class.
+            if (opts.styles) |st| fmt = applyClass(st, fmt, html, tag);
         } else {
-            // An unknown tag is INLINE unless a stylesheet says otherwise.
+            // An unknown tag is INLINE unless a style sheet says
+            // otherwise — Flash applies `display` only when a rule
+            // defines it, and a rule that makes it block or none ends the
+            // paragraph at the closing tag.
             fmt.display = null;
+            if (opts.styles) |st| {
+                var nbuf: [64]u16 = undefined;
+                if (name.len <= nbuf.len) {
+                    for (name, 0..) |ch, k| nbuf[k] = ch;
+                    if (st.lookup(st.ctx, st.sheet, nbuf[0..name.len])) |style| {
+                        fmt = style.mixWith(fmt);
+                    }
+                }
+                if (fmt.display) |d| {
+                    if (d == .block or d == .none) display_block = true;
+                }
+            }
         }
 
         try opened_starts.append(arena, opened.items.len);
@@ -243,6 +288,19 @@ pub fn parse(
         try condenseSwf8(arena, &text, &spans);
     }
     return .{ .text = text.items, .spans = spans.items };
+}
+
+/// `class="foo"` selects `.foo`, lowercased.
+fn applyClass(st: StyleResolver, f: TextFormat, html: []const u16, tag: Tag) TextFormat {
+    const cls = attr(html, tag, "class") orelse return f;
+    var buf: [64]u16 = undefined;
+    if (cls.len + 1 > buf.len) return f;
+    buf[0] = '.';
+    for (cls, 0..) |c, i| {
+        buf[i + 1] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+    }
+    const style = st.lookup(st.ctx, st.sheet, buf[0 .. cls.len + 1]) orelse return f;
+    return style.mixWith(f);
 }
 
 fn fontOf(tf: TextFormat) SpanFont {

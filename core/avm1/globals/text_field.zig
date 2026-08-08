@@ -98,7 +98,8 @@ pub fn install(vm: *Vm) !void {
     try prop(vm, proto, "mouseWheelEnabled", getMouseWheelEnabled, setMouseWheelEnabled);
     try prop(vm, proto, "styleSheet", getStyleSheet, setStyleSheet);
 
-    _ = try decl.class(vm, "TextField", identityCtor, proto, hidden);
+    const ctor = try decl.class(vm, "TextField", identityCtor, proto, hidden);
+    try @import("style_sheet.zig").install(vm, ctor);
 }
 
 /// Every display-object class shares one: `new TextField()` yields a bare
@@ -198,9 +199,10 @@ fn getHtmlText(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     const et = etOf(vm, this) orelse return .undefined_value;
-    // A field that is not HTML reports its PLAIN text here; only an HTML
-    // one serialises (ruffle `html_text`).
-    if (!et.html) return .{ .string = try vm.arena().dupe(u16, et.text.items) };
+    // A field that is not HTML reports its PLAIN text here. A STYLE
+    // SHEET counts as HTML even though it leaves the `html` flag alone
+    // (ruffle `is_effectively_html`).
+    if (!et.isEffectivelyHtml()) return .{ .string = try vm.arena().dupe(u16, et.text.items) };
     return .{ .string = try et.htmlText(vm.arena()) };
 }
 
@@ -713,19 +715,33 @@ fn setFilters(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return .undefined_value;
 }
 
+/// The sheet OBJECT as given, or undefined. Anything that is not an
+/// object at all — a number, a string, `true` — sets nothing and reads
+/// back undefined.
 fn getStyleSheet(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     const et = etOf(vm, this) orelse return .undefined_value;
-    if (et.style_sheet == 0) return .undefined_value;
-    return .{ .object = et.style_sheet };
+    const r = et.styles orelse return .undefined_value;
+    return .{ .object = r.sheet };
 }
 
 fn setStyleSheet(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const et = etOf(vm, this) orelse return .undefined_value;
+    const gpa = gpaOf(vm) orelse return .undefined_value;
     const v = arg(args, 0);
-    et.style_sheet = if (v == .object) v.object else 0;
+    // A DISPLAY OBJECT is not accepted, even though it is an object:
+    // ruffle carries clips as their own value form and the setter's
+    // `Value::Object` arm never sees one, so `text.styleSheet = _root`
+    // reads back undefined.
+    const is_sheet = v == .object and stage.targetOfValue(vm, v) == null;
+    const resolver: ?@import("../../text/html.zig").StyleResolver = if (is_sheet) .{
+        .ctx = @ptrCast(vm),
+        .sheet = v.object,
+        .lookup = @import("style_sheet.zig").lookup,
+    } else null;
+    try et.setStyleSheet(gpa, resolver, vm.swf_version);
     return .undefined_value;
 }
 
