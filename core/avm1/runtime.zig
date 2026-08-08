@@ -1102,8 +1102,19 @@ pub const Vm = struct {
         // (define_function2_preload).
         if (preload and fl.preload_parent) {
             const stage = @import("stage_object.zig");
-            const parent: Value = if (this == .object)
-                try stage.parentOf(self, this.object)
+            // The BASE CLIP's parent, not `this`'s: a function called with
+            // no receiver still preloads the `_parent` of the timeline it
+            // was defined in (corpus function_base_clip_readded). SWF6+
+            // calls are closures and keep the defining clip; below that
+            // `this` supplies it, which is the same object here.
+            const owner: ObjectHandle = if (self.swf_version >= 6 and f.base_clip != 0)
+                f.base_clip
+            else if (this == .object)
+                this.object
+            else
+                0;
+            const parent: Value = if (owner != 0)
+                try stage.parentOf(self, owner)
             else
                 .undefined_value;
             if (parent != .undefined_value) {
