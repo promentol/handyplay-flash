@@ -25,7 +25,8 @@ pub const Attributes = packed struct {
     version_bits: u16 = 0,
 };
 
-/// ruffle property.rs VERSION_MASKS — index by SWF version (clamped 0-9).
+/// ruffle property.rs VERSION_MASKS — index by SWF version. Above v9 the
+/// table simply runs out and NOTHING is gated; see `versionHidden`.
 pub const VERSION_MASKS = [10]u16{
     0b0111_1111_1111_1000, 0b0111_1111_1111_1000, 0b0111_1111_1111_1000,
     0b0111_1111_1111_1000, 0b0111_1111_1111_1000,
@@ -39,8 +40,12 @@ pub const VERSION_MASKS = [10]u16{
 /// A property is invisible when its version gate matches the player's
 /// SWF version, or when DontEnum is set (enumeration only).
 pub fn versionHidden(attrs: Attributes, swf_version: u8) bool {
-    const idx: usize = @min(swf_version, 9);
-    return (attrs.version_bits & VERSION_MASKS[idx]) != 0;
+    // Past the table the mask is ZERO, not the last row: ruffle indexes
+    // with `.get(version).unwrap_or_default()`, so a SWF10 movie hides
+    // nothing at all (corpus mcl_events_swf_version detects v10 exactly
+    // by finding the highest gate bit still visible).
+    if (swf_version >= VERSION_MASKS.len) return false;
+    return (attrs.version_bits & VERSION_MASKS[swf_version]) != 0;
 }
 
 pub const Property = struct {

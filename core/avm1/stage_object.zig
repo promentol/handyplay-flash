@@ -646,7 +646,11 @@ fn getDropTarget(vm: *Vm, t: Target) !Value {
 /// prints it, and the corpus expects the leading-slash local form
 /// ("/test.swf"), so the Player hands us the path it was given.
 fn getUrl(vm: *Vm, t: Target) !Value {
-    _ = t;
+    if (t.clip) |c| {
+        if (c.loadInfoOf()) |l| return .{ .string = l.url };
+    } else if (t.parent()) |p| {
+        if (p.loadInfoOf()) |l| return .{ .string = l.url };
+    }
     return .{ .string = vm.movie_url };
 }
 
@@ -1686,9 +1690,12 @@ pub fn focusPath(vm: *Vm) !Value {
 /// the clip's own DefineSprite tag stream otherwise (ruffle
 /// MovieClip::total_bytes). A scripted empty clip has neither, hence 0.
 pub fn bytesTotal(vm: *Vm, clip: *MovieClip) f64 {
+    // A runtime load answers with the FILE it brought — for an image
+    // that is the only size there is.
+    if (clip.loadInfoOf()) |l| return @floatFromInt(l.bytes);
     if (clip.parent == null) {
         const ctx = displayCtx(vm) orelse return 0;
-        return @floatFromInt(ctx.movie.file_length);
+        return @floatFromInt(ctx.root_movie.file_length);
     }
     return @floatFromInt(clip.tag_stream_len);
 }

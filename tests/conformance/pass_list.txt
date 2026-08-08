@@ -294,6 +294,7 @@ mask_reapply
 mask_with_drawing
 math_min_max
 mcl_as_broadcaster
+mcl_events_swf_version
 mcl_getprogress
 mcl_loadclip
 mcl_loadclip_properties
@@ -324,8 +325,14 @@ movieclip_hittest
 movieclip_init_object
 movieclip_invalid_get_bounds_1
 movieclip_invalid_get_bounds_2
+movieclip_invalid_get_bounds_3
+movieclip_invalid_get_bounds_4
+movieclip_invalid_get_bounds_5
+movieclip_invalid_get_bounds_6
+movieclip_invalid_get_bounds_7
 movieclip_invalid_get_bounds_8
 movieclip_line_gradient_style
+movieclip_methods_with_loaded_image
 movieclip_name_from_timeline
 movieclip_prototype_extension
 movieclip_setmask

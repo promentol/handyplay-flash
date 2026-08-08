@@ -261,6 +261,12 @@ pub const MovieClip = struct {
     /// Which `_levelN` this clip IS, for the parentless ones. Level 0 is
     /// the root movie; the rest are created by `loadMovieNum`.
     level_id: i32 = 0,
+    /// What a runtime load put here: where it came from, how big it was
+    /// on disk, and its SWF version. Version 0 means "not a SWF at all" —
+    /// an image — which `getSWFVersion` reports as -1. Null on a clip
+    /// that was never a load target, which then answers for its parent.
+    loaded: ?LoadInfo = null,
+
     /// Set when this clip is one of a BUTTON's child containers. It is not
     /// scriptable in its own right: every request for its AVM1 object
     /// yields the button's, so `_parent` from inside a button is the
@@ -276,6 +282,23 @@ pub const MovieClip = struct {
     /// attachMovie, text fields resolving fonts — must look there and not
     /// in the root movie. Walking up beats propagating at instantiate
     /// time: it cannot go stale when a clip is re-parented or reloaded.
+    pub const LoadInfo = struct {
+        url: []const u16,
+        bytes: u32,
+        version: u8,
+    };
+
+    /// The nearest enclosing runtime load, if any. `_url`,
+    /// `getBytesTotal` and `getSWFVersion` all answer from it, and a clip
+    /// inside a loaded movie answers with the LOAD's facts, not its own.
+    pub fn loadInfoOf(self: *const MovieClip) ?LoadInfo {
+        var cur: ?*const MovieClip = self;
+        while (cur) |c| : (cur = c.parent) {
+            if (c.loaded) |l| return l;
+        }
+        return null;
+    }
+
     pub fn movieOf(self: *const MovieClip, ctx: *const Context) *const swf.movie.Movie {
         var cur: ?*const MovieClip = self;
         while (cur) |c| : (cur = c.parent) {

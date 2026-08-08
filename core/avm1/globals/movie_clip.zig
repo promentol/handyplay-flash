@@ -306,10 +306,15 @@ fn loadVariables(p: *anyopaque, this: Value, args: []const Value) anyerror!Value
 /// root movie, so that only happens if the VM has no display context.
 fn getSwfVersion(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
-    _ = this;
     const vm = vmOf(p);
-    if (vm.root_swf_version == 0) return .{ .number = -1 };
-    return .{ .number = @floatFromInt(vm.root_swf_version) };
+    // A LOADED clip reports its own movie's version; an image has none,
+    // and version 0 is what script sees as -1.
+    var version = vm.root_swf_version;
+    if (clipOf(vm, this)) |c| {
+        if (c.loadInfoOf()) |l| version = l.version;
+    }
+    if (version == 0) return .{ .number = -1 };
+    return .{ .number = @floatFromInt(version) };
 }
 
 fn getInstanceAtDepth(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {

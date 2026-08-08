@@ -92,7 +92,10 @@ pub fn main(init: std.process.Init) !u8 {
     }
     defer if (device_font) |d| gpa.free(d);
 
-    const url = try std.fmt.allocPrint(arena, "/{s}", .{std.fs.path.basename(path)});
+    // Ruffle's harness serves each corpus SWF from the root of a virtual
+    // FILE filesystem, and `_url` reports that verbatim. The dirs that
+    // print it either strip the scheme themselves or expect it whole.
+    const url = try std.fmt.allocPrint(arena, "file:///{s}", .{std.fs.path.basename(path)});
     // Ruffle's test navigator serves every fetch out of the test's own
     // directory, which is why `loadVariables("testvars.txt")` works with no
     // scheme and no host. Same rule here.

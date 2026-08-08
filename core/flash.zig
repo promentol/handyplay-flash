@@ -568,6 +568,20 @@ pub const Player = struct {
         }
     }
 
+    /// A relative load URL, as `_url` reports it: resolved against the
+    /// movie's own, because that is what Flash stores on the clip.
+    fn absoluteUrl(self: *Player, url: []const u8) !avm1.strings.AvmString {
+        const a = self.vm.arena();
+        if (std.mem.indexOf(u8, url, "://") != null or url.len == 0) {
+            return avm1.strings.fromSwf(a, url, 8);
+        }
+        const base = try avm1.strings.toUtf8(a, self.vm.movie_url);
+        const cut = std.mem.lastIndexOfScalar(u8, base, '/') orelse
+            return avm1.strings.fromSwf(a, url, 8);
+        const joined = try std.mem.concat(a, u8, &.{ base[0 .. cut + 1], url });
+        return avm1.strings.fromSwf(a, joined, 8);
+    }
+
     fn adoptFile(self: *Player, obj: u32, file: DialogFile) !void {
         try avm1.file_reference.applySelection(
             self.vm,
@@ -687,6 +701,8 @@ pub const Player = struct {
             try mc.unloadContents(ctx);
             self.vm.objects.clearDeletable(target.clip);
             mc.replaceWithMovie(null);
+            // A FAILED load still sets `_url` to what was attempted.
+            mc.loaded = .{ .url = try self.absoluteUrl(url), .bytes = 0, .version = 0 };
             try avm1.loader.movieLoadEvents(self.vm, target, null);
             return;
         };
@@ -711,6 +727,14 @@ pub const Player = struct {
             bytes.len
         else
             0;
+        // What the clip now reports for `_url`, `getBytesTotal` and
+        // `getSWFVersion`. An image has no SWF version at all, and 0 is
+        // what script reads back as -1.
+        mc.loaded = .{
+            .url = try self.absoluteUrl(url),
+            .bytes = if (loaded) |m| m.compressed_len else @intCast(bytes.len),
+            .version = if (loaded) |m| m.swf_version else 0,
+        };
         // A loaded movie's `#initclip` blocks run at PRELOAD, before its
         // own frame 1 — which is what lets it `Object.registerClass` the
         // symbols its own timeline is about to place.
@@ -1093,17 +1117,33 @@ pub const Player = struct {
     /// a LIBRARY — `attachMovie`, `loadBitmap`, a text field resolving a
     /// font — has to look in the clip's own movie, and inside a loaded
     /// SWF that is not the root's. Returns the movie to put back.
-    fn enterClipMovie(self: *Player, clip_obj: avm1.runtime.ObjectHandle) ?*const swf.movie.Movie {
+    fn enterClipMovie(self: *Player, clip_obj: avm1.runtime.ObjectHandle) ?Scope {
         const ctx = self.cur_ctx orelse return null;
         const mc = avm1.stage_object.clipOfHandle(self.vm, clip_obj) orelse return null;
-        const prev = ctx.movie;
-        ctx.movie = mc.movieOf(ctx);
+        const prev: Scope = .{ .movie = ctx.movie, .version = self.vm.swf_version };
+        const movie = mc.movieOf(ctx);
+        ctx.movie = movie;
+        // The VERSION follows the movie too. A SWF5 file loaded into a
+        // SWF8 one coerces, gates properties and folds case like a SWF5
+        // file — corpus mcl_events_swf_version detects its own version
+        // through the ASSetPropFlags gate bits and prints it.
+        if (movie.swf_version != 0) {
+            self.vm.swf_version = movie.swf_version;
+            // The object table keeps its own copy for the property
+            // version gate, which is the half `ASSetPropFlags` observes.
+            self.vm.objects.swf_version = movie.swf_version;
+        }
         return prev;
     }
 
-    fn leaveClipMovie(self: *Player, prev: ?*const swf.movie.Movie) void {
+    const Scope = struct { movie: *const swf.movie.Movie, version: u8 };
+
+    fn leaveClipMovie(self: *Player, prev: ?Scope) void {
+        const p = prev orelse return;
+        self.vm.swf_version = p.version;
+        self.vm.objects.swf_version = p.version;
         const ctx = self.cur_ctx orelse return;
-        if (prev) |m| ctx.movie = m;
+        ctx.movie = p.movie;
     }
 
     fn runBytecode(self: *Player, clip_obj: avm1.runtime.ObjectHandle, code: []const u8) void {
