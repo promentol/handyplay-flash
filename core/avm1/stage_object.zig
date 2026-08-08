@@ -530,9 +530,8 @@ fn getTarget(vm: *Vm, t: Target) !Value {
 /// under the pointer, excluding the dragged object itself; otherwise "".
 /// Below SWF6 the absence reads as undefined rather than "".
 fn getDropTarget(vm: *Vm, t: Target) !Value {
-    _ = t;
     if (vm.swf_version < 6) return .undefined_value;
-    return .{ .string = try dropTargetPath(vm) };
+    return .{ .string = try dropTargetPath(vm, t) };
 }
 
 /// The URL the clip's movie was loaded from. Content only ever compares or
@@ -1349,6 +1348,21 @@ pub fn applyDrag(vm: *Vm) void {
     }
     t.obj.setX(x);
     t.obj.setY(y);
+    // `_droptarget` is recomputed HERE, while the drag is live, and the
+    // answer sticks to the clip afterwards (ruffle player.rs:1505-1518).
+    vm.drop_target = .{
+        .clip = if (t.clip) |c| @ptrCast(c) else null,
+        .path = computeDropTarget(vm) catch S(""),
+    };
+}
+
+fn computeDropTarget(vm: *Vm) ![]const u16 {
+    const root = targetOfValue(vm, vm.root_object) orelse return S("");
+    const rc = root.clip orelse return S("");
+    const gx = twipsFromPixels(vm.mouse_x);
+    const gy = twipsFromPixels(vm.mouse_y);
+    const found = topmostUnder(vm, rc, .{ gx, gy }, localToGlobalMatrix(root)) orelse return S("");
+    return slashPath(vm, found);
 }
 
 /// Is `obj` the object currently being dragged (or inside it)? `_droptarget`
@@ -1368,14 +1382,11 @@ fn insideDrag(vm: *Vm, obj: *DisplayObject) bool {
 /// The slash path of the top-most clip under the pointer, excluding the
 /// dragged object itself — what `_droptarget` reports while a drag is
 /// active. Empty string when nothing is under it.
-pub fn dropTargetPath(vm: *Vm) ![]const u16 {
-    if (vm.drag == null) return S("");
-    const root = targetOfValue(vm, vm.root_object) orelse return S("");
-    const rc = root.clip orelse return S("");
-    const gx = twipsFromPixels(vm.mouse_x);
-    const gy = twipsFromPixels(vm.mouse_y);
-    const found = topmostUnder(vm, rc, .{ gx, gy }, localToGlobalMatrix(root)) orelse return S("");
-    return slashPath(vm, found);
+pub fn dropTargetPath(vm: *Vm, t: Target) ![]const u16 {
+    const clip = t.clip orelse return S("");
+    const stored = vm.drop_target.clip orelse return S("");
+    if (@as(*anyopaque, @ptrCast(clip)) != stored) return S("");
+    return vm.drop_target.path;
 }
 
 /// Depth-first, back to front, so the LAST match wins — that is the one
@@ -1386,8 +1397,12 @@ fn topmostUnder(vm: *Vm, container: *MovieClip, point: [2]i32, to_global: swf.re
         if (insideDrag(vm, child)) continue;
         if (child.kind == .clip) {
             const child_to_global = to_global.mul(child.matrix);
-            if (topmostUnder(vm, child.kind.clip, point, child_to_global)) |inner| best = inner;
-            if (bounds_mod.hitTestShape(child, point, to_global)) {
+            // The INNERMOST clip wins: a nested clip's own pick is the
+            // answer, and its container only stands in when the recursion
+            // found nothing (corpus drag_drop's /drop2/drop3).
+            if (topmostUnder(vm, child.kind.clip, point, child_to_global)) |inner| {
+                best = inner;
+            } else if (bounds_mod.hitTestShape(child, point, to_global)) {
                 best = .{ .obj = child, .clip = child.kind.clip };
             }
         } else if (bounds_mod.hitTestShape(child, point, to_global)) {

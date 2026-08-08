@@ -22,7 +22,9 @@ pub const display = struct {
     pub const display_object = @import("display/display_object.zig");
     pub const bounds = @import("display/bounds.zig");
     pub const movie_clip = @import("display/movie_clip.zig");
-    // M4: button.zig, text.zig.
+    pub const button = @import("display/button.zig");
+    pub const mouse = @import("display/mouse.zig");
+    // M4: text.zig.
 };
 
 pub const render = struct {
@@ -56,6 +58,11 @@ pub const Player = struct {
     /// goto_frame does, rather than being deferred to the end of the
     /// action — a script can observe the removal its own goto caused.
     cur_ctx: ?*display.movie_clip.Context = null,
+    /// What the pointer is over, and what it was pressed on. Both survive
+    /// across events — the whole rollOver/dragOut machine is the delta
+    /// between the old pair and the new pick.
+    hovered: ?*display.display_object.DisplayObject = null,
+    pressed: ?*display.display_object.DisplayObject = null,
     /// Flash's `instanceN` counter. Monotonic for the life of the movie;
     /// ruffle resets it only when the root movie is replaced.
     instance_counter: u32 = 0,
@@ -171,15 +178,22 @@ pub const Player = struct {
         return frames;
     }
 
-    fn runOneFrame(self: *Player) !void {
-        var ctx: display.movie_clip.Context = .{
+    /// One tick's display Context. Every entry point builds the same one.
+    fn makeContext(self: *Player) display.movie_clip.Context {
+        return .{
             .gpa = self.gpa,
             .movie = &self.movie,
             .instance_counter = &self.instance_counter,
             .class_lookup = hostRegisteredClass,
             .class_lookup_user = @ptrCast(self),
             .run_inline = hostRunInline,
+            .has_button_handler = hostHasButtonHandler,
+            .mouse_enabled = hostMouseEnabled,
         };
+    }
+
+    fn runOneFrame(self: *Player) !void {
+        var ctx = self.makeContext();
         defer ctx.deinit(self.gpa);
         self.cur_ctx = &ctx;
         self.vm.display_ctx = @ptrCast(&ctx);
@@ -194,6 +208,10 @@ pub const Player = struct {
         try self.updateTimers(&ctx);
         self.root.clearRanThisTick();
         self.retireDead(&ctx);
+        // Ruffle re-picks at the end of EVERY update, not just on pointer
+        // events (player.rs:2386) — a clip that moves, hides or is removed
+        // under a stationary pointer changes the hover all by itself.
+        try self.updateMouseState(false);
         self.vm.now_ms += self.frame_ms;
         self.vm.budget = 5_000_000;
         self.vm.halted = false;
@@ -209,6 +227,18 @@ pub const Player = struct {
     fn drainActions(self: *Player, ctx: *display.movie_clip.Context) !void {
         while (ctx.popAction()) |qa| {
             if (qa.clip.removed and !qa.on_removed) continue;
+            // A button's handler runs on the BUTTON's script object; the
+            // queued `clip` is only its parent, for the removal check.
+            if (qa.display) |d| {
+                if (d.removed) continue;
+                const h = try avm1.stage_object.displayObject(self.vm, d);
+                switch (qa.what) {
+                    .method => |name| self.callClipHandler(h, name),
+                    else => {},
+                }
+                try self.root.applyPendingGoto(ctx);
+                continue;
+            }
             const clip_obj = try self.clipObject(qa.clip);
             switch (qa.what) {
                 .code => |code| self.runBytecode(clip_obj, code),
@@ -351,8 +381,66 @@ pub const Player = struct {
     /// script can hold the reference), so sever the native link first —
     /// otherwise every later property read is a use-after-free.
     fn retireDead(self: *Player, ctx: *display.movie_clip.Context) void {
-        for (ctx.graveyard.items) |obj| self.severClipObjects(obj);
+        for (ctx.graveyard.items) |obj| {
+            self.severClipObjects(obj);
+            self.rebindMouseTargets(ctx, obj);
+        }
         ctx.drainGraveyard(self.gpa);
+    }
+
+    /// A goto can destroy the very object the pointer is on. Ruffle keeps
+    /// the old one alive and re-acquires at the top of the next
+    /// `update_mouse_state`; our display objects are freed at the end of
+    /// the tick, so the hand-off has to happen HERE, while both the dead
+    /// object and its replacement exist.
+    ///
+    /// "Replacement" is ruffle's `check_display_object_equality`: same
+    /// depth, same character. The button state carries across, which is
+    /// what lets a press survive the goto it triggered (corpus
+    /// button_goto).
+    fn rebindMouseTargets(
+        self: *Player,
+        ctx: *display.movie_clip.Context,
+        dead: *display.display_object.DisplayObject,
+    ) void {
+        const DO = display.display_object.DisplayObject;
+        const inSubtree = struct {
+            fn f(root: *DO, needle: *DO) bool {
+                if (root == needle) return true;
+                for (display.bounds.childrenOf(root)) |child| {
+                    if (f(child, needle)) return true;
+                }
+                if (root.kind == .button) {
+                    for (root.kind.button.hit_area.children.items) |child| {
+                        if (f(child, needle)) return true;
+                    }
+                }
+                return false;
+            }
+        }.f;
+        for ([_]*?*DO{ &self.hovered, &self.pressed }) |slot| {
+            const cur = slot.* orelse continue;
+            if (!inSubtree(dead, cur)) continue;
+            slot.* = self.findReplacement(&self.root_placement, cur);
+            if (slot.*) |fresh| {
+                if (fresh.kind == .button and cur.kind == .button) {
+                    fresh.kind.button.setState(ctx, fresh, cur.kind.button.state) catch {};
+                }
+            }
+        }
+    }
+
+    fn findReplacement(
+        self: *Player,
+        root: *display.display_object.DisplayObject,
+        old: *display.display_object.DisplayObject,
+    ) ?*display.display_object.DisplayObject {
+        for (display.bounds.childrenOf(root)) |child| {
+            if (child.depth == old.depth and child.character_id == old.character_id and
+                child.kind != .shape) return child;
+            if (self.findReplacement(child, old)) |hit| return hit;
+        }
+        return null;
     }
 
     fn severClipObjects(self: *Player, obj: *display.display_object.DisplayObject) void {
@@ -386,6 +474,41 @@ pub const Player = struct {
             _ = self.vm.objects.deleteOwn(self.vm.globals, S("_level0"), self.vm.case_sensitive);
         }
         return h;
+    }
+
+    /// The script-property half of "button mode": does the clip's object
+    /// carry any of onPress/onRelease/…? Looked up through the prototype
+    /// chain, so a class that defines onRelease makes every instance
+    /// pickable (ruffle movie_clip.rs is_button_mode).
+    fn hostHasButtonHandler(user: *anyopaque, clip: *display.movie_clip.MovieClip) bool {
+        const self: *Player = @ptrCast(@alignCast(user));
+        if (clip.avm_object == 0) return false;
+        for (display.mouse.BUTTON_EVENT_METHODS) |name| {
+            var buf: [24]u16 = undefined;
+            for (name, 0..) |c, i| buf[i] = c;
+            if (self.vm.objects.hasChained(clip.avm_object, buf[0..name.len], self.vm.case_sensitive)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// `obj.enabled`, the AVM1 property. Absent means enabled — only an
+    /// explicit false takes a button or clip out of the pick.
+    fn hostMouseEnabled(user: *anyopaque, obj: *display.display_object.DisplayObject) bool {
+        const self: *Player = @ptrCast(@alignCast(user));
+        const handle = switch (obj.kind) {
+            .clip => |mc| mc.avm_object,
+            else => obj.avm_object,
+        };
+        if (handle == 0) return true;
+        const v = self.vm.objects.getChained(
+            handle,
+            avm1.strings.ascii("enabled"),
+            self.vm.case_sensitive,
+        ) orelse return true;
+        if (v == .undefined_value or v == .null_value) return true;
+        return avm1.value.toBoolean(v, self.vm.swf_version);
     }
 
     /// `Object.registerClass` maps an ExportAssets SYMBOL to a constructor,
@@ -480,7 +603,151 @@ pub const Player = struct {
     pub fn mouseMove(self: *Player, x: f64, y: f64) !void {
         self.setMousePosition(x, y);
         try self.dispatchInput(swf.place.ClipEvent.MOUSE_MOVE, "onMouseMove", self.vm.mouse_object);
+        try self.updateMouseState(false);
     }
+
+    /// Re-pick and fire whatever the delta implies. Ruffle's
+    /// `update_mouse_state` (player.rs:1523-1850) in the same order: the
+    /// roll/drag pair for a changed hover first, then press or release.
+    ///
+    /// The pick runs on every pointer event AND once per frame, because a
+    /// clip can move out from under a stationary pointer.
+    pub fn updateMouseState(self: *Player, changed_left: bool) !void {
+        var ctx = self.makeContext();
+        defer ctx.deinit(self.gpa);
+        self.cur_ctx = &ctx;
+        self.vm.display_ctx = @ptrCast(&ctx);
+        defer {
+            self.cur_ctx = null;
+            self.vm.display_ctx = null;
+        }
+        try self.deriveMouseEvents(&ctx, changed_left);
+        try self.drainActions(&ctx);
+        self.retireDead(&ctx);
+    }
+
+    /// Deliver one event, and forget a DISABLED button afterwards: ruffle
+    /// drops it from `hovered`/`pressed` inside `event_dispatch`
+    /// (avm1_button.rs:517-524) so that re-enabling it re-fires the roll
+    /// from scratch instead of resuming mid-gesture.
+    fn sendMouse(
+        self: *Player,
+        ctx: *display.movie_clip.Context,
+        obj: *display.display_object.DisplayObject,
+        event: display.mouse.Event,
+    ) !void {
+        // The check comes FIRST: ruffle reads `enabled` at the top of
+        // `event_dispatch`, so a handler that disables the button only
+        // takes effect from the NEXT event on.
+        const disabled_button = obj.kind == .button and !ctx.mouseEnabled(obj);
+        try display.mouse.dispatch(ctx, obj, event);
+        if (!disabled_button) return;
+        if (self.hovered == obj) self.hovered = null;
+        if (self.pressed == obj) self.pressed = null;
+    }
+
+    fn deriveMouseEvents(
+        self: *Player,
+        ctx: *display.movie_clip.Context,
+        changed_left: bool,
+    ) !void {
+        const M = display.mouse;
+        const DO = display.display_object.DisplayObject;
+        const twips = swf.reader.TWIPS_PER_PX;
+        const point: [2]i32 = .{
+            @intFromFloat(@round(self.vm.mouse_x * twips)),
+            @intFromFloat(@round(self.vm.mouse_y * twips)),
+        };
+        const new_over = M.pick(ctx, &self.root_placement, .identity, point);
+        const left_down = (self.vm.mouse_buttons & 1) != 0;
+
+        // Ruffle COLLECTS the events first, updates hovered/pressed, and
+        // only then fires them (player.rs:1547 `events`) — the order
+        // matters because a handler can invalidate the very state that
+        // produced it.
+        var events: [6]struct { obj: *DO, ev: M.Event } = undefined;
+        var n: usize = 0;
+
+        // An object that has been removed stops being hovered or pressed.
+        if (self.hovered) |h| {
+            if (h.removed) self.hovered = null;
+        }
+        if (self.pressed) |p| {
+            if (p.removed) self.pressed = null;
+        }
+
+        const cur_over = self.hovered;
+        if (cur_over != new_over) {
+            if (left_down) {
+                // Dragging: only the DRAG pair fires, and not at all while
+                // an AVM1 `startDrag` is in progress.
+                if (self.vm.drag == null) {
+                    if (self.pressed) |down| {
+                        if (cur_over == down) {
+                            events[n] = .{ .obj = down, .ev = .drag_out };
+                            n += 1;
+                        } else if (new_over == down) {
+                            events[n] = .{ .obj = down, .ev = .drag_over };
+                            n += 1;
+                        }
+                    }
+                    if (cur_over) |c| {
+                        if (self.pressed != c) {
+                            events[n] = .{ .obj = c, .ev = .drag_out };
+                            n += 1;
+                        }
+                    }
+                    if (new_over) |o| {
+                        if (self.pressed != o) {
+                            events[n] = .{ .obj = o, .ev = .drag_over };
+                            n += 1;
+                        }
+                    }
+                }
+            } else {
+                if (cur_over) |c| {
+                    events[n] = .{ .obj = c, .ev = .roll_out };
+                    n += 1;
+                }
+                if (new_over) |o| {
+                    events[n] = .{ .obj = o, .ev = .roll_over };
+                    n += 1;
+                }
+            }
+        }
+        self.hovered = new_over;
+
+        if (changed_left) {
+            if (left_down) {
+                if (self.hovered) |over| {
+                    events[n] = .{ .obj = over, .ev = .press };
+                    n += 1;
+                    self.pressed = over;
+                }
+            } else {
+                const down = self.pressed;
+                self.pressed = null;
+                if (down) |d| {
+                    if (d == self.hovered) {
+                        events[n] = .{ .obj = d, .ev = .release };
+                        n += 1;
+                    } else {
+                        events[n] = .{ .obj = d, .ev = .release_outside };
+                        n += 1;
+                        // Whatever is under the pointer NOW is rolled over
+                        // immediately (ruffle player.rs:1835-1845).
+                        if (self.hovered) |over| {
+                            events[n] = .{ .obj = over, .ev = .roll_over };
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        for (events[0..n]) |e| try self.sendMouse(ctx, e.obj, e.ev);
+    }
+
 
     /// Move the pointer WITHOUT raising a move event. A button event
     /// carries a position too, and delivering it as a move as well would
@@ -498,19 +765,31 @@ pub const Player = struct {
         } else {
             self.vm.mouse_buttons &= ~bit;
         }
-        // Only the primary button drives the AVM1 events; the others exist
-        // for `Mouse` listeners that ask, which none of the corpus does.
+        // Every mouse button is also a KEY as far as `Key` is concerned:
+        // left is 1, right 2, middle 4. They participate in the toggle
+        // state too — corpus key_isToggled reads `Key.isToggled(1)`
+        // between clicks, and mouse_events_visible_enabled asks
+        // `Key.isDown(4)` for the middle one.
+        const key: usize = switch (button) {
+            0 => 1,
+            1 => 4,
+            2 => 2,
+            else => 0,
+        };
+        if (key != 0) {
+            if (down and !self.vm.keys_down[key]) self.vm.keys_toggled[key] = !self.vm.keys_toggled[key];
+            self.vm.keys_down[key] = down;
+        }
+        // Only the PRIMARY button drives the press/release machine; AVM1
+        // has no handler for the other two (ruffle's MiddlePress and
+        // RightPress arms are AVM2-only).
         if (button != 0) return;
-        // The left mouse button IS key code 1 as far as `Key` is concerned,
-        // so it participates in the toggle state — corpus key_isToggled
-        // reads `Key.isToggled(1)` between clicks.
-        if (down and !self.vm.keys_down[1]) self.vm.keys_toggled[1] = !self.vm.keys_toggled[1];
-        self.vm.keys_down[1] = down;
         if (down) {
             try self.dispatchInput(swf.place.ClipEvent.MOUSE_DOWN, "onMouseDown", self.vm.mouse_object);
         } else {
             try self.dispatchInput(swf.place.ClipEvent.MOUSE_UP, "onMouseUp", self.vm.mouse_object);
         }
+        try self.updateMouseState(true);
     }
 
     /// `code` is a Flash key code (the Windows virtual-key numbering);
@@ -526,6 +805,7 @@ pub const Player = struct {
         self.vm.last_key_code = code;
         self.vm.last_key_char = char;
         try self.dispatchInput(swf.place.ClipEvent.KEY_DOWN, "onKeyDown", self.vm.key_object);
+        try self.updateMouseState(false);
     }
 
     pub fn keyUp(self: *Player, code: i32, char: i32) !void {
@@ -533,6 +813,7 @@ pub const Player = struct {
         self.vm.last_key_code = code;
         self.vm.last_key_char = char;
         try self.dispatchInput(swf.place.ClipEvent.KEY_UP, "onKeyUp", self.vm.key_object);
+        try self.updateMouseState(false);
     }
 
     fn dispatchInput(
@@ -541,14 +822,7 @@ pub const Player = struct {
         comptime method: []const u8,
         listener_target: avm1.runtime.ObjectHandle,
     ) !void {
-        var ctx: display.movie_clip.Context = .{
-            .gpa = self.gpa,
-            .movie = &self.movie,
-            .instance_counter = &self.instance_counter,
-            .class_lookup = hostRegisteredClass,
-            .class_lookup_user = @ptrCast(self),
-            .run_inline = hostRunInline,
-        };
+        var ctx = self.makeContext();
         defer ctx.deinit(self.gpa);
         self.cur_ctx = &ctx;
         self.vm.display_ctx = @ptrCast(&ctx);
@@ -626,6 +900,7 @@ test {
     _ = @import("display/bounds.zig");
     _ = @import("display/movie_clip.zig");
     _ = @import("display/button.zig");
+    _ = @import("display/mouse.zig");
     _ = @import("render/canvas.zig");
     _ = @import("render/shape_utils.zig");
     _ = @import("render/renderer.zig");

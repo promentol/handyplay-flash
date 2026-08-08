@@ -93,6 +93,55 @@ pub const Button = struct {
         try instantiateInto(&self.container, ctx, self.def, state);
     }
 
+    /// One mouse event: the state it moves to, the cond actions it fires,
+    /// and the script handler it queues (ruffle avm1_button.rs
+    /// event_dispatch). A DISABLED button still tracks state — it just
+    /// runs nothing and can never sit in the `over` state.
+    pub fn handleEvent(
+        self: *Button,
+        ctx: *Context,
+        obj: *DisplayObject,
+        event: @import("mouse.zig").Event,
+    ) Error!void {
+        const target: State = switch (event) {
+            .drag_out, .release, .roll_over => .over,
+            .drag_over, .press => .down,
+            .release_outside, .roll_out => .up,
+        };
+        const cond: u16 = switch (event) {
+            .drag_out => Cond.OVER_DOWN_TO_OUT_DOWN,
+            .drag_over => Cond.OUT_DOWN_TO_OVER_DOWN,
+            .press => Cond.OVER_UP_TO_OVER_DOWN,
+            .release => Cond.OVER_DOWN_TO_OVER_UP,
+            .release_outside => Cond.OUT_DOWN_TO_IDLE,
+            .roll_out => Cond.OVER_UP_TO_IDLE,
+            .roll_over => Cond.IDLE_TO_OVER_UP,
+        };
+        if (ctx.mouseEnabled(obj)) {
+            try self.runActions(ctx, obj, cond);
+            // The script handler is queued AFTER the SWF-defined actions.
+            try ctx.queue(ctx.gpa, .{
+                .clip = obj.parent orelse return,
+                .display = obj,
+                .what = .{ .method = event.method() },
+            });
+            if (self.state != target) try self.setState(ctx, obj, target);
+        } else if (target != .over) {
+            try self.setState(ctx, obj, .up);
+        }
+    }
+
+    /// Cond actions run on the button's PARENT timeline, not on the button
+    /// (ruffle avm1_button.rs:600-613) — which is why `this` inside
+    /// `on(release)` is the clip holding the button.
+    pub fn runActions(self: *Button, ctx: *Context, obj: *DisplayObject, cond: u16) Error!void {
+        const parent = obj.parent orelse return;
+        for (self.def.actions) |action| {
+            if (!condMatches(action.conditions, cond)) continue;
+            try ctx.queue(ctx.gpa, .{ .clip = parent, .what = .{ .code = action.actions } });
+        }
+    }
+
     /// Every visible child, for the renderer and for bounds.
     pub fn children(self: *const Button) []const *DisplayObject {
         return self.container.children.items;
@@ -102,6 +151,32 @@ pub const Button = struct {
         return self.hit_area.children.items;
     }
 };
+
+/// The ButtonCondAction transition bits (SWF19 ButtonCondAction; ruffle
+/// swf/src/types.rs ButtonActionCondition). Bits 9-15 are a key code.
+pub const Cond = struct {
+    pub const IDLE_TO_OVER_UP: u16 = 1 << 0;
+    pub const OVER_UP_TO_IDLE: u16 = 1 << 1;
+    pub const OVER_UP_TO_OVER_DOWN: u16 = 1 << 2;
+    pub const OVER_DOWN_TO_OVER_UP: u16 = 1 << 3;
+    pub const OVER_DOWN_TO_OUT_DOWN: u16 = 1 << 4;
+    pub const OUT_DOWN_TO_OVER_DOWN: u16 = 1 << 5;
+    pub const OUT_DOWN_TO_IDLE: u16 = 1 << 6;
+    pub const IDLE_TO_OVER_DOWN: u16 = 1 << 7;
+    pub const OVER_DOWN_TO_IDLE: u16 = 1 << 8;
+    pub const KEY_PRESS: u16 = 0b111_1111 << 9;
+};
+
+/// Ruffle `ButtonActionCondition::matches`: the transition bits must
+/// contain the tested one, and a record that names a KEY only matches a
+/// test naming the same key.
+pub fn condMatches(record: u16, test_cond: u16) bool {
+    const rec_key = record & Cond.KEY_PRESS;
+    const test_key = test_cond & Cond.KEY_PRESS;
+    const rec_bits = record & ~Cond.KEY_PRESS;
+    const test_bits = test_cond & ~Cond.KEY_PRESS;
+    return (rec_bits & test_bits) == test_bits and (test_key == 0 or test_key == rec_key);
+}
 
 /// Reconcile `into` with the records that match `state` (null = the hit
 /// records). Depths that the new state drops are removed; depths whose

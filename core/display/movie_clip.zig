@@ -58,6 +58,24 @@ pub const Context = struct {
     /// DoInitAction uses this; everything else goes through the queue.
     run_inline: ?*const fn (user: *anyopaque, clip: *MovieClip, code: []const u8) void = null,
 
+    /// Does this clip's SCRIPT OBJECT carry any of onPress/onRelease/…?
+    /// The `onClipEvent` half of "button mode" is answered in
+    /// display/mouse.zig; this half needs the VM.
+    has_button_handler: ?*const fn (user: *anyopaque, clip: *MovieClip) bool = null,
+    /// `obj.enabled` — a disabled button or clip is not pickable and gets
+    /// no events (ruffle InteractiveObject::mouse_enabled).
+    mouse_enabled: ?*const fn (user: *anyopaque, obj: *DisplayObject) bool = null,
+
+    pub fn clipHasButtonHandler(self: *Context, clip: *MovieClip) bool {
+        const f = self.has_button_handler orelse return false;
+        return f(self.class_lookup_user.?, clip);
+    }
+
+    pub fn mouseEnabled(self: *Context, obj: *DisplayObject) bool {
+        const f = self.mouse_enabled orelse return true;
+        return f(self.class_lookup_user.?, obj);
+    }
+
     pub fn registeredClass(self: *Context, char_id: u16) u32 {
         const f = self.class_lookup orelse return 0;
         return f(self.class_lookup_user.?, char_id);
@@ -102,6 +120,10 @@ pub const Priority = enum(u2) { initialize = 0, construct = 1, normal = 2 };
 
 pub const QueuedAction = struct {
     clip: *MovieClip,
+    /// A BUTTON's script handler runs on the button's own object, not on
+    /// any timeline — `clip` then only says which clip's removal cancels
+    /// it. Null for everything else.
+    display: ?*DisplayObject = null,
     priority: Priority = .normal,
     /// `unload` handlers run even though their clip is already gone —
     /// that is the whole point of them. Every other entry is dropped when
@@ -327,6 +349,22 @@ pub const MovieClip = struct {
             .on_removed = on_removed,
             .what = .{ .method = method },
         });
+    }
+
+    /// The `onClipEvent(press)` bodies plus the script handler, for one
+    /// mouse event. Same shape as `dispatchClipEvent`, but the event enum
+    /// lives in mouse.zig and carries its own method name.
+    pub fn dispatchMouseEvent(self: *MovieClip, ctx: *Context, event: @import("mouse.zig").Event) Error!void {
+        if (ctx.movie.swf_version < 5) return;
+        const flag = event.flag();
+        if (self.placement) |p| {
+            for (p.clip_actions) |handler| {
+                if (handler.events & flag != 0) {
+                    try ctx.queue(ctx.gpa, .{ .clip = self, .what = .{ .code = handler.actions } });
+                }
+            }
+        }
+        try ctx.queue(ctx.gpa, .{ .clip = self, .what = .{ .method = event.method() } });
     }
 
     /// Ruffle determine_next_frame: Same (implicit stop) when there is

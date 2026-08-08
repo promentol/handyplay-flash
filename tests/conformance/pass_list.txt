@@ -36,12 +36,15 @@ bitor
 biturshift
 bitxor
 button_children
+button_goto
 button_order
+button_properties_special_cases
 button_v5
 button_v6
 call
 call_method_empty_name
 catch_references_registers
+click_block
 clip_constructors
 clip_event_propagation_order
 closure_scope
@@ -61,6 +64,9 @@ depth_replacement_audio_unloading
 display_object_properties
 divide_swf4
 do_init_action
+drag_drop
+drag_over_from_outside
+drag_over_without_startdrag
 duplicate_movie_clip
 duplicate_movie_clip_drawing
 empty_movieclip_can_attach_movies
@@ -128,6 +134,9 @@ looping_real_2_declared_2
 mask_reapply
 mask_with_drawing
 mcl_as_broadcaster
+mouse_events
+mouse_events_visible_enabled
+mouse_hover_events_while_dragging
 mouse_listeners
 movieclip_begin_gradient_fill
 movieclip_default_state
@@ -200,6 +209,7 @@ target_paths/swf4
 tell_target
 tell_target_invalid
 tell_target_invalid_swf6
+text_blocks_clicks
 this_scoping
 this_swf7
 timeline_function_def

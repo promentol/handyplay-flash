@@ -56,6 +56,15 @@ pub const Drag = struct {
     offset_y: i32 = 0,
 };
 
+/// `_droptarget` is a STORED property, not a live query: ruffle recomputes
+/// it inside `update_drag` and leaves the last answer on the clip after
+/// `stopDrag` (movie_clip.rs drop_target). Only one clip can be dragged at
+/// a time, so one slot suffices — reads from any other clip are empty.
+pub const DropTarget = struct {
+    clip: ?*anyopaque = null,
+    path: []const u16 = &.{},
+};
+
 /// 2001-02-03T04:05:06 at +05:45 == 2001-02-02T22:20:06Z == 981152406000 ms.
 pub const MOCK_EPOCH_MS: f64 = 981152406000;
 
@@ -210,6 +219,8 @@ pub const Vm = struct {
     /// is_over_property_recursion_limit), and the two watch_recursion tests
     /// measure exactly how deep it gets.
     property_call_stack: std.ArrayList(u64) = .empty,
+    /// The last `_droptarget` computed for the dragged clip.
+    drop_target: DropTarget = .{},
     /// setInterval/setTimeout registrations, ticked by the Player after
     /// each frame's action drain.
     timers: @import("timers.zig").Timers = .{},
