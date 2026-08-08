@@ -25,6 +25,7 @@ const library = @import("../display/library.zig");
 const text_mod = @import("../display/text.zig");
 const edit_text = @import("../display/edit_text.zig");
 const display_font = @import("../display/font.zig");
+const edit_text_device = @import("../display/device_font.zig");
 const text_layout = @import("../display/text_layout.zig");
 
 pub const Error = std.mem.Allocator.Error || error{OutOfMemory};
@@ -245,7 +246,7 @@ pub const Renderer = struct {
 
         for (et.layout.lines) |line| {
             for (line.boxes) |b| {
-                if (b.font.swf_font == null) continue;
+                if (b.font.isNone()) continue;
                 const params: display_font.Params = .{
                     .height = b.size,
                     .letter_spacing = b.letter_spacing,
@@ -260,7 +261,8 @@ pub const Renderer = struct {
                     .ctx = ctx,
                     .base = parent_t,
                     .cx = concatCxform(cx, text_mod.colorAsMult(rgbToSwf(b.color))),
-                    .font_id = b.font.swf_font.?.id,
+                    .font_id = if (b.font.swf_font) |f| f.id else 0,
+                    .device = b.font.device,
                     .origin_x = ox + bx - scroll_x,
                     .origin_y = oy + baseline - scroll_y,
                 };
@@ -289,13 +291,19 @@ pub const Renderer = struct {
         base: Transform,
         cx: swf.reader.ColorTransform,
         font_id: u16,
+        /// Set instead of `font_id` when the face came from the HOST.
+        device: ?*edit_text_device.DeviceFont = null,
         origin_x: f32,
         origin_y: f32,
         err: ?Error = null,
 
         pub fn glyph(self: *GlyphPainter, p: display_font.Placed) !void {
-            const g = p.glyph orelse return;
             if (self.err != null) return;
+            if (self.device) |d| {
+                if (p.device_glyph) |gi| self.deviceGlyph(d, gi, p);
+                return;
+            }
+            const g = p.glyph orelse return;
             const m: swf.reader.Matrix = .{
                 .a = p.scale,
                 .b = 0,
@@ -312,6 +320,40 @@ pub const Renderer = struct {
             self.r.drawPaths(self.ctx, paths, self.base.concat(m), self.cx) catch |e| {
                 self.err = e;
             };
+        }
+
+        /// A device glyph has no `DrawPath` IR behind it: the outline
+        /// comes straight from the face in EM units and is pathed here,
+        /// under a transform that scales it to the span's size.
+        fn deviceGlyph(
+            self: *GlyphPainter,
+            d: *edit_text_device.DeviceFont,
+            gi: i32,
+            p: display_font.Placed,
+        ) void {
+            const segs = d.outline(gi);
+            if (segs.len == 0) return;
+            const m: swf.reader.Matrix = .{
+                .a = p.scale,
+                .b = 0,
+                .c = 0,
+                .d = p.scale,
+                .tx = @intFromFloat(self.origin_x + @as(f32, @floatFromInt(p.x))),
+                .ty = @intFromFloat(self.origin_y),
+            };
+            const t = self.base.concat(m);
+            self.ctx.setTransform(t.a, t.b, t.c, t.d, t.tx, t.ty);
+            self.ctx.setColorTransform(toSimdraCxform(self.cx));
+            self.ctx.beginPath();
+            for (segs) |sg| switch (sg.kind) {
+                .move => self.ctx.moveTo(sg.x, sg.y),
+                .line => self.ctx.lineTo(sg.x, sg.y),
+                .quad => self.ctx.quadraticCurveTo(sg.cx, sg.cy, sg.x, sg.y),
+            };
+            self.ctx.closePath();
+            // Glyph outlines are NON-ZERO wound, like an embedded font's.
+            self.ctx.setFillStyle(255, 255, 255, 255);
+            self.ctx.fill(.nonzero);
         }
     };
 

@@ -207,7 +207,11 @@ fn transform(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const style = arg(args, 0);
     if (style == .undefined_value or style == .null_value) return .null_value;
 
-    var tf: TextFormat = .{ .kerning = false };
+    // `TextFormat::default()` with kerning forced off — and the default
+    // is not empty: `display` starts at BLOCK, so a rule that names no
+    // display still reports one (corpus stylesheet_transform).
+    var tf: TextFormat = format_mod.defaultFormat();
+    tf.kerning = false;
     if (style == .object) {
         const o = style.object;
         if (getStr(vm, o, "color")) |c| tf.color = parseColor(c);
@@ -221,7 +225,9 @@ fn transform(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
                 .block;
         }
         if (get(vm, o, "fontFamily")) |v| {
-            if (value_mod.toBoolean(v, vm.swf_version)) tf.font = try vm.toStringValue(v);
+            if (value_mod.toBoolean(v, vm.swf_version)) {
+                tf.font = try parseFontList(vm, try vm.toStringValue(v));
+            }
         }
         if (get(vm, o, "fontSize")) |v| {
             const n = try suffixedInt(vm, v);
@@ -247,7 +253,10 @@ fn transform(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
             if (value_mod.toBoolean(v, vm.swf_version)) tf.leading = @floatFromInt(try suffixedInt(vm, v));
         }
         if (get(vm, o, "letterSpacing")) |v| {
-            if (value_mod.toBoolean(v, vm.swf_version)) tf.letter_spacing = @floatFromInt(try suffixedInt(vm, v));
+            // letterSpacing keeps the parse as an f64, so an unparseable
+            // one stays NaN where fontSize's i32 coercion would make it
+            // zero.
+            if (value_mod.toBoolean(v, vm.swf_version)) tf.letter_spacing = try suffixedFloat(vm, v);
         }
         if (get(vm, o, "marginLeft")) |v| {
             if (value_mod.toBoolean(v, vm.swf_version)) tf.left_margin = @floatFromInt(@max(try suffixedInt(vm, v), 0));
@@ -274,6 +283,33 @@ fn transform(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return .{ .object = try text_format.newObject(vm, tf) };
 }
 
+/// A CSS font list, comma-separated. Only LEADING spaces are stripped
+/// from each name — the trailing ones stay, and so do the ones inside —
+/// and the three generic families map onto Flash's device names. Empty
+/// entries vanish, so the separators do not survive as written.
+fn parseFontList(vm: *Vm, input: []const u16) ![]const u16 {
+    var out: std.ArrayList(u16) = .empty;
+    var pos: usize = 0;
+    while (pos < input.len) {
+        while (pos < input.len and input[pos] == ' ') pos += 1;
+        const start = pos;
+        while (pos < input.len and input[pos] != ',') pos += 1;
+        var value = input[start..pos];
+        if (pos < input.len) pos += 1;
+        if (strings.eql(value, S("mono"))) {
+            value = S("_typewriter");
+        } else if (strings.eql(value, S("sans-serif"))) {
+            value = S("_sans");
+        } else if (strings.eql(value, S("serif"))) {
+            value = S("_serif");
+        }
+        if (value.len == 0) continue;
+        if (out.items.len > 0) try out.append(vm.arena(), ',');
+        try out.appendSlice(vm.arena(), value);
+    }
+    return out.items;
+}
+
 fn get(vm: *Vm, o: ObjectHandle, comptime name: []const u8) ?Value {
     const v = vm.objects.getChained(o, S(name), vm.case_sensitive) orelse return null;
     return if (v == .undefined_value) null else v;
@@ -284,14 +320,27 @@ fn getStr(vm: *Vm, o: ObjectHandle, comptime name: []const u8) ?[]const u16 {
     return if (v == .string) v.string else null;
 }
 
-/// `parseInt` semantics: leading digits win and a `px`/`pt` suffix is
-/// simply ignored.
+/// Every numeric CSS value goes through `parseInt`, not `Number` — the
+/// value is STRINGIFIED first, so `fontSize: true` parses "true" and
+/// comes out as nothing. Leading whitespace of any kind is skipped, and
+/// a `px`/`pt` suffix simply ends the digits.
+fn suffixedFloat(vm: *Vm, v: Value) !f64 {
+    const n = try suffixedIntOrNan(vm, v);
+    return n;
+}
+
 fn suffixedInt(vm: *Vm, v: Value) !i32 {
-    if (v != .string) return value_mod.toInt32(try vm.toNumber(v));
+    const n = try suffixedIntOrNan(vm, v);
+    if (std.math.isNan(n)) return 0;
+    return @intFromFloat(std.math.clamp(n, -2147483648.0, 2147483647.0));
+}
+
+fn suffixedIntOrNan(vm: *Vm, v: Value) !f64 {
+    const s = try vm.toStringValue(v);
     var i: usize = 0;
-    const s = v.string;
-    while (i < s.len and (s[i] == ' ' or s[i] == '\t')) i += 1;
-    var sign: i32 = 1;
+    while (i < s.len and (s[i] == ' ' or s[i] == '\t' or s[i] == '\n' or
+        s[i] == '\r' or s[i] == 0x0B or s[i] == 0x0C)) i += 1;
+    var sign: i64 = 1;
     if (i < s.len and (s[i] == '+' or s[i] == '-')) {
         if (s[i] == '-') sign = -1;
         i += 1;
@@ -303,8 +352,8 @@ fn suffixedInt(vm: *Vm, v: Value) !i32 {
         if (n > 0x7FFF_FFFF) n = 0x7FFF_FFFF;
         digits += 1;
     }
-    if (digits == 0) return 0;
-    return sign * @as(i32, @intCast(n));
+    if (digits == 0) return std.math.nan(f64);
+    return @as(f64, @floatFromInt(sign)) * @as(f64, @floatFromInt(n));
 }
 
 /// `#RRGGBB`, exactly six hex digits — anything else is no colour at all.

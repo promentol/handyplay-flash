@@ -104,6 +104,7 @@ pub fn main(init: std.process.Init) !u8 {
     var swf_path: ?[]const u8 = null;
     var headless_frames: ?u32 = null;
     var out_path: []const u8 = "out.png";
+    var device_font_path: ?[]const u8 = null;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -111,6 +112,10 @@ pub fn main(init: std.process.Init) !u8 {
             i += 1;
             if (i >= args.len) return usage(err_out);
             headless_frames = try std.fmt.parseInt(u32, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--device-font")) {
+            i += 1;
+            if (i >= args.len) return usage(err_out);
+            device_font_path = args[i];
         } else if (std.mem.eql(u8, arg, "--out")) {
             i += 1;
             if (i >= args.len) return usage(err_out);
@@ -125,7 +130,16 @@ pub fn main(init: std.process.Init) !u8 {
     defer gpa.free(bytes);
     // Real content deserves the real clock and the real path; only the
     // conformance runner wants core's deterministic defaults.
+    // A face for everything the movie did not embed. The player takes
+    // BYTES — `core/` does no I/O — so the frontend reads the file.
+    var device_font: ?[]const u8 = null;
+    if (device_font_path) |fp| {
+        device_font = std.Io.Dir.cwd().readFileAlloc(io, fp, gpa, .limited(16 << 20)) catch null;
+    }
+    defer if (device_font) |d| gpa.free(d);
+
     const player = flash.Player.createWith(gpa, bytes, .{
+        .device_font = device_font,
         .url = path,
         .epoch_ms = wallClockMs(),
         .tz_offset_min = localOffsetMinutes(),

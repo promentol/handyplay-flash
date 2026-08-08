@@ -274,6 +274,7 @@ string_paths_hidden
 string_paths_keyevents
 string_paths_timer
 string_paths_unload
+stylesheet_transform
 super_edge_cases
 swf4_bool
 swf5_encoding
