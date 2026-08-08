@@ -69,7 +69,7 @@ is rejected (`error.Avm2Unsupported`).
 | 88 | DefineFontName | 9 | M1 | parse | parse-skip (a display name, not the one lookup uses) |
 | 11 | DefineText | 1 | M1/M4 | done | sticky TextRecord state; rendered and hit-tested per glyph |
 | 33 | DefineText2 | 3 | M1/M4 | done | RGBA |
-| 37 | DefineEditText | 4 | M1/M4 | done | a full instance: spans, HTML, layout, selection, input, two-way `variable` binding. Device fonts (a face the movie does not embed) still resolve to nothing — M7 |
+| 37 | DefineEditText | 4 | M1/M4 | done | a full instance: spans, HTML, layout, selection, input, two-way `variable` binding. A face the movie does not embed uses the host's TTF when one is registered, and measures zero otherwise |
 | 14 | DefineSound | 1 | M1/M6 | parse | PCM/ADPCM/MP3 |
 | 46 | DefineMorphShape | 3 | M7 | todo | raw body captured by preload |
 | 84 | DefineMorphShape2 | 8 | M7 | todo | raw body captured by preload |

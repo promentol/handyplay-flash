@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C and D complete (**347/680**); E–F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C and D complete (**354/680**); E–F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -50,7 +50,7 @@ Focus, `Selection`, and Tab ordering work.
 **Text today**: static text and text fields both render glyphs; a field
 is a real instance with formatting spans, HTML in and out, wrapping and
 alignment, autosize, scrolling, a two-way `variable` binding, a
-selection, and typing through the full editing-command set. 347 of
+selection, and typing through the full editing-command set. 354 of
 Ruffle's 680 scorable conformance dirs pass.
 
 ---
@@ -132,6 +132,7 @@ handyflash/
 │   │   ├── font.zig          face metrics, kerning, `evaluate` (the layout primitive)
 │   │   ├── text_layout.zig   spans → lines and boxes: wrap, align, tabs, autosize
 │   │   ├── edit_text.zig     a TEXT FIELD instance: spans, selection, input, layout cache
+│   │   ├── device_font.zig   a host TTF as a face, in EM units (via simdra)
 │   │   └── movie_clip.zig    timeline: runFrame / goto rewind+replay / action QUEUEING
 │   ├── avm1/                 THE INTERPRETER (M3)
 │   │   ├── opcodes.zig       full 0x00-0x9F decoder (allocation-free)
@@ -147,6 +148,7 @@ handyflash/
 │   │   └── globals/          globals.zig · decl.zig · movie_clip.zig · geom.zig
 │   │                         date.zig · singletons.zig · selection.zig
 │   │                         text_field.zig · text_format.zig · text_snapshot.zig
+│   │                         style_sheet.zig · filters.zig
 │   ├── text/                 THE TEXT MODEL — no display, no interpreter
 │   │   ├── format.zig        TextFormat: 19 tri-state properties
 │   │   ├── spans.zig         FormatSpans: resolved runs over the text
@@ -442,7 +444,7 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
-**Workstreams A, B, C and D are CLOSED at 347/680.** Pick up E (bitmaps)
+**Workstreams A, B, C and D are CLOSED at 354/680.** Pick up E (bitmaps)
 next. `docs/M4-SPEC.md` §4, §5 and §6 list, by name and cause, every dir
 those four workstreams could not reach; do not re-derive them.
 
@@ -478,11 +480,12 @@ Six things to know before you start:
    algorithm, not ES3.** Both look like sloppiness and are not — the
    corpus fails either one if it is "corrected". See the workstream-B
    notes at the end of `docs/AVM1.md`.
-6. **Zero device fonts is CORRECT, not a gap.** A face the movie does not
-   embed resolves to nothing and measures zero, which is what Flash does
-   with none installed; the four dirs that need a real one declare
-   `with_default_font` in their toml. Do not "fix" text measurement by
-   inventing a fallback font — see the workstream-D notes in
+6. **A device font is a HOST input, never a built-in.** `Options.device_font`
+   takes TTF bytes; with none, a face the movie did not embed measures
+   zero, which is what a machine without it installed does. The four
+   corpus dirs that need one declare `with_default_font`, and the harness
+   passes ruffle's Noto Sans subset for exactly those. Do not bake a
+   fallback face into `core/` — see the workstream-D notes in
    `docs/AVM1.md`.
 
 Then: **M5** libretro core + HFS0 save-states (byte-identical

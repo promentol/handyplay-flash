@@ -367,6 +367,22 @@ re-derived:
   highlight being active. A text field cannot render one at all.
 - **A `TextSnapshot` captures at construction**, so one taken earlier
   keeps reporting what the clip said then.
+- **A DEVICE font is a host input.** `Player.Options.device_font` takes
+  TTF bytes; `core/` does no I/O and never carries a built-in face. Two
+  rules only device faces have: kerning is always consulted whatever the
+  format's flag says, and an advance is rounded to a whole PIXEL before
+  letter spacing is added, with the spacing unable to make it negative.
+- **A filter is a typed property bag, and the TYPES are the class.** An
+  angle round-trips through radians (`angle = 360` reads 0, `361` reads
+  1), a colour keeps its alpha because `color` and `alpha` are two views
+  of one value, alpha quantises to a byte (0.5 reads 0.498039215686275),
+  and strength is 8.8 fixed clamped to 0..0xFF00.
+- **Cloning a dynamically created TEXT FIELD does not copy it.** Flash
+  makes a fresh 0x0 field carrying only the matrix, the colour transform
+  and `editable` — its text, bounds, format and every flag start over.
+- **An IME preedit sits IN the field** and each new one replaces the last
+  wholesale; losing focus COMMITS by typing it back as ordinary input,
+  which is what makes `onChanged` fire for it.
 - **`TextField.text` must hand out a COPY.** Returning the field's own
   buffer let a later edit rewrite a string already stored in a variable —
   a real aliasing bug the corpus caught through `replaceSel`.

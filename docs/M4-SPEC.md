@@ -435,7 +435,7 @@ reached and exactly why.
 | The LOADER (M5) | `root_button_mode`, `focusrect_property_swf5/6/7` |
 | A TextField stores `tabIndex` as u32 and declares it ENUMERABLE, unlike Button and MovieClip — this dir's button and movie-clip sections match exactly, only its two text sections do not | `tab_ordering_properties` |
 
-## 6. Text, fonts and TextField (workstream D) — ✅ CLOSED (347/680)
+## 6. Text, fonts and TextField (workstream D) — ✅ CLOSED (354/680)
 
 Everything below shipped. The plan lives in the git log (`D0`..`D10`); the
 semantics worth keeping are in `docs/AVM1.md`'s "Workstream D notes" and at
@@ -503,8 +503,24 @@ reached and exactly why.
   an unfocused field. The full `TextControlCode` set is implemented, the
   player owns the clipboard, and an edit pushes the variable binding then
   broadcasts `onChanged`.
+- **Device fonts**: `core/` does no I/O, so the host hands over TTF bytes
+  and every unresolved face uses them; with none registered an unembedded
+  face still measures zero, which is what a machine without the font
+  installed does. simdra's `SmFont` gained EM-unit metrics and glyph
+  outlines beside its pixel-scaled canvas API. Two behaviours only device
+  faces have: kerning is always consulted whatever the format says, and
+  an advance rounds to a whole PIXEL before letter spacing is added.
+- **`flash.filters`**: ten classes that are, in AVM1, typed property bags
+  — and the types ARE the class (an angle round-trips through radians, a
+  colour keeps its alpha, alpha quantises to a byte, strength is 8.8
+  fixed). The rasterisation and the PlaceObject3 filter list stay M7.
+- **IME**: the preedit text sits IN the field and each new preedit
+  replaces the last; losing focus COMMITS it by typing it back as
+  ordinary input, which is what makes `onChanged` fire.
 - **Rendering**: background, border and glyphs, with scrolling moving the
-  text rather than the box. A SELECTABLE field is pickable through its
+  text rather than the box. The box is drawn in TWIPS under the field's
+  own transform (in pixels it lands nowhere, since the canvas transform
+  already carries twips to pixels), and the text is CLIPPED to it. A SELECTABLE field is pickable through its
   whole box; a dynamic non-selectable one is invisible to the mouse and
   neither takes focus nor blocks what is behind it.
 - **`TextField.StyleSheet`**: `_css` holds the raw style objects, `_styles`
@@ -525,10 +541,11 @@ reached and exactly why.
 | Blocker | Dirs |
 |---|---|
 | A DEVICE font — the toml sets `with_default_font`, and resolving a face the movie does not embed needs host font I/O (M7) | `gettextextent`, `device_font_spacing`, `edittext_hscroll`, `edittext_drag_select` |
-| IME composition | `edittext_ime_focus_lost` |
-| `flash.filters.*` — a field reports `filters` as an empty array and stores nothing, so it cannot carry one. The whole package is M7 | `clone_sprite_edittext` |
-| Cloning a text FIELD. `duplicateMovieClip` on one produces a live clone in Flash, and the corpus also pins how autosize interacts with a scripted `_width` on the original | `clone_sprite_edittext_dynamic` |
-| The LOADER (M5) | `focusrect_property_swf5/6/7` |
+| The LOADER (M5) — `_root.loadMovie("test2.swf")`, whose trace is the ONE line each of these three differs by (1236 of 1237 match) | `focusrect_property_swf5/6/7` |
+
+Nothing else in the cluster is outstanding. The four dirs that needed a
+DEVICE font, the two that needed `flash.filters`, the IME one, drag
+selection, click-to-caret and `TextField.StyleSheet` all shipped.
 
 ## 7. Bitmaps (workstream E)
 
