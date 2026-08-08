@@ -363,7 +363,27 @@ const FileServer = struct {
         // An absolute URL is served from the same directory by its last
         // component, which is what ruffle's virtual filesystem amounts to
         // for these tests.
-        if (std.mem.indexOf(u8, rel, "://")) |_| rel = std.fs.path.basename(rel);
+        // An absolute URL becomes HOST/path under the base directory —
+        // ruffle's virtual filesystem maps `http://localhost:8000/a/b.swf`
+        // to `<dir>/localhost/a/b.swf`, port and all discarded.
+        if (std.mem.indexOf(u8, rel, "://")) |scheme| {
+            const after = rel[scheme + 3 ..];
+            const slash = std.mem.indexOfScalar(u8, after, '/') orelse after.len;
+            var host = after[0..slash];
+            if (std.mem.indexOfScalar(u8, host, ':')) |c| host = host[0..c];
+            const tail = after[slash..];
+            var joined_buf: [1024]u8 = undefined;
+            rel = std.fmt.bufPrint(&joined_buf, "{s}{s}", .{ host, tail }) catch return null;
+            // `joined_buf` dies with this frame, so resolve now.
+            const full_abs = std.fs.path.join(self.gpa, &.{ self.base, rel }) catch return null;
+            defer self.gpa.free(full_abs);
+            return std.Io.Dir.cwd().readFileAlloc(
+                self.io,
+                full_abs,
+                self.store.allocator(),
+                .limited(256 << 20),
+            ) catch null;
+        }
         while (rel.len > 0 and rel[0] == '/') rel = rel[1..];
         if (rel.len == 0) return null;
         const full = std.fs.path.join(self.gpa, &.{ self.base, rel }) catch return null;

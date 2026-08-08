@@ -694,7 +694,15 @@ pub const Player = struct {
             .bool_property = hostBoolProperty,
             .key_focus = hostKeyFocus,
             .object_instantiated = hostObjectInstantiated,
+            .warn_fn = hostWarn,
         };
+    }
+
+    /// A player warning, on the same sink as `trace` and with Flash's own
+    /// prefix (ruffle's TestLogBackend, whose `log_warnings` defaults on).
+    fn hostWarn(user: *anyopaque, msg: []const u8) void {
+        const self: *Player = @ptrCast(@alignCast(user));
+        self.traceFmt("Warning: {s}", .{msg}) catch {};
     }
 
     fn runOneFrame(self: *Player) !void {

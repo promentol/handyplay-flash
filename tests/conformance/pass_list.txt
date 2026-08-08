@@ -324,6 +324,7 @@ object_prototypes
 object_string_coerce_swf5
 object_string_coerce_swf6
 on_construct
+placeobject_occupied_depth
 primitive_instanceof
 property_invalid_base_clip
 prototype_delete

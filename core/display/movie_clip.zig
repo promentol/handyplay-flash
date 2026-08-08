@@ -65,6 +65,15 @@ pub const Context = struct {
     /// DoInitAction uses this; everything else goes through the queue.
     run_inline: ?*const fn (user: *anyopaque, clip: *MovieClip, code: []const u8) void = null,
 
+    /// Emit a player warning through the trace sink. Null in pure-display
+    /// tests, where there is no sink.
+    warn_fn: ?*const fn (user: *anyopaque, msg: []const u8) void = null,
+    /// Nonzero while a GOTO is replaying frames. Ruffle's goto aggregates
+    /// the placements into a delta and never re-places over a depth it
+    /// already filled; our correctness-first replay does, so the warnings
+    /// that provokes are Flash's only in the forward direction.
+    replaying: u32 = 0,
+
     /// Does this object hold the keyboard focus? A key event's SCRIPT
     /// handler only runs for the focused object (ruffle
     /// `should_fire_event_handlers`); its `onClipEvent` bodies run either
@@ -124,6 +133,17 @@ pub const Context = struct {
     pub fn registeredClass(self: *Context, char_id: u16) u32 {
         const f = self.class_lookup orelse return 0;
         return f(self.class_lookup_user.?, char_id);
+    }
+
+    /// A player warning. Flash prints these through the SAME sink as
+    /// `trace`, prefixed "Warning: ", so they are part of the expected
+    /// output and not a debugging aside.
+    pub fn warn(self: *Context, comptime fmt: []const u8, args: anytype) void {
+        if (self.replaying != 0) return;
+        const f = self.warn_fn orelse return;
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+        f(self.class_lookup_user.?, msg);
     }
 
     pub fn runInline(self: *Context, clip: *MovieClip, code: []const u8) void {
@@ -583,6 +603,8 @@ pub const MovieClip = struct {
         const outer_movie = ctx.movie;
         if (self.movie) |m| ctx.movie = m;
         defer ctx.movie = outer_movie;
+        ctx.replaying += 1;
+        defer ctx.replaying -= 1;
         if (target < self.current_frame) {
             var i: usize = 0;
             while (i < self.children.items.len) {
@@ -711,8 +733,13 @@ pub const MovieClip = struct {
     fn placeObject(self: *MovieClip, ctx: *Context, po: swf.place.PlaceObject, frame_num: u16) Error!void {
         switch (po.action) {
             .place => |id| {
-                // Flash refuses to place over an occupied depth.
-                if (self.childAtDepth(po.depth) != null) return;
+                // Flash refuses to place over an occupied depth — and says
+                // so, on the TRACE sink, which is why the corpus can see it
+                // (ruffle instantiate_child -> avm_warning).
+                if (self.childAtDepth(po.depth) != null) {
+                    ctx.warn("Failed to place object at depth {d}.", .{po.depth});
+                    return;
+                }
                 try self.instantiate(ctx, id, po, frame_num);
             },
             .replace => |id| {
