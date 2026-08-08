@@ -112,6 +112,9 @@ pub fn install(vm: *Vm, attrs: object_mod.Attributes) !void {
     try decl.method(vm, xml_proto, "parseXML", parseXml, m);
     try decl.method(vm, xml_proto, "getBytesLoaded", getBytesLoaded, m);
     try decl.method(vm, xml_proto, "getBytesTotal", getBytesTotal, m);
+    try decl.method(vm, xml_proto, "load", load, m);
+    try decl.method(vm, xml_proto, "sendAndLoad", sendAndLoad, m);
+    try decl.method(vm, xml_proto, "onData", onData, m);
     try vm.objects.putWithAttrs(xml_proto, S("contentType"), .{
         .string = S("application/x-www-form-urlencoded"),
     }, .{ .read_only = true, .dont_enum = true }, false);
@@ -788,4 +791,63 @@ fn getBytesTotal(p: *anyopaque, this: Value, args: []const Value) anyerror!Value
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
     return vm.objects.getChained(this.object, S("_bytesTotal"), vm.case_sensitive) orelse .undefined_value;
+}
+
+/// `XML.load(url)`. A NULL url is rejected outright — undefined is not,
+/// and fetches the string "undefined". Only a real XML document can load;
+/// an XMLNode with the method borrowed onto it returns false.
+fn load(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const url_val = decl.arg(args, 0);
+    if (url_val == .null_value) return .{ .boolean = false };
+    if (docOf(vm, this) == null) return .{ .boolean = false };
+    const url = try vm.toStringValue(url_val);
+    const l = @import("loader.zig");
+    // The progress properties are reset on THIS, while the data lands on
+    // the loader object — the same object here, but not in `sendAndLoad`.
+    try l.resetProgress(vm, this.object);
+    l.spawn(vm, try l.buildRequest(vm, url, null, .none, .{ .load_vars = this.object }));
+    return .{ .boolean = true };
+}
+
+/// `XML.sendAndLoad(url, target)`. The body is THIS document serialised —
+/// not form-encoded variables, which is where it parts company with
+/// `LoadVars.sendAndLoad`. It is always a POST, and it returns undefined
+/// rather than a success flag.
+fn sendAndLoad(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const url_val = decl.arg(args, 0);
+    if (url_val == .null_value) return .undefined_value;
+    const target = decl.arg(args, 1);
+    if (target != .object) return .undefined_value;
+    const doc = docOf(vm, this) orelse return .undefined_value;
+    const url = try vm.toStringValue(url_val);
+    const l = @import("loader.zig");
+    var body: std.ArrayList(u16) = .empty;
+    try writeNode(vm, doc.root, &body);
+    try l.resetProgress(vm, this.object);
+    l.spawn(vm, .{
+        .url = try strings.toUtf8(vm.arena(), url),
+        .method = .post,
+        .body = try strings.toUtf8(vm.arena(), body.items),
+        .target = .{ .load_vars = target.object },
+    });
+    return .undefined_value;
+}
+
+/// `XML.prototype.onData`: parse and report. Undefined data means the load
+/// failed, and `onLoad` hears about it without `parseXML` ever running.
+fn onData(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const src = decl.arg(args, 0);
+    const l = @import("loader.zig");
+    if (src == .undefined_value) {
+        try l.callMethod(vm, this.object, S("onLoad"), &.{.{ .boolean = false }});
+        return .undefined_value;
+    }
+    try l.callMethod(vm, this.object, S("parseXML"), &.{.{ .string = try vm.toStringValue(src) }});
+    try vm.setProperty(this.object, S("loaded"), .{ .boolean = true }, this);
+    try l.callMethod(vm, this.object, S("onLoad"), &.{.{ .boolean = true }});
+    return .undefined_value;
 }

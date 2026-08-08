@@ -250,7 +250,7 @@ pub fn spawn(vm: *Vm, req: FetchRequest) void {
 /// The three bookkeeping properties every LoadVars fetch resets. They are
 /// created hidden the first time and merely overwritten afterwards, so a
 /// script that made `loaded` enumerable keeps it that way.
-fn resetProgress(vm: *Vm, obj: ObjectHandle) !void {
+pub fn resetProgress(vm: *Vm, obj: ObjectHandle) !void {
     const fields = [_]struct { name: AvmString, v: Value }{
         .{ .name = S("_bytesLoaded"), .v = .{ .number = 0 } },
         .{ .name = S("_bytesTotal"), .v = .undefined_value },

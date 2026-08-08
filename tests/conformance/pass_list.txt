@@ -443,6 +443,7 @@ xml_cdata
 xml_child_nodes_edge_cases
 xml_clone_expandos
 xml_first_last_child
+xml_getbytes
 xml_has_child_nodes
 xml_idmap
 xml_ignore_comments
@@ -452,6 +453,7 @@ xml_inspect_createmethods
 xml_inspect_doctype
 xml_inspect_parsexml
 xml_inspect_xmldecl
+xml_load
 xml_namespaces
 xml_parent_and_child
 xml_remove_node
