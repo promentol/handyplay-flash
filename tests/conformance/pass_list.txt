@@ -169,6 +169,8 @@ edittext_width_height
 empty_movieclip_can_attach_movies
 enumerate
 equals
+equals2_swf6
+equals2_swf7
 equals_swf4_alt
 equals_swf5
 error
@@ -276,8 +278,11 @@ named_shapes
 nan_scale
 nested_textfields_in_buttons
 netstream_play_flv_screen
+new_method_wrap
 new_object_enumerate
+new_object_wrap
 o
+object_constructor
 object_prototypes
 object_string_coerce_swf5
 object_string_coerce_swf6

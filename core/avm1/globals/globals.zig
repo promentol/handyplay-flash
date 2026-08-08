@@ -312,12 +312,42 @@ fn globalNoop(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 
 // --- Object ------------------------------------------------------------------
 
+/// `new Object(v)` BOXES a primitive rather than ignoring it: the result
+/// is a Number, String or Boolean object, and it traces as the value it
+/// wraps. Only undefined and null give a plain object.
 fn ctorObject(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const a0 = arg(args, 0);
-    if (a0 == .object) return a0;
+    switch (a0) {
+        .object => return a0,
+        .undefined_value, .null_value => {},
+        else => return boxPrimitive(vm, a0),
+    }
     if (vm.in_construct > 0 and this == .object) return this;
     return .{ .object = try vm.newObject() };
+}
+
+/// A primitive in its wrapper object, with the matching prototype so the
+/// class's own methods are reachable.
+fn boxPrimitive(vm: *Vm, v: Value) !Value {
+    const h = try vm.objects.create();
+    switch (v) {
+        .number => |n| {
+            vm.objects.get(h).proto = .{ .object = vm.number_proto };
+            vm.objects.get(h).native = .{ .boxed_number = n };
+        },
+        .string => |str| {
+            vm.objects.get(h).proto = .{ .object = vm.string_proto };
+            vm.objects.get(h).native = .{ .boxed_string = str };
+            try vm.objects.putWithAttrs(h, S("length"), .{ .number = @floatFromInt(str.len) }, .{ .dont_enum = true, .dont_delete = true, .read_only = true }, vm.case_sensitive);
+        },
+        .boolean => |b| {
+            vm.objects.get(h).proto = .{ .object = vm.boolean_proto };
+            vm.objects.get(h).native = .{ .boxed_bool = b };
+        },
+        else => vm.objects.get(h).proto = .{ .object = vm.object_proto },
+    }
+    return .{ .object = h };
 }
 
 fn ctorFunction(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
