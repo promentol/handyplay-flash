@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C and D complete (**354/680**); E–F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C and D complete (**355/680**); E–F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -50,7 +50,7 @@ Focus, `Selection`, and Tab ordering work.
 **Text today**: static text and text fields both render glyphs; a field
 is a real instance with formatting spans, HTML in and out, wrapping and
 alignment, autosize, scrolling, a two-way `variable` binding, a
-selection, and typing through the full editing-command set. 354 of
+selection, and typing through the full editing-command set. 355 of
 Ruffle's 680 scorable conformance dirs pass.
 
 ---
@@ -444,7 +444,7 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
-**Workstreams A, B, C and D are CLOSED at 354/680.** Pick up E (bitmaps)
+**Workstreams A, B, C and D are CLOSED at 355/680.** Pick up E (bitmaps)
 next. `docs/M4-SPEC.md` §4, §5 and §6 list, by name and cause, every dir
 those four workstreams could not reach; do not re-derive them.
 

@@ -435,7 +435,7 @@ reached and exactly why.
 | The LOADER (M5) | `root_button_mode`, `focusrect_property_swf5/6/7` |
 | A TextField stores `tabIndex` as u32 and declares it ENUMERABLE, unlike Button and MovieClip — this dir's button and movie-clip sections match exactly, only its two text sections do not | `tab_ordering_properties` |
 
-## 6. Text, fonts and TextField (workstream D) — ✅ CLOSED (354/680)
+## 6. Text, fonts and TextField (workstream D) — ✅ CLOSED (355/680)
 
 Everything below shipped. The plan lives in the git log (`D0`..`D10`); the
 semantics worth keeping are in `docs/AVM1.md`'s "Workstream D notes" and at
@@ -461,6 +461,10 @@ reached and exactly why.
 - **A text field is an owned instance**, not a view onto the frozen tag. It
   measures its OWN box rather than the union of its content, and writing
   `_width` resizes the box instead of scaling it.
+- **`asfunction:` links** call what they name, in a scope rooted at the
+  field's timeline. The address splits at the FIRST comma only, so
+  `asfunction:f,a,b,c` passes one argument. A field that is not
+  selectable is invisible to the mouse EXCEPT over a link.
 - **Layout** lays every box out with the cursor ON THE BASELINE and fixes
   the line up afterwards, which is what lets two font sizes share one
   baseline. GUTTER is 40 twips on all four sides; only the FIRST line
