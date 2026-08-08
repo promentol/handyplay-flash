@@ -58,6 +58,7 @@ bitmap_data_thorough/setPixel
 bitmap_data_thorough/setPixel32
 bitmap_data_thorough/threshold
 bitmap_data_threshold
+bitmap_filters
 bitmapdata_applyfilter_colormatrix
 bitmapdata_channels
 bitmapdata_hittest_threshold

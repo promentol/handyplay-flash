@@ -18,6 +18,7 @@ const display_object = @import("../../display/display_object.zig");
 const activation = @import("../activation.zig");
 const geom = @import("geom.zig");
 const bitmap_data = @import("bitmap_data.zig");
+const filters = @import("filters.zig");
 
 const Value = value_mod.Value;
 const Vm = runtime.Vm;
@@ -424,18 +425,81 @@ pub fn setBlendMode(p: *anyopaque, this: Value, args: []const Value) anyerror!Va
 /// PlaceObject3 filters are parsed but not applied (M7). Reading yields a
 /// fresh empty Array every time, which is what ruffle does — the returned
 /// array is a COPY, so mutating it does not change the object.
+/// The object's filter list. Both directions COPY: the array is fresh
+/// and so is every filter in it, so neither `mc.filters[0].blurX = 9` nor
+/// holding on to the array you assigned reaches the object.
 pub fn getFilters(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
     _ = args;
     const vm = vmOf(p);
-    return .{ .object = try vm.newArray() };
+    const out = try vm.newArray();
+    if (this != .object) return .{ .object = out };
+    const stored = vm.objects.getOwn(this.object, S(FILTERS_SLOT), false) orelse
+        return tagFilters(vm, this, out);
+    if (stored != .object) return .{ .object = out };
+
+    const len = filterListLen(vm, stored.object);
+    var n: u32 = 0;
+    for (0..len) |i| {
+        const got = vm.objects.getChained(stored.object, try indexName(vm, i), false) orelse continue;
+        const copy = (try filters.cloneFilter(vm, got)) orelse continue;
+        try vm.objects.put(out, try indexName(vm, n), copy, false);
+        n += 1;
+    }
+    try vm.setArrayLength(out, n);
+    return .{ .object = out };
 }
 
 pub fn setFilters(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = p;
-    _ = this;
-    _ = args;
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const list = try vm.newArray();
+    var n: u32 = 0;
+    const v = arg(args, 0);
+    if (v == .object) {
+        const len = filterListLen(vm, v.object);
+        for (0..len) |i| {
+            const got = vm.objects.getChained(v.object, try indexName(vm, i), false) orelse continue;
+            // Anything that is not a filter is DROPPED, not stored.
+            const copy = (try filters.cloneFilter(vm, got)) orelse continue;
+            try vm.objects.put(list, try indexName(vm, n), copy, false);
+            n += 1;
+        }
+    }
+    try vm.setArrayLength(list, n);
+    try vm.objects.putWithAttrs(this.object, S(FILTERS_SLOT), .{ .object = list }, decl.frozen, false);
     return .undefined_value;
+}
+
+/// Until a script assigns a list, `filters` reports what the PLACEMENT
+/// carried — and builds fresh objects for it every read, like the
+/// script-set path.
+fn tagFilters(vm: *Vm, this: Value, out: ObjectHandle) !Value {
+    const t = stage.targetOfValue(vm, this) orelse return .{ .object = out };
+    var n: u32 = 0;
+    for (t.obj.tag_filters) |f| {
+        try vm.objects.put(out, try indexName(vm, n), try filters.fromTag(vm, f), false);
+        n += 1;
+    }
+    try vm.setArrayLength(out, n);
+    return .{ .object = out };
+}
+
+/// Where the list lives. Hidden and undeletable, like every other native
+/// slot parked on a script object.
+const FILTERS_SLOT = "__filters";
+
+fn filterListLen(vm: *Vm, h: ObjectHandle) usize {
+    const v = vm.objects.getChained(h, S("length"), false) orelse return 0;
+    if (v != .number) return 0;
+    return @intFromFloat(std.math.clamp(v.number, 0, 1024));
+}
+
+fn indexName(vm: *Vm, i: usize) !strings.AvmString {
+    var buf: [16]u8 = undefined;
+    const ascii = std.fmt.bufPrint(&buf, "{d}", .{i}) catch unreachable;
+    const wide = try vm.arena().alloc(u16, ascii.len);
+    for (ascii, wide) |c, *w| w.* = c;
+    return wide;
 }
 
 /// A NEW flash.geom.Transform view every read, which is why

@@ -265,6 +265,10 @@ pub const Vm = struct {
     /// a pixel implementation, so the one that has to be recognised by
     /// class rather than by shape (`BitmapData.applyFilter`).
     colormatrix_proto: ObjectHandle = 0,
+    /// Every `flash.filters` prototype, indexed by the class's position
+    /// in `globals/filters.zig`'s table. Needed to build a filter object
+    /// from a PlaceObject3 record, which has no constructor to call.
+    filter_protos: [10]ObjectHandle = @splat(0),
     /// `TextSnapshot.prototype`.
     textsnapshot_proto: ObjectHandle = 0,
     /// Is the focus HIGHLIGHT active? It follows the focus, and any mouse

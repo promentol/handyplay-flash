@@ -75,6 +75,9 @@ pub const PlaceObject = struct {
     is_visible: ?bool = null,
     background_color: ?rdr.Color = null,
     had_filters: bool = false,
+    /// The decoded PlaceObject3 filter list, which a script reads back
+    /// through `MovieClip.filters`. Slices into the movie arena.
+    filter_list: []const filters.Filter = &.{},
 };
 
 /// PlaceObject (4): positional only — always a `place` at depth with a
@@ -142,7 +145,7 @@ pub fn parsePlace23(
     if ((flags & (1 << 6)) != 0) po.clip_depth = try r.readU16();
     // PlaceObject3 extras (flag bits 8+ never set in the PO2 u8 read).
     if ((flags & (1 << 8)) != 0) {
-        _ = try filters.skipList(&r);
+        po.filter_list = try filters.parseList(allocator, &r);
         po.had_filters = true;
     }
     if ((flags & (1 << 9)) != 0) po.blend_mode = try r.readU8();

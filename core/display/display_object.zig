@@ -50,6 +50,10 @@ pub const DisplayObject = struct {
     visible: bool = true,
     /// PlaceObject3 blend byte (0/1 = normal).
     blend_mode: u8 = 0,
+    /// The filters the PLACEMENT carried. Not owned — a slice into the
+    /// movie arena — and read back by `MovieClip.filters` until a script
+    /// assigns its own list.
+    tag_filters: []const swf.filters.Filter = &.{},
     /// `onClipEvent(...)` bodies from the placing tag. Like `name` and
     /// `clip_depth`, these are taken only at INITIAL placement.
     clip_actions: []const swf.place.ClipAction = &.{},
