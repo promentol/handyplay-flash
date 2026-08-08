@@ -435,7 +435,7 @@ reached and exactly why.
 | The LOADER (M5) | `root_button_mode`, `focusrect_property_swf5/6/7` |
 | A TextField stores `tabIndex` as u32 and declares it ENUMERABLE, unlike Button and MovieClip — this dir's button and movie-clip sections match exactly, only its two text sections do not | `tab_ordering_properties` |
 
-## 6. Text, fonts and TextField (workstream D) — ✅ CLOSED (355/680)
+## 6. Text, fonts and TextField (workstream D) — ✅ CLOSED (356/680)
 
 Everything below shipped. The plan lives in the git log (`D0`..`D10`); the
 semantics worth keeping are in `docs/AVM1.md`'s "Workstream D notes" and at
@@ -454,7 +454,8 @@ reached and exactly why.
   line spacing comes from `TextFormat.leading` alone. `evaluate` calls back
   for every character including the ones with no glyph (zero advance), so a
   caller's per-character bookkeeping stays aligned with the string.
-- **Static text** renders and hit-tests per glyph, with the tag's sticky
+- **Static text** renders and hit-tests GLYPH BY GLYPH — the gap between
+  two letters is not part of it, so a click there falls through, with the tag's sticky
   record state (x/y offset, colour, font id and height each persist until
   overridden) and the colour applied as a colour-transform MULTIPLIER over
   white glyph shapes. This is M4's "static text renders glyphs" criterion.
@@ -546,6 +547,11 @@ reached and exactly why.
 |---|---|
 | A DEVICE font — the toml sets `with_default_font`, and resolving a face the movie does not embed needs host font I/O (M7) | `gettextextent`, `device_font_spacing`, `edittext_hscroll`, `edittext_drag_select` |
 | The LOADER (M5) — `_root.loadMovie("test2.swf")`, whose trace is the ONE line each of these three differs by (1236 of 1237 match) | `focusrect_property_swf5/6/7` |
+
+**Deliberately left for M7**, and not corpus-visible: a filter's VISUAL
+effect and the PlaceObject3 filter list (`bitmap_filters` needs the
+latter — it went from 540 differing lines to 182 once the AVM1 filter
+surface existed), and `StyleSheet.load`, which needs the M5 loader.
 
 Nothing else in the cluster is outstanding. The four dirs that needed a
 DEVICE font, the two that needed `flash.filters`, the IME one, drag
