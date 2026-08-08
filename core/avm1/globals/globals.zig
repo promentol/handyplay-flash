@@ -209,6 +209,7 @@ pub fn install(vm: *Vm) !void {
     try @import("geom.zig").install(vm);
     try @import("date.zig").install(vm);
     try @import("singletons.zig").install(vm);
+    try @import("selection.zig").install(vm);
 
     // --- Error ------------------------------------------------------------
     {

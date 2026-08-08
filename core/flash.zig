@@ -189,6 +189,7 @@ pub const Player = struct {
             .run_inline = hostRunInline,
             .has_button_handler = hostHasButtonHandler,
             .mouse_enabled = hostMouseEnabled,
+            .lost_display_object = hostLostDisplayObject,
         };
     }
 
@@ -474,6 +475,11 @@ pub const Player = struct {
             _ = self.vm.objects.deleteOwn(self.vm.globals, S("_level0"), self.vm.case_sensitive);
         }
         return h;
+    }
+
+    fn hostLostDisplayObject(user: *anyopaque, obj: *display.display_object.DisplayObject) void {
+        const self: *Player = @ptrCast(@alignCast(user));
+        avm1.stage_object.dropFocusIf(self.vm, obj) catch {};
     }
 
     /// The script-property half of "button mode": does the clip's object
@@ -932,6 +938,7 @@ test {
     _ = @import("avm1/globals/geom.zig");
     _ = @import("avm1/globals/date.zig");
     _ = @import("avm1/globals/singletons.zig");
+    _ = @import("avm1/globals/selection.zig");
     _ = @import("avm1/globals/movie_clip.zig");
     _ = @import("avm1/globals/globals.zig");
 }

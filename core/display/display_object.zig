@@ -48,6 +48,10 @@ pub const DisplayObject = struct {
     /// then skips the timeline's placement entirely, so a PlaceObject2 on
     /// a later frame can't undo a script's `_x`.
     transformed_by_script: bool = false,
+    /// `_focusrect`, per object: null = "follow the stage's setting".
+    /// Only SWF6+ reads it; below that every object defers to the stage
+    /// (ruffle interactive.rs is_highlight_enabled).
+    focus_rect: ?bool = null,
     /// Created by a SCRIPT (attachMovie / duplicateMovieClip /
     /// createEmptyMovieClip), not by a PlaceObject tag. Ruffle's
     /// PLACED_BY_AVM1_SCRIPT: such an object never survives a rewind that

@@ -376,6 +376,9 @@ fn setVisible(vm: *Vm, t: Target, v: Value) !void {
     // `_visible = "false"` is NaN and therefore does nothing at all.
     const n = try coerceToNumber(vm, v) orelse return;
     t.obj.visible = n != 0;
+    // "The focus is dropped when it's made invisible"
+    // (ruffle display_object.rs:2075).
+    if (!t.obj.visible) try dropFocusIf(vm, t.obj);
 }
 
 // --- timeline --------------------------------------------------------------
@@ -613,11 +616,21 @@ fn getFocusRect(vm: *Vm, t: Target) !Value {
         }
         return .{ .boolean = vm.stage_focus_rect };
     }
-    return .null_value;
+    // Per object: an explicit true/false, or null for "not set" — never
+    // undefined (ruffle stage_object.rs focus_rect).
+    return if (t.obj.focus_rect) |b| .{ .boolean = b } else .null_value;
 }
 
 fn setFocusRect(vm: *Vm, t: Target, v: Value) !void {
-    if (!refersToStageFocusRect(vm, t)) return;
+    if (!refersToStageFocusRect(vm, t)) {
+        // Anything but undefined/null pins the object's own setting;
+        // those two clear it back to "follow the stage".
+        t.obj.focus_rect = if (v == .undefined_value or v == .null_value)
+            null
+        else
+            value_mod.toBoolean(v, vm.swf_version);
+        return;
+    }
     if (v == .undefined_value or v == .null_value) return;
     const n = if (v == .object) @as(f64, 0) else try vm.toNumber(v);
     if (std.math.isNan(n)) return;
@@ -755,9 +768,12 @@ pub fn resolveMember(vm: *Vm, handle: ObjectHandle, name: []const u16) !?Value {
         if (try resolvePathProperty(vm, t, name)) |v| return v;
     }
 
-    const container = containerOf(t) orelse return null;
-    if (childByName(container, name, vm.case_sensitive)) |child| {
-        return try childValue(vm, container, child);
+    // A text field has no children, but it still has `_x` and friends —
+    // the child lookup must not short-circuit the property table.
+    if (containerOf(t)) |container| {
+        if (childByName(container, name, vm.case_sensitive)) |child| {
+            return try childValue(vm, container, child);
+        }
     }
 
     if (magic) {
@@ -1147,6 +1163,75 @@ pub fn gotoFrameNumber(vm: *Vm, clip: *MovieClip, n: i32, scene_offset: u16, pla
     f = f +% @as(i32, scene_offset);
     f = if (f == std.math.maxInt(i32)) f else f + 1;
     if (f > 0) hostGoto(vm, clip, @truncate(@as(u32, @bitCast(f))), play);
+}
+
+// --- focus -------------------------------------------------------------------
+
+/// Can this object take focus? Ruffle's `is_focusable`: interactive
+/// objects can by default, a MovieClip only when it is in button mode or
+/// has `focusEnabled` set, and the root never can
+/// (movie_clip.rs:3244-3252).
+pub fn isFocusable(vm: *Vm, handle: ObjectHandle) bool {
+    const t = targetOf(vm, handle) orelse return false;
+    const clip = t.clip orelse return true; // buttons and text fields
+    if (clip.parent == null) return false; // the root movie
+    const ctx = displayCtx(vm) orelse return false;
+    if (@import("../display/mouse.zig").isButtonMode(ctx, clip)) return true;
+    const v = vm.objects.getChained(handle, S("focusEnabled"), vm.case_sensitive) orelse
+        return false;
+    return value_mod.toBoolean(v, vm.swf_version);
+}
+
+/// Move the focus, firing the three handlers in ruffle's order: the old
+/// object's `onKillFocus`, the new object's `onSetFocus`, then the
+/// `Selection` listeners (focus_tracker.rs set_internal). All three run
+/// INLINE — focus handlers are not queued.
+pub fn setFocus(vm: *Vm, new: ObjectHandle) anyerror!void {
+    const old = vm.focus;
+    if (old == new) return;
+    vm.focus = new;
+
+    const old_v: Value = if (old != 0) .{ .object = old } else .null_value;
+    const new_v: Value = if (new != 0) .{ .object = new } else .null_value;
+    if (old != 0) try callFocusHandler(vm, old, S("onKillFocus"), new_v);
+    if (new != 0) try callFocusHandler(vm, new, S("onSetFocus"), old_v);
+    if (vm.selection_object != 0) {
+        _ = @import("globals/singletons.zig").broadcast(
+            vm,
+            .{ .object = vm.selection_object },
+            S("onSetFocus"),
+            &.{ old_v, new_v },
+        ) catch {};
+    }
+}
+
+fn callFocusHandler(vm: *Vm, handle: ObjectHandle, name: []const u16, other: Value) !void {
+    const f = vm.objects.getChained(handle, name, vm.case_sensitive) orelse return;
+    if (!vm.isCallable(f)) return;
+    _ = vm.callFunction(f, .{ .object = handle }, &.{other}) catch {};
+}
+
+/// Drop the focus if it is on `obj` (or anything inside it) — removal and
+/// hiding both do this (ruffle `drop_focus`).
+pub fn dropFocusIf(vm: *Vm, obj: *DisplayObject) anyerror!void {
+    if (vm.focus == 0) return;
+    const t = targetOf(vm, vm.focus) orelse {
+        vm.focus = 0;
+        return;
+    };
+    var cur: ?*DisplayObject = t.obj;
+    while (cur) |o| {
+        if (o == obj) return setFocus(vm, 0);
+        const parent = o.parent orelse break;
+        cur = parent.placement;
+    }
+}
+
+/// `Selection.getFocus()` — the focused object's PATH, or null.
+pub fn focusPath(vm: *Vm) !Value {
+    if (vm.focus == 0) return .null_value;
+    if (targetOf(vm, vm.focus) == null) return .null_value;
+    return .{ .string = try vm.toStringValue(.{ .object = vm.focus }) };
 }
 
 // --- movie facts -------------------------------------------------------------

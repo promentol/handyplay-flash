@@ -81,6 +81,7 @@ execution_order3
 export_assets
 extends_chain
 extends_native_type
+focus_root_movie
 focusrect_mouse_swf8
 focusrect_mouse_swf9
 focusrect_swf5
@@ -174,6 +175,7 @@ rewind_depth
 root_global_parent
 sandbox_type_local_file
 sandbox_type_local_network
+selection_asbroadcaster
 set_interval
 set_target_2_swf5
 set_target_2_swf6

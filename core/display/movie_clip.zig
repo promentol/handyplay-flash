@@ -58,6 +58,10 @@ pub const Context = struct {
     /// DoInitAction uses this; everything else goes through the queue.
     run_inline: ?*const fn (user: *anyopaque, clip: *MovieClip, code: []const u8) void = null,
 
+    /// The object is leaving the display list: if it had focus, drop it
+    /// (ruffle display_object.rs:1896 set_parent -> drop_focus).
+    lost_display_object: ?*const fn (user: *anyopaque, obj: *DisplayObject) void = null,
+
     /// Does this clip's SCRIPT OBJECT carry any of onPress/onRelease/…?
     /// The `onClipEvent` half of "button mode" is answered in
     /// display/mouse.zig; this half needs the VM.
@@ -65,6 +69,11 @@ pub const Context = struct {
     /// `obj.enabled` — a disabled button or clip is not pickable and gets
     /// no events (ruffle InteractiveObject::mouse_enabled).
     mouse_enabled: ?*const fn (user: *anyopaque, obj: *DisplayObject) bool = null,
+
+    pub fn lostDisplayObject(self: *Context, obj: *DisplayObject) void {
+        const f = self.lost_display_object orelse return;
+        f(self.class_lookup_user.?, obj);
+    }
 
     pub fn clipHasButtonHandler(self: *Context, clip: *MovieClip) bool {
         const f = self.has_button_handler orelse return false;
@@ -775,6 +784,9 @@ fn applyPlacement(ctx: *Context, obj: *DisplayObject, po: swf.place.PlaceObject,
 /// whole clip subtree `removed` so AVM1 reads return undefined, and hands
 /// the object to the tick's graveyard.
 fn retire(ctx: *Context, obj: *DisplayObject) Error!void {
+    // Focus goes FIRST — ruffle drops it inside `set_parent(None)`,
+    // before the unload handlers are even queued.
+    ctx.lostDisplayObject(obj);
     // `unload` fires on the way out, deepest child first, and is queued
     // BEFORE the subtree is marked removed so the handlers survive the
     // drain's removed-clip filter (they carry `on_removed`).

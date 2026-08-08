@@ -221,6 +221,11 @@ pub const Vm = struct {
     property_call_stack: std.ArrayList(u64) = .empty,
     /// The last `_droptarget` computed for the dragged clip.
     drop_target: DropTarget = .{},
+    /// The focused display object's AVM1 handle (0 = nothing focused).
+    /// One tracker for the whole player, like ruffle's `focus_tracker`.
+    focus: ObjectHandle = 0,
+    /// The `Selection` singleton, whose listeners hear `onSetFocus`.
+    selection_object: ObjectHandle = 0,
     /// setInterval/setTimeout registrations, ticked by the Player after
     /// each frame's action drain.
     timers: @import("timers.zig").Timers = .{},
