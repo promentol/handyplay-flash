@@ -360,6 +360,10 @@ fn setWidth(vm: *Vm, t: Target, v: Value) !void {
     if (t.obj.kind == .edit_text) {
         const et = t.obj.kind.edit_text;
         et.bounds.xmax = et.bounds.xmin +% twipsFromPixels(n);
+        // The box moved, so an AUTOSIZING field has to lay out again —
+        // and it pins a different edge, which is how `_width = 19` on a
+        // right-aligned autosize field ends up 4px wide somewhere else.
+        et.dirty = true;
         t.obj.transformed_by_script = true;
         return;
     }
@@ -372,6 +376,7 @@ fn setHeight(vm: *Vm, t: Target, v: Value) !void {
     if (t.obj.kind == .edit_text) {
         const et = t.obj.kind.edit_text;
         et.bounds.ymax = et.bounds.ymin +% twipsFromPixels(n);
+        et.dirty = true;
         t.obj.transformed_by_script = true;
         return;
     }
@@ -1139,6 +1144,26 @@ pub fn applyInitObject(vm: *Vm, dest: ObjectHandle, init: Value, reverse: bool) 
 pub fn cloneSprite(vm: *Vm, source: Target, name: []const u16, depth: i32, init_object: Value) !?*DisplayObject {
     const parent = source.parent() orelse return null;
     if (!depthPlaceable(depth)) return null;
+    // A dynamically created TEXT FIELD has no character to re-instantiate,
+    // and Flash does not copy it: the clone is a FRESH 0x0 field that
+    // inherits only the matrix, the colour transform and `editable`
+    // (ruffle clone_sprite:982-1023). Its text, bounds, format and every
+    // flag start over.
+    if (source.obj.character_id == 0 and source.obj.kind == .edit_text) {
+        const ctx = displayCtx(vm) orelse return null;
+        try parent.removeAtDepth(ctx, depth);
+        const obj = try parent.instantiateTextField(ctx, depth, 0, 0);
+        obj.placed_by_script = true;
+        obj.matrix = source.obj.matrix;
+        obj.color_transform = source.obj.color_transform;
+        obj.kind.edit_text.read_only = source.obj.kind.edit_text.read_only;
+        try obj.setName(ctx.gpa, name);
+        try parent.finishInstantiate(ctx, obj, false);
+        if (init_object == .object) {
+            try applyInitObject(vm, try handleOf(vm, obj), init_object, true);
+        }
+        return obj;
+    }
     // Matrix, colour transform and onClipEvent handlers all come from the
     // source (ruffle clone_sprite:1004-1013).
     return createAt(vm, parent, source.obj.character_id, depth, name, source.obj, init_object);

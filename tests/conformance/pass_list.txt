@@ -54,6 +54,8 @@ catch_references_registers
 click_block
 clip_constructors
 clip_event_propagation_order
+clone_sprite_edittext
+clone_sprite_edittext_dynamic
 closure_scope
 color
 conflicting_instance_names

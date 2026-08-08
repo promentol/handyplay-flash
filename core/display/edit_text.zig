@@ -207,6 +207,11 @@ pub const EditText = struct {
     /// straight back (ruffle FIRING_VARIABLE_BINDING).
     firing_binding: bool = false,
 
+    /// The AVM1 handles of the filters set on this field, in order. The
+    /// filter's EFFECT is M7; the list is stored and reported because
+    /// script reads it back (and a clone must NOT inherit it).
+    filters: std.ArrayList(u32) = .empty,
+
     /// The `TextField.StyleSheet` assigned to this field, or null. It is
     /// a callback rather than a type because the sheet lives in the
     /// interpreter (M4-D8).
@@ -362,6 +367,7 @@ pub const EditText = struct {
         self.text.deinit(gpa);
         if (self.original_html) |h| gpa.free(h);
         if (self.ime) |d| gpa.free(d.text);
+        self.filters.deinit(gpa);
         self.spans.deinit(gpa);
         self.layout.deinit(gpa);
         gpa.free(self.font_name);

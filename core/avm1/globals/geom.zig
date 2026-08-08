@@ -44,6 +44,7 @@ const pixelsFromTwips = display_object.pixelsFromTwips;
 /// declared with no flags, exactly as ruffle's tables have it.
 pub fn install(vm: *Vm) !void {
     const flash = try decl.namespace(vm, "flash", decl.ver(.{ .dont_enum = true }, decl.V8));
+    try @import("filters.zig").install(vm, flash);
     const geom = try decl.subObject(vm, flash, "geom", .{});
 
     vm.point_proto = try protoUnder(vm, geom, "Point", ctorPoint);

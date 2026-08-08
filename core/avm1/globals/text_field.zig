@@ -703,15 +703,38 @@ fn asF32(n: f64) f64 {
     return @as(f64, @as(f32, @floatCast(n)));
 }
 
+/// A FRESH array every read, holding the filters themselves — so
+/// `f.filters == f.filters` is false and pushing onto what you read
+/// changes nothing.
 fn getFilters(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
-    _ = etOf(vm, this) orelse return .undefined_value;
-    return .{ .object = try vm.newArray() };
+    const et = etOf(vm, this) orelse return .undefined_value;
+    const arr = try vm.newArray();
+    for (et.filters.items, 0..) |h, i| try vm.arraySet(arr, @intCast(i), .{ .object = h });
+    return .{ .object = arr };
 }
 
+/// Only elements that really are FILTERS are kept; anything else in the
+/// array is dropped rather than stored.
 fn setFilters(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = .{ p, this, args };
+    const vm = vmOf(p);
+    const et = etOf(vm, this) orelse return .undefined_value;
+    const gpa = gpaOf(vm) orelse return .undefined_value;
+    et.filters.clearRetainingCapacity();
+    const v = arg(args, 0);
+    if (v != .object) return .undefined_value;
+    const len = vm.arrayLength(v.object);
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        var buf: [16]u8 = undefined;
+        const key = try std.fmt.bufPrint(&buf, "{d}", .{i});
+        var wide: [16]u16 = undefined;
+        for (key, 0..) |c, k| wide[k] = c;
+        const e = vm.objects.getChained(v.object, wide[0..key.len], false) orelse continue;
+        if (!@import("filters.zig").isFilter(vm, e)) continue;
+        try et.filters.append(gpa, e.object);
+    }
     return .undefined_value;
 }
 

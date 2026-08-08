@@ -1295,6 +1295,7 @@ test {
     _ = @import("avm1/globals/text_snapshot.zig");
     _ = @import("avm1/globals/text_field.zig");
     _ = @import("avm1/globals/style_sheet.zig");
+    _ = @import("avm1/globals/filters.zig");
     _ = @import("avm1/text_binding.zig");
     _ = @import("text/format.zig");
     _ = @import("text/spans.zig");
