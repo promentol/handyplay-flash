@@ -30,13 +30,15 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C and D complete (**356/680**); E–F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D and E complete (**385/680**, images **4/26**); F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
 
-**Visually working today**: `squares.swf` and `homestuck-beta.swf` render
-correctly (shapes, curves, strokes, gradients, layering, timeline).
+**Visually working today**: `squares.swf`, `homestuck-beta.swf`,
+`homestuck-beta2.swf` and `shumway-3.swf` render correctly — shapes,
+curves, strokes, gradients, layering, timeline, and now the embedded
+bitmaps (every `DefineBits*` family) that used to paint as gray boxes.
 **Scripting today**: every AVM1 opcode executes and the whole
 `MovieClip` class surface is live — timeline control, hit tests
 (shape-exact), bounds, coordinate conversion, drag. `Date`, `flash.geom`,
@@ -50,8 +52,14 @@ Focus, `Selection`, and Tab ordering work.
 **Text today**: static text and text fields both render glyphs; a field
 is a real instance with formatting spans, HTML in and out, wrapping and
 alignment, autosize, scrolling, a two-way `variable` binding, a
-selection, and typing through the full editing-command set. 356 of
-Ruffle's 680 scorable conformance dirs pass.
+selection, and typing through the full editing-command set.
+**Bitmaps today**: `flash.display.BitmapData` is complete apart from
+Perlin noise and filters — build, fill, flood, scroll, noise, colour
+transform, channel copy, merge, threshold, compare, hit-test, colour
+bounds, pixel dissolve, both forms of `copyPixels`, `paletteMap`, plus
+`attachBitmap`, `beginBitmapFill`, `loadBitmap` and `draw`. 385 of
+Ruffle's 680 scorable conformance dirs pass, and 4 of its 26 runnable
+image comparisons.
 
 ---
 
@@ -148,7 +156,15 @@ handyflash/
 │   │   └── globals/          globals.zig · decl.zig · movie_clip.zig · geom.zig
 │   │                         date.zig · singletons.zig · selection.zig
 │   │                         text_field.zig · text_format.zig · text_snapshot.zig
-│   │                         style_sheet.zig · filters.zig
+│   │                         style_sheet.zig · filters.zig · bitmap_data.zig
+│   ├── bitmap/               PIXELS — no display, no interpreter
+│   │   ├── pixels.zig        Color, the premultiply pair (a LOOKUP TABLE
+│   │   │                     going back), Lehmer RNG, version size limits
+│   │   ├── data.zig          BitmapData: the buffer and the two flags
+│   │   ├── operations.zig    every pixel op, and PixelRegion — the one
+│   │   │                     place source→destination clipping lives
+│   │   └── decode.zig        DefineBits* → RGBA (stb for JPEG/PNG/GIF,
+│   │                         inflate + de-swizzle for lossless)
 │   ├── text/                 THE TEXT MODEL — no display, no interpreter
 │   │   ├── format.zig        TextFormat: 19 tri-state properties
 │   │   ├── spans.zig         FormatSpans: resolved runs over the text
@@ -444,43 +460,54 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
-**Workstreams A, B, C and D are CLOSED at 356/680.** Pick up E (bitmaps)
-next. `docs/M4-SPEC.md` §4, §5 and §6 list, by name and cause, every dir
-those four workstreams could not reach; do not re-derive them.
+**Workstreams A, B, C, D and E are CLOSED at 385/680.** Pick up F (blend
+modes) next, or M7's filters — which is what `applyFilter` and
+`bitmap_filters` are waiting on. `docs/M4-SPEC.md` §4, §5, §6 and §7
+list, by name and cause, every dir those five workstreams could not
+reach; do not re-derive them.
 
-Six things to know before you start:
+Seven things to know before you start:
 
-1. **§A4/§A5 record diagnoses that turned out to be WRONG** and the real
+1. **The two remaining bitmap image dirs fail on RASTERISER rounding,
+   not on bitmap logic.** `bitmap_data_fillrect` and
+   `bitmap_data_copypixels` sit at `tolerance = 0`; simdra composites
+   straight RGBA with `(x + 128) >> 8` where Flash composites
+   premultiplied values with a truncating `/255`, and the two disagree by
+   one unit on a translucent bitmap over the stage. `copypixels` is max
+   channel delta **1**. Do not go looking for a BitmapData bug — and note
+   `fillrect` also has an unexplained 18-pixel patch at y=27 where the
+   wrong bitmap is drawn, which IS worth chasing.
+2. **§A4/§A5 record diagnoses that turned out to be WRONG** and the real
    causes next to them. In particular: `default_names` was NOT
    action-queue priority (our FIFO matches Flash — it was the loop
    rewind), and `remove_movie_clip` was NOT Button/EditText
    stringification (it was `swapDepths`). Read those notes before
    trusting any "blocked on X" claim elsewhere in the spec, including the
    §8b cluster table, which is an M3-close snapshot.
-2. **One rule in the tree is corpus-derived, not Ruffle-derived**: a
+3. **One rule in the tree is corpus-derived, not Ruffle-derived**: a
    display object reached AS a prototype ends the chain
    (`Objects.findChained` + `Vm.protoValue`). Ruffle walks straight
    through it; real Flash does not (`super_edge_cases`). If something
    later looks wrong around `__proto__` chains through clips, this is the
    first suspect — it is deliberately marked in both call sites.
-3. **The one dir workstream A could not reach**, so nobody re-derives it:
+4. **The one dir workstream A could not reach**, so nobody re-derives it:
    `interface_implements_op` needs `MovieClipLoader.loadClip` of an
    external SWF plus cross-movie AVM1 (loader subsystem — and `core/`
    does no I/O, so it needs a host seam). Its sibling
    `clone_sprite_edittext` is now down to one thing: `filters` are
    reported as an empty array and never stored, so a field cannot carry
    one.
-4. **The action queue is now three FIFO buckets** (Initialize, Construct,
+5. **The action queue is now three FIFO buckets** (Initialize, Construct,
    Normal) drained highest-first on every pop, and `#initclip` runs at
    PRELOAD rather than on the timeline. Both were needed for
    `Object.registerClass` to apply at the right moment; workstream C's
    event ordering builds directly on them
    (`Context.queue`/`popAction`, `Player.runInitActions`).
-5. **`swf.reader.Matrix` is f32 and number→string is Flash's own
+6. **`swf.reader.Matrix` is f32 and number→string is Flash's own
    algorithm, not ES3.** Both look like sloppiness and are not — the
    corpus fails either one if it is "corrected". See the workstream-B
    notes at the end of `docs/AVM1.md`.
-6. **A device font is a HOST input, never a built-in.** `Options.device_font`
+7. **A device font is a HOST input, never a built-in.** `Options.device_font`
    takes TTF bytes; with none, a face the movie did not embed measures
    zero, which is what a machine without it installed does. The four
    corpus dirs that need one declare `with_default_font`, and the harness

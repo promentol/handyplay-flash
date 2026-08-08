@@ -15,7 +15,7 @@ possible future direction, not a goal.
 
 ## Status
 
-M4 in progress — workstreams A, B, C and D are closed (356/680 ruffle conformance dirs pass, clearing M4's ≥300 gate; `sh tests/conformance/sweep.sh /tmp/r.txt`). The whole `MovieClip` class surface, `flash.geom`, `Date`, timers, `Object.registerClass`, `watch`, the AsBroadcaster singletons and real mouse/keyboard input all work; buttons draw, hit-test and react — press/release/roll/drag, keyPress, focus, `Selection` and Tab ordering; and text works end to end — static text and text fields both render glyphs, with formatting spans, HTML in and out, wrapping and alignment, autosize, a two-way `variable` binding, selection, typing, IME and an optional host device font. M2 — squares.swf and homestuck-beta.swf render via the display list + simdra (SDL3 `zig build run-sdl -- file.swf`, `--headless-frames N` for PNG dumps). See the living coverage
+M4 in progress — workstreams A, B, C, D and E are closed (385/680 ruffle conformance dirs pass, clearing M4's ≥300 gate; `sh tests/conformance/sweep.sh /tmp/r.txt`). The whole `MovieClip` class surface, `flash.geom`, `Date`, timers, `Object.registerClass`, `watch`, the AsBroadcaster singletons and real mouse/keyboard input all work; buttons draw, hit-test and react — press/release/roll/drag, keyPress, focus, `Selection` and Tab ordering; and text works end to end — static text and text fields both render glyphs, with formatting spans, HTML in and out, wrapping and alignment, autosize, a two-way `variable` binding, selection, typing, IME and an optional host device font. Bitmaps work too — every `DefineBits*` family decodes and paints, and `flash.display.BitmapData` is complete enough that a script can build, transform, blit, hit-test and dissolve pixel buffers, attach them to the display list, fill drawn paths with them and render a display object into one. M2 — squares.swf and homestuck-beta.swf render via the display list + simdra (SDL3 `zig build run-sdl -- file.swf`, `--headless-frames N` for PNG dumps). See the living coverage
 matrices: [docs/TAGS.md](docs/TAGS.md), [docs/AVM1.md](docs/AVM1.md), and the
 conformance ratchet `tests/conformance/pass_list.txt`.
 
@@ -25,7 +25,7 @@ conformance ratchet `tests/conformance/pass_list.txt`.
 | M1 | full tag parser + `swfdump` (56-SWF corpus clean) | ✅ |
 | M2 | display list + timeline + rasterizer v1 + SDL3 pixels | ✅ |
 | M3 | AVM1 interpreter (full opcode set) + trace conformance | ✅ 76/697 |
-| M4 | objects/globals/buttons/text/bitmaps, ≥300/697 | 🔶 A+B+C+D done, **356/680** |
+| M4 | objects/globals/buttons/text/bitmaps, ≥300/697 | 🔶 A+B+C+D+E done, **385/680** |
 | M5 | libretro core + save-states (byte-identical roundtrip) | — |
 | M6 | audio (PCM/ADPCM → MP3 → streaming sync) | — |
 | M7 | polish: morph shapes, edit text, AA, masks, ≥450/697 | — |

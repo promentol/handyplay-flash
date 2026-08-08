@@ -569,41 +569,124 @@ Nothing else in the cluster is outstanding. The four dirs that needed a
 DEVICE font, the two that needed `flash.filters`, the IME one, drag
 selection, click-to-caret and `TextField.StyleSheet` all shipped.
 
-## 7. Bitmaps (workstream E)
+## 7. Bitmaps (workstream E) — ✅ CLOSED (385/680, images 4/26)
 
-Replace the renderer's gray placeholder for `.bitmap` fills AND
-`DisplayObject.kind == .bitmap`.
+**This section used to describe only half of E, and not the half the
+corpus measures.** It was entirely about decoding `DefineBits*` and
+painting bitmap fills. But of the 29 scorable bitmap dirs, 28 are
+trace-only and exercise `flash.display.BitmapData` — a scriptable pixel
+buffer that never touches a bitmap tag. The decode/render half turned
+out to be real work with almost no trace payoff and a large visual one:
+three of the five sample SWFs carry bitmap tags and every one of them
+used to paint as a mid-gray placeholder.
 
-New: `core/render/bitmap_cache.zig` — decode on first use, cache by
-character id (movie arena):
-- `library.Bitmap.jpeg2/.jpeg_needs_tables/.jpeg3`:
-  - Strip a leading EOI/SOI pair (bytes FF D9 FF D8) if present
-    (ruffle `remove_invalid_jpeg_data`).
-  - `jpeg_needs_tables`: splice `movie.jpeg_tables` (minus its trailing
-    EOI) before the tag data (minus its leading SOI) — ruffle
-    `glue_tables_to_jpeg`.
-  - Decode via simdra: `simdra.decode` (stb; PNG/GIF payloads in v8+
-    JPEG2 are auto-sniffed by stb) → RGBA `SmBitmap`.
-  - `jpeg3`: zlib-inflate `alpha_zlib` (std.compress.flate, container
-    .zlib) → one byte per pixel → multiply into the decoded RGBA's alpha
-    (and PREMULTIPLY quirk: Flash JPEG3 alpha is applied straight; ruffle
-    multiplies color channels? check ruffle bitmap decode — use straight
-    alpha first, fix against a corpus image test).
-- `lossless`: zlib-inflate `zlib_data`; format 3 = 8-bit palette
-  (colormap RGB or RGBA for v2, row-padded to 4 bytes!), 4 = PIX15
-  (v1 only), 5 = PIX24/ARGB32 (v2: straight ARGB with alpha) → RGBA.
-  Row padding: colormap rows pad to 32-bit boundaries — ruffle
-  `decode_define_bits_lossless`.
-- Renderer `.bitmap` fill: build/cache an `SmPattern` from the RGBA
-  pixels; `setFilter(.bilinear)` when `is_smoothed`; repetition per
-  `is_repeating` (.repeat vs .no_repeat); `setTransform` with the
-  INVERSE of (combined ∘ fill matrix) — note SmPattern.setTransform
-  takes the FORWARD matrix and inverts internally (check
-  vendor/simdra/simdra/effects/SmPattern.zig:75).
-- `.bitmap` display objects (rare, PlaceObject of a bitmap id): draw as
-  a bitmap-filled unit rect via drawImage-style path.
+Everything below shipped. The plan lives in the git log (`E1`..`E6`); the
+semantics worth keeping are in `docs/AVM1.md`'s "Workstream E notes" and
+at the call sites. What follows is what shipped, then what could NOT be
+reached and exactly why.
 
----
+**Shipped.** `core/bitmap/` is new (`pixels.zig`, `data.zig`,
+`operations.zig`, `decode.zig`); `core/avm1/globals/bitmap_data.zig` is
+the class; the renderer gained a bitmap-source union, a pattern cache and
+an off-screen draw path; `DisplayObject.Kind` gained `attached_bitmap`.
+
+- **The colourspace is the whole workstream.** Storage is PREMULTIPLIED,
+  the script view is not, and every operation has to say which it wants.
+  `colorTransform` and `merge` work unmultiplied; `threshold`,
+  `getColorBoundsRect` and `compare` work premultiplied. Un-premultiplying
+  is a brute-forced 256-entry LOOKUP TABLE, not a divide — a naive
+  `c * 255 / a` is off by one across most of the range, and the corpus
+  reads individual pixels back.
+- **`getPixel32` does NOT un-premultiply an opaque bitmap.** Normally
+  moot, since every stored alpha is 255 — but `threshold` and
+  `paletteMap` both premultiply as though the target were transparent
+  even when it is not, and the raw value is then exactly what script
+  reads. `getPixel` is not `getPixel32` masked either: it un-multiplies
+  unconditionally and only then drops the alpha byte.
+- **The error codes are per-function, not a convention.**
+  `colorTransform` reports **-1 on SUCCESS**; `compare` answers -2 for a
+  bad argument where every source→destination member uses -3 for a
+  disposed one and -2 for a non-BitmapData; `fillRect`/`scroll`/`noise`
+  return 0 and `floodFill` returns 1 or 0.
+- **`hitTest` reads its point properties as OWN ones** — an inherited `x`
+  does not make an object a point — while every rectangle argument on the
+  class is duck-typed. `colorTransform` is the mirror image: its
+  rectangle is duck-typed and its transform must be a REAL
+  `flash.geom.ColorTransform`.
+- **A colour transform is 8.8 FIXED.** Flash snaps every multiplier to
+  that grid before doing anything, so 1.3 is 332/256; the multiply runs at
+  16-bit precision and only the final value saturates; a pixel with zero
+  alpha is left alone entirely. Invisible in the trace dirs, whose
+  multipliers all happen to be exact, and worth 127 units of channel
+  error in the image ones.
+- **`noise` raises a `high` below its `low`** rather than emptying the
+  range, and its PRNG is Lehmer (`x = x * 16807 % 2147483647`) with the
+  channel draws in R, G, B, A order — a skipped channel does not consume a
+  value. `pixelDissolve` is a one-round Feistel network whose mixing
+  function is `n² + 1`; it is arbitrary, it is what Flash's output was
+  matched against, and it cannot be improved.
+- **All the clipping lives in one place**: `PixelRegion`'s
+  `clampWithIntersection`, which narrows the source and destination boxes
+  together. That is what makes a partly off-bitmap source rectangle mean
+  the same thing to `copyChannel`, `merge`, `threshold`, `copyPixels` and
+  `pixelDissolve`. `copyPixelsWithAlphaSource` deliberately does NOT use
+  it — it walks the source rectangle as given and skips coordinates
+  outside any of the three bitmaps, which is an observably different rule.
+- **Tag pixels arrive PREMULTIPLIED.** `DefineBitsLossless2` and
+  `DefineBitsJPEG3` both store colour already multiplied by alpha, which
+  is also `BitmapData`'s storage form, so `loadBitmap` copies those bytes
+  across untouched. Converting out and back costs a unit in the last
+  place per channel and the corpus notices. The decoder reports which
+  form it produced.
+- **Decoding**: a `DefineBits` payload is spliced behind the movie's one
+  `JPEGTables` stream (minus its trailing EOI, minus the data's leading
+  SOI); a stray `FF D9 FF D8` pair may sit ANYWHERE before the SOF
+  marker, not just at the front as the errata claims; a colour-mapped
+  lossless row pads to four bytes and a PIX15 row to two, independent of
+  width; PIX24 is stored ARGB. Bounds never force a decode — a placed
+  bitmap carries the size read from its tag header.
+- **Rendering**: a bitmap fill is an `SmPattern` cached per (source,
+  repeating, smoothed), sampling in DEVICE space, so its forward matrix
+  is texel → bitmap twips (20 per pixel) → the style matrix → the CTM. A
+  library character uploads once; a script `BitmapData` is re-read on
+  every use, because script may have painted into it between frames.
+- **`BitmapData.draw` is two things.** A BitmapData source under a matrix
+  with no scale or skew is a plain BLIT — Flash does not go near the
+  renderer, and the result is not what a render would give, so the fast
+  path is the correct answer rather than an optimisation. Anything else
+  renders into an off-screen canvas seeded with the target's pixels. The
+  source's own placement matrix is not applied.
+
+**Not reached, and why.**
+
+- **`bitmap_data_thorough/{copyPixels,paletteMap,perlinNoise}` and
+  `bitmap_data_thorough/pixelDissolve`** are recorded `known_failure` in
+  ruffle and excluded from the sweep — no implementation can move them.
+  `copyPixels` and `paletteMap` are implemented anyway and used by the
+  top-level dirs, which do pass.
+- **`perlinNoise` has its argument contract but no pixels.** Ruffle's own
+  Perlin output does not match Flash's (that is why its dir is a recorded
+  known failure), so there is nothing correct to port. Its image dir has
+  an EMPTY `output.txt` and scores only through the image harness.
+- **`applyFilter` is contract-only** — it reports -1, which is what Flash
+  reports for a filter it cannot build. Applying a filter to a pixel
+  buffer needs the filter kernels, which are M7; the AVM1 filter OBJECTS
+  landed in workstream D. This is what blocks
+  `bitmapdata_applyfilter_colormatrix` (max channel delta 62).
+- **`bitmap_filters` is not an E dir at all.** It needs PlaceObject3's
+  filter list decoded, which is M7.
+- **Blend modes are not modelled** — `draw` treats every mode as
+  `normal`. No scorable dir depends on one.
+- **`bitmap_data_fillrect` and `bitmap_data_copypixels` fail on
+  COMPOSITING ROUNDING, not on bitmap logic.** Both are at `tolerance =
+  0`. simdra composites straight RGBA with `x/255 ≈ (x + 128) >> 8`;
+  Flash composites premultiplied values with a truncating `/255`. The two
+  disagree by one unit on a translucent bitmap over the stage —
+  `copypixels` is max channel delta **1** across 14% of its pixels, and
+  `fillrect` is the same ±1 plus an unexplained 18-pixel patch at y=27
+  where the wrong bitmap is drawn. Making these exact means changing the
+  vendored rasteriser's blend rounding, which touches every image dir;
+  it belongs to a rendering-fidelity pass, not to E.
 
 ## 8. Renderer additions (workstream F)
 

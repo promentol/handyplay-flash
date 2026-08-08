@@ -47,13 +47,13 @@ is rejected (`error.Avm2Unsupported`).
 | 32 | DefineShape3 | 3 | M1/M2 | parse | RGBA |
 | 83 | DefineShape4 | 8 | M1/M2 | parse | line caps/joins, focal gradients, winding bit |
 | 39 | DefineSprite | 3 | M1/M2 | parse | nested tag stream — recurse preload |
-| 6 | DefineBits | 1 | M1/M4 | parse | JPEG needing tag 8 tables |
-| 8 | JPEGTables | 1 | M1/M4 | parse | shared encoding tables |
-| 21 | DefineBitsJPEG2 | 2 | M1/M4 | parse | self-contained (v8+ also PNG/GIF) |
-| 35 | DefineBitsJPEG3 | 3 | M1/M4 | parse | + zlib alpha plane |
+| 6 | DefineBits | 1 | M1/M4 | done | JPEG needing tag 8 tables; spliced behind them minus EOI/SOI |
+| 8 | JPEGTables | 1 | M1/M4 | done | shared encoding tables; one per movie |
+| 21 | DefineBitsJPEG2 | 2 | M1/M4 | done | self-contained (v8+ also PNG/GIF — stb sniffs it) |
+| 35 | DefineBitsJPEG3 | 3 | M1/M4 | done | + zlib alpha plane; colour is PREMULTIPLIED, each channel clamped to alpha |
 | 90 | DefineBitsJPEG4 | 10 | — | oos | deblocking param |
-| 20 | DefineBitsLossless | 2 | M1/M4 | parse | zlib; colormap/PIX15/PIX24 |
-| 36 | DefineBitsLossless2 | 3 | M1/M4 | parse | + alpha |
+| 20 | DefineBitsLossless | 2 | M1/M4 | done | zlib; colormap rows pad to 4 bytes, PIX15 rows to 2; PIX24 stored ARGB |
+| 36 | DefineBitsLossless2 | 3 | M1/M4 | done | + alpha, and the colour is already PREMULTIPLIED by it |
 | 7 | DefineButton | 1 | M1/M4 | done | instantiated as a CONTAINER (display/button.zig): state children + a separate hit-area list |
 | 34 | DefineButton2 | 3 | M1/M4 | done | ButtonCondAction dispatch, incl. keyPress; the actions run on the button's PARENT timeline |
 | 23 | DefineButtonCxform | 2 | M1/M4 | parse | decoder in button.zig; preload wiring still open; may hold MULTIPLE cxforms (errata) |

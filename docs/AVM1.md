@@ -390,3 +390,67 @@ re-derived:
 All other codes in 0x00–0x9F are INVALID (open-flash `_index.md`); on decode we
 skip by length (>=0x80) or treat as End-adjacent no-op, matching Flash's
 tolerance.
+
+## Workstream E notes (bitmaps)
+
+`flash.display.BitmapData` and the `DefineBits*` families. Full close-out
+in `docs/M4-SPEC.md` §7; what follows is the handful of rules that are
+not derivable from any document.
+
+**Two colourspaces, and every function picks one.** Storage is
+premultiplied; the script view is not. Un-premultiplying is a
+brute-forced 256-entry table (`core/bitmap/pixels.zig`), not a divide —
+Flash's own rounding, and a `c * 255 / a` is off by one across most of
+the range. `colorTransform` and `merge` operate unmultiplied;
+`threshold`, `getColorBoundsRect` and `compare` operate premultiplied.
+
+**`getPixel32` skips the un-premultiply on an opaque bitmap.** Its stored
+alpha is normally 255 so it never shows — until `threshold` or
+`paletteMap` writes a translucent pixel into one, which both do, because
+both premultiply as though the target were transparent. `getPixel` is
+NOT `getPixel32` masked: it un-multiplies unconditionally.
+
+**Return codes are per-function.** `colorTransform` reports -1 on
+SUCCESS. `compare` uses -2 for an argument that is not a live BitmapData
+where the source→destination members use -3 for a disposed one and -2
+for a non-BitmapData. `fillRect`, `scroll` and `noise` return 0;
+`floodFill` returns 1 when it filled and 0 when it refused (replacing a
+colour with itself is the refusal). `paletteMap` and `copyChannel` also
+report -1 on success.
+
+**Duck-typing is not uniform.** Every rectangle argument is duck-typed —
+any object with x, y, width and height. A `ColorTransform` argument must
+be a REAL one, made by the constructor. `hitTest` reads its point
+properties as OWN properties, so an inherited `x` does not qualify.
+
+**A colour transform is 8.8 fixed and 16-bit.** Script hands over f64s;
+Flash snaps each multiplier to n/256 first, multiplies at 16-bit
+precision, saturating-adds the i16 offset, and only then clamps to
+0..255. A pixel with zero alpha is skipped entirely — not even the
+additive terms reach it. And a transform that ONLY raises alpha does
+nothing at all, which is a Flash bug the corpus depends on.
+
+**Two exact-match PRNGs.** `noise` is Lehmer
+(`x = x * 16807 % 2147483647`) with a seed of zero or below reflected
+rather than clamped, drawing R, G, B, A in order and skipping — not
+consuming — an unselected channel; a `high` below the `low` is raised to
+it. `pixelDissolve` is a single Feistel round over the next even power of
+two, mixing with `n² + 1`, always writing the region's origin pixel
+before the permutation starts and outside the count; it returns the raw
+permutation index so the next call continues where it stopped.
+
+**Sizes are version-gated** (`isSizeValid`): zero is invalid everywhere;
+SWF≤9 caps each side at 2880; ≤12 requires each side < 0x2000 and
+`w*h < 0x1000000`; above that the undocumented 0x6666666 and
+`w*h < 0x20000000`. An invalid size makes the CONSTRUCTOR return
+undefined rather than an object.
+
+**Tag pixels are already premultiplied** for `DefineBitsLossless2` and
+`DefineBitsJPEG3`, which is also BitmapData's storage form — so
+`loadBitmap` copies them across rather than converting, and the renderer
+un-premultiplies them for the pattern instead. Round-tripping costs a
+unit in the last place per channel.
+
+**`BitmapData.draw` blits** when the source is a BitmapData and the
+matrix has no scale or skew. That is what Flash does, and the result
+differs from a real render, so it is the answer rather than a shortcut.
