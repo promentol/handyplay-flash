@@ -1,9 +1,11 @@
 access_unnamed_shape
 add
+add_property
 add_swf4
 add_swf5
 array_call_method
 array_concat
+array_constructor
 array_enumerate
 array_properties
 array_prototyping
@@ -161,6 +163,7 @@ equals
 equals_swf4_alt
 equals_swf5
 error
+escape
 execution_order2
 execution_order3
 export_assets
@@ -184,6 +187,8 @@ getproperty
 getproperty_swf4
 getproperty_swf5
 gettextextent
+global_array
+global_is_bare
 goto_advance1
 goto_advance2
 goto_both_ways1
@@ -204,6 +209,7 @@ hittest_winding_rule
 infinite_recursion_virtual_property
 init_object_order
 is_finite
+is_finite_swf6
 is_prototype_of
 issue_1086
 issue_1104
@@ -265,6 +271,7 @@ object_string_coerce_swf6
 on_construct
 primitive_instanceof
 property_invalid_base_clip
+prototype_enumerate
 prototype_properties
 recursive_prototypes
 register_and_init_order

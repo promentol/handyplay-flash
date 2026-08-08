@@ -471,12 +471,13 @@ fn ctorArray(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     _ = this;
     const arr = try vm.newArray();
+    // A single NUMBER is a length, whatever it is — including a negative
+    // or fractional one, which is stored as given and read back as given.
+    // Only a genuine Number counts: `new Array("3")` is a one-element
+    // array holding the string.
     if (args.len == 1 and args[0] == .number) {
-        const n = args[0].number;
-        if (n >= 0 and n == @trunc(n)) {
-            try vm.setArrayLength(arr, @intFromFloat(n));
-            return .{ .object = arr };
-        }
+        try vm.setArrayLengthRaw(arr, @floatFromInt(value_mod.toInt32(args[0].number)));
+        return .{ .object = arr };
     }
     for (args, 0..) |v, i| try vm.arraySet(arr, @intCast(i), v);
     return .{ .object = arr };
@@ -1174,7 +1175,10 @@ fn globalIsNan(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 fn globalIsFinite(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
     const vm = vmOf(p);
-    const n = try vm.toNumber(arg(args, 0));
+    // No argument at all is FALSE outright, not the coercion of
+    // undefined — which below SWF7 would be zero, and finite.
+    if (args.len == 0) return .{ .boolean = false };
+    const n = try vm.toNumber(args[0]);
     return .{ .boolean = !(std.math.isNan(n) or std.math.isInf(n)) };
 }
 
@@ -1365,9 +1369,10 @@ fn globalEscape(p: *anyopaque, this: Value, args: []const Value) anyerror!Value 
     const a = vm.arena();
     const hex = "0123456789ABCDEF";
     for (s) |c| {
+        // ONLY alphanumerics survive. ECMA-262 also spares `@*_+-./`;
+        // Flash does not, and the corpus checks each of them.
         const keep = (c >= '0' and c <= '9') or (c >= 'A' and c <= 'Z') or
-            (c >= 'a' and c <= 'z') or c == '*' or c == '_' or c == '+' or
-            c == '-' or c == '.' or c == '/';
+            (c >= 'a' and c <= 'z');
         if (keep) {
             try out.append(a, c);
         } else if (c < 0x80) {
@@ -1433,11 +1438,14 @@ fn objAddProperty(p: *anyopaque, this: Value, args: []const Value) anyerror!Valu
     const getter = arg(args, 1);
     const setter = arg(args, 2);
     if (!vm.isCallable(getter)) return .{ .boolean = false };
-    // setter may be null (getter-only) but must otherwise be callable.
-    const setter_h: runtime.ObjectHandle = if (vm.isCallable(setter)) setter.object else 0;
-    if (setter != .null_value and setter != .undefined_value and setter_h == 0) {
-        return .{ .boolean = false };
-    }
+    // The setter argument must be PRESENT: an object installs it and an
+    // explicit `null` means getter-only, but leaving it off — or passing
+    // undefined — refuses the whole call.
+    const setter_h: runtime.ObjectHandle = switch (setter) {
+        .object => |h| h,
+        .null_value => 0,
+        else => return .{ .boolean = false },
+    };
     const o = vm.objects.get(this.object);
     if (o.find(name, vm.case_sensitive)) |idx| {
         // The STORED value survives: ruffle's `Property::set_virtual` only
@@ -1448,10 +1456,12 @@ fn objAddProperty(p: *anyopaque, this: Value, args: []const Value) anyerror!Valu
         o.props.items[idx].setter = setter_h;
     } else {
         const key = try vm.arena().dupe(u16, name);
+        // ENUMERABLE (ruffle passes `Attribute::empty()`): a `for..in`
+        // that reaches the object — or anything with it on its prototype
+        // chain — lists the virtual property alongside the plain ones.
         try o.props.append(vm.arena(), .{
             .key = key,
             .value = .undefined_value,
-            .attrs = .{ .dont_enum = true },
             .getter = getter.object,
             .setter = setter_h,
         });

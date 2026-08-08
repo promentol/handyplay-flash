@@ -402,7 +402,14 @@ pub const Vm = struct {
     }
 
     pub fn setArrayLength(self: *Vm, h: ObjectHandle, len: u32) Error!void {
-        try self.objects.putWithAttrs(h, S("length"), .{ .number = @floatFromInt(len) }, .{ .dont_enum = true, .dont_delete = true }, self.case_sensitive);
+        try self.setArrayLengthRaw(h, @floatFromInt(len));
+    }
+
+    /// `new Array(-1)` really does store -1: the property reads back
+    /// negative even though every operation that walks the array treats
+    /// it as empty.
+    pub fn setArrayLengthRaw(self: *Vm, h: ObjectHandle, len: f64) Error!void {
+        try self.objects.putWithAttrs(h, S("length"), .{ .number = len }, .{ .dont_enum = true, .dont_delete = true }, self.case_sensitive);
     }
 
     // --- coercions touching the object graph ------------------------------
@@ -553,14 +560,18 @@ pub const Vm = struct {
             return value_mod.stringToNumber(a.string, self.swf_version) == b.number;
         }
         // primitive vs object → ToPrimitive(object).
+        // Only a NON-PRIMITIVE result stops the comparison. Undefined is
+        // primitive, so a BARE object — one with no prototype and thus no
+        // `valueOf` to call — coerces to undefined and compares EQUAL to
+        // null. `_global` is such an object (corpus global_is_bare).
         if (a == .object and b != .object) {
             const p = try self.toPrimitiveNum(a);
-            if (p == .object or p == .undefined_value) return false;
+            if (p == .object) return false;
             return self.abstractEquals(p, b);
         }
         if (b == .object and a != .object) {
             const p = try self.toPrimitiveNum(b);
-            if (p == .object or p == .undefined_value) return false;
+            if (p == .object) return false;
             return self.abstractEquals(a, p);
         }
         return false;
