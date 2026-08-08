@@ -24,6 +24,7 @@ as2_super_via_manual_prototype
 as_broadcaster
 as_broadcaster_initialize
 as_broadcaster_undef
+as_set_prop_flags_version
 as_set_prop_flags_version_swf5
 as_set_prop_flags_version_swf6
 as_set_prop_flags_version_swf7
@@ -375,6 +376,9 @@ selection
 selection_asbroadcaster
 selection_handlers
 set_interval
+set_property_values/swf5
+set_property_values/swf6
+set_property_values/swf7
 set_target_2_swf5
 set_target_2_swf6
 set_target_2_swf7

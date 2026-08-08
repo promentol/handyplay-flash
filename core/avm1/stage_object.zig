@@ -709,7 +709,7 @@ fn setSoundBufTime(vm: *Vm, t: Target, v: Value) !void {
     if (v == .null_value or v == .undefined_value) return;
     const n = try vm.toNumber(v);
     if (std.math.isNan(n)) return;
-    vm.sound_buf_time = @intFromFloat(std.math.clamp(n, -2147483648.0, 2147483647.0));
+    vm.sound_buf_time = value_mod.clampToI32(n);
 }
 
 /// `_focusrect` on a top-level clip is the STAGE's flag; on a nested clip

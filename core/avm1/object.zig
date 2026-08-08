@@ -341,6 +341,11 @@ pub const Objects = struct {
             const p = &o.props.items[i];
             if (p.attrs.read_only) return;
             p.value = v;
+            // Overwriting a property CLEARS its SWF-version gate (ruffle
+            // property.rs `set_data`), so a member hidden by
+            // `ASSetPropFlags` becomes visible again the moment script
+            // assigns to it — corpus as_set_prop_flags_version.
+            p.attrs.version_bits = 0;
             return;
         }
         const key = try self.arena.dupe(u16, name);

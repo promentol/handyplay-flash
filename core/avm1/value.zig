@@ -241,6 +241,18 @@ pub fn toInt32(n: f64) i32 {
     return @bitCast(u);
 }
 
+/// Flash's OTHER number→i32 rule, and not ES3's: anything outside the
+/// range — including both infinities and NaN — becomes `i32::MIN`
+/// rather than wrapping or saturating (ruffle avm1/clamp.rs
+/// `clamp_to_i32`). `toInt32` above is ToInt32 and wraps; the two are
+/// used in different places and the corpus tells them apart
+/// (set_property_values sets `_soundbuftime` to +Infinity and reads
+/// -2147483648 back).
+pub fn clampToI32(n: f64) i32 {
+    if (n >= -2147483648.0 and n <= 2147483647.0) return @intFromFloat(@trunc(n));
+    return -2147483648;
+}
+
 pub fn toUint32(n: f64) u32 {
     return @bitCast(toInt32(n));
 }
