@@ -533,3 +533,58 @@ colours the wrong way round — Flash writes HIGHLIGHT first.
 `hideObject` is the INVERSE of the composite-source bit. A bevel or
 gradient pass count is four bits, not five, because `onTop` took one.
 A blur's is five bits shifted up by three.
+
+## Coercion and opcode notes (near-miss sweep)
+
+Rules found by fixing every corpus dir that was failing by one or two
+lines. Each is a Flash behaviour, not an oversight, and each cost a dir.
+
+**Strings are CESU-8 on the way in and code points on the way out.**
+Flash's compilers write a character above the BMP as its two surrogate
+halves, three bytes each; a strict UTF-8 decoder rejects that and throws
+the whole string back to Latin-1, turning four units into six. Ordering
+then compares CODE POINTS, so "｡" sorts below "𐀂" although the raw
+units say the opposite.
+
+**A BARE object compares equal to null.** Only a NON-primitive result
+stops an object-to-primitive equality; undefined is primitive, and an
+object with no prototype has no `valueOf` to call. `_global` is one.
+
+**`escape` spares only alphanumerics** — ECMA-262 also leaves `@*_+-./`
+alone and Flash does not. **`isFinite()`** with no argument is false
+outright, not the coercion of undefined.
+
+**`new Array(n)` treats a single NUMBER as a length whatever it is.**
+`new Array(-1)` stores -1 and reads it back, while everything that walks
+the array treats it as empty. Only a genuine Number counts.
+
+**`addProperty` creates an ENUMERABLE property**, and its SETTER
+argument must be present: an object installs it, an explicit `null`
+means getter-only, and leaving it off refuses the call.
+
+**`f.prototype` is undeletable** on every function, script-defined as
+much as native.
+
+**`InitArray` / `InitObject` with a count outside 0..i32::MAX** pop
+nothing and push undefined — the elements stay on the stack.
+
+**`>>>` has a SIGNED result in SWF8 and SWF9 only.** `4294967295 >>> 0`
+is -1 at those versions and 4294967295 at every other one.
+
+**Inside a function body the version is at least 5**, even in a SWF4
+movie: `DefineFunction` is a SWF5 construct and its body gets SWF5
+semantics, so `1 == 1` is `true` there and `1` outside it.
+
+**An absent `_parent` does not take a DefineFunction2 register** — it is
+skipped and `_global` moves up into the slot. The value comes from the
+BASE CLIP, not from `this`.
+
+**`WaitForFrame` has a frame ceiling.** Past 16000 (16001 for the
+dynamic form) the frame is never loaded and the guarded actions are
+skipped, counted in ACTIONS rather than bytes. The dynamic form routes a
+non-integer through its string form and lands on frame 0, and wraps into
+an i32 — so `Infinity`, `16002.5` and `2147483649` are all "loaded".
+
+**A clip UNLINKED from its parent stringifies empty.** Flash re-resolves
+a reference by walking down from the level by name; its children keep
+reporting their paths through their own `onUnload`.
