@@ -15,6 +15,7 @@
 const std = @import("std");
 const pixels = @import("pixels.zig");
 const data_mod = @import("data.zig");
+const turbulence_mod = @import("turbulence.zig");
 
 const Color = pixels.Color;
 const BitmapData = data_mod.BitmapData;
@@ -617,6 +618,10 @@ pub fn hitTestBitmapData(
 
 /// Composite `source` over `self` in PREMULTIPLIED space — the standard
 /// source-over, with the per-channel divide by 255 truncating.
+///
+/// The sum WRAPS. For a valid premultiplied pixel it cannot overflow, and
+/// where Flash's own pixel operations meet an invalid one they wrap too.
+/// The STAGE composite is the exception — see `blendOverSaturating`.
 pub fn blendOver(under: Color, over: Color) Color {
     const inv: u16 = 255 - @as(u16, over.a);
     return Color.rgba(
@@ -624,6 +629,20 @@ pub fn blendOver(under: Color, over: Color) Color {
         over.g +% @as(u8, @intCast((@as(u16, under.g) * inv) / 255)),
         over.b +% @as(u8, @intCast((@as(u16, under.b) * inv) / 255)),
         over.a +% @as(u8, @intCast((@as(u16, under.a) * inv) / 255)),
+    );
+}
+
+/// The same blend, saturating. `perlinNoise` writes channels larger than
+/// their own alpha, and putting one of those on screen clamps rather than
+/// wrapping — a GPU blend has no other option, and Flash's output shows
+/// the clamp.
+pub fn blendOverSaturating(under: Color, over: Color) Color {
+    const inv: u16 = 255 - @as(u16, over.a);
+    return Color.rgba(
+        over.r +| @as(u8, @intCast((@as(u16, under.r) * inv) / 255)),
+        over.g +| @as(u8, @intCast((@as(u16, under.g) * inv) / 255)),
+        over.b +| @as(u8, @intCast((@as(u16, under.b) * inv) / 255)),
+        over.a +| @as(u8, @intCast((@as(u16, under.a) * inv) / 255)),
     );
 }
 
@@ -767,6 +786,79 @@ pub fn paletteMap(
             // Premultiplied as though transparent even on an opaque
             // bitmap — the same Flash bug `threshold` has.
             dst.set(dest.x_min + x, dest.y_min + y, Color.fromArgb(sum).toPremultiplied(true));
+        }
+    }
+}
+
+/// Perlin noise over the whole bitmap. `offsets` must carry one entry per
+/// octave; the caller pads it.
+///
+/// Two Flash quirks that look like bugs and are the point: the channel
+/// index handed to the generator does NOT skip with the channel — it
+/// counts only the SELECTED channels, so asking for blue alone gives you
+/// the field red would have got. And an unselected channel is not left
+/// alone: colour gets -1 and alpha +1, which the saturating conversion
+/// turns into 0 and 255.
+pub fn perlinNoise(
+    bd: *BitmapData,
+    base: [2]f64,
+    num_octaves: usize,
+    seed: i64,
+    stitch: bool,
+    fractal_noise: bool,
+    ch: Channels,
+    grayscale: bool,
+    offsets: []const [2]f64,
+) void {
+    const turb = turbulence_mod.Turbulence.fromSeed(seed);
+    const base_freq: [2]f64 = .{
+        if (base[0] == 0.0) 0.0 else 1.0 / base[0],
+        if (base[1] == 0.0) 0.0 else 1.0 / base[1],
+    };
+    const size: [2]f64 = .{ @floatFromInt(bd.width), @floatFromInt(bd.height) };
+
+    var y: u32 = 0;
+    while (y < bd.height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < bd.width) : (x += 1) {
+            const p: [2]f64 = .{ @floatFromInt(x), @floatFromInt(y) };
+            var field: [4]f64 = undefined;
+
+            if (grayscale) {
+                field[0] = turb.turbulence(0, p, base_freq, num_octaves, fractal_noise, stitch, .{ 0, 0 }, size, offsets);
+                field[1] = field[0];
+                field[2] = field[0];
+                field[3] = if (ch.alpha)
+                    turb.turbulence(1, p, base_freq, num_octaves, fractal_noise, stitch, .{ 0, 0 }, size, offsets)
+                else
+                    1.0;
+            } else {
+                var channel: usize = 0;
+                const selected = [4]bool{ ch.red, ch.green, ch.blue, ch.alpha };
+                for (&field, 0..) |*n, c| {
+                    n.* = if (c == 3) 1.0 else -1.0;
+                    if (selected[c]) {
+                        n.* = turb.turbulence(channel, p, base_freq, num_octaves, fractal_noise, stitch, .{ 0, 0 }, size, offsets);
+                        channel += 1;
+                    }
+                }
+            }
+
+            var out: [4]u8 = undefined;
+            for (&out, field) |*o, n| {
+                // Exactly how Flash lands its -1..1 (or 0..1) on a byte.
+                // The +0.5 for nearest rounding happens BEFORE the halving
+                // in the fractal case, which is arguably wrong and is what
+                // Flash does.
+                const f = if (fractal_noise)
+                    ((n * 255.0 + 255.0) + 0.5) / 2.0
+                else
+                    (n * 255.0) + 0.5;
+                o.* = satU8(@trunc(f));
+            }
+            if (!bd.transparency) out[3] = 255;
+            // Written RAW: the generator's output IS the storage form.
+            bd.set(x, y, Color.rgba(out[0], out[1], out[2], out[3]));
         }
     }
 }

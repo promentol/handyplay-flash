@@ -1,6 +1,7 @@
 bitmap_data_colortransform
 bitmap_data_copypixels
 bitmap_data_fillrect
+bitmap_data_perlinnoise
 bitmap_data_pixeldissolve_image
 color
 display_object_properties

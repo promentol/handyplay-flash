@@ -289,7 +289,7 @@ pub const Renderer = struct {
                 // opaque, where both conversions are the identity.
                 const d = bitmap_pixels.Color.fromArgb(slot.*);
                 const under = if (d.a == 255) d else d.toPremultiplied(true);
-                const out = bitmap_ops.blendOver(under, s);
+                const out = bitmap_ops.blendOverSaturating(under, s);
                 slot.* = (if (out.a == 255) out else out.toUnmultiplied()).toArgb();
             }
         }

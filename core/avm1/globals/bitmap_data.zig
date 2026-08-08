@@ -622,15 +622,49 @@ fn channelTable(vm: *Vm, v: Value, shift: u5, out: *[256]u32) !void {
     }
 }
 
-/// The pixel work is not implemented: ruffle's own Perlin output does not
-/// match Flash's (its `bitmap_data_thorough/perlinNoise` is a recorded
-/// known failure), so there is nothing to port that would be right. The
-/// argument contract IS implemented, because `bitmap_data` checks it.
+/// `perlinNoise(baseX, baseY, numOctaves, seed, stitch, fractalNoise,
+/// channels, grayscale, offsets)`. The last argument is an ARRAY of
+/// points, one per octave; a missing or malformed entry is the origin.
 fn perlinNoise(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (args.len < 6) return BAD;
-    _ = dataOf(vm, this) orelse return BAD;
+    const bd = dataOf(vm, this) orelse return BAD;
+
+    const base: [2]f64 = .{ try vm.toNumber(args[0]), try vm.toNumber(args[1]) };
+    const octaves: usize = @intCast(@max(value_mod.toInt32(try vm.toNumber(args[2])), 0));
+    const seed: i64 = value_mod.toInt32(try vm.toNumber(args[3]));
+    const stitch = value_mod.toBoolean(args[4], vm.swf_version);
+    const fractal = value_mod.toBoolean(args[5], vm.swf_version);
+    // Absent means RGB; an explicit `undefined` coerces to zero.
+    const mask: u32 = if (args.len > 6) try toU32(vm, args[6]) else 7;
+    const gray = args.len > 7 and value_mod.toBoolean(args[7], vm.swf_version);
+
+    // One offset per octave, whatever the array actually holds. Bounded
+    // by the octave count, which is bounded by an i32 — clamp it, because
+    // a script can ask for two billion.
+    const n = @min(octaves, 64);
+    const offsets = try vm.gpa.alloc([2]f64, n);
+    defer vm.gpa.free(offsets);
+    for (offsets, 0..) |*o, i| {
+        o.* = .{ 0, 0 };
+        if (arg(args, 8) == .object) {
+            if (vm.objects.getChained(args[8].object, try indexName(vm, i), vm.case_sensitive)) |v| {
+                if (v == .object) {
+                    if (try ownPoint(vm, v)) |pt| o.* = .{ @floatFromInt(pt[0]), @floatFromInt(pt[1]) };
+                }
+            }
+        }
+    }
+    ops.perlinNoise(bd, base, n, seed, stitch, fractal, ops.Channels.fromBits(mask), gray, offsets);
     return .{ .number = 0 };
+}
+
+fn indexName(vm: *Vm, i: usize) !strings.AvmString {
+    var buf: [24]u8 = undefined;
+    const ascii = std.fmt.bufPrint(&buf, "{d}", .{i}) catch unreachable;
+    const wide = try vm.arena().alloc(u16, ascii.len);
+    for (ascii, wide) |c, *w| w.* = c;
+    return wide;
 }
 
 /// Filters over a pixel buffer are M7 work — the AVM1 filter OBJECTS

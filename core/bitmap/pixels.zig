@@ -70,8 +70,13 @@ pub const Color = packed struct(u32) {
     }
 };
 
+/// CLAMPED, not just cast. `perlinNoise` writes its output raw, so a
+/// channel can exceed the alpha it is supposedly multiplied by — an
+/// impossible premultiplied pixel — and reversing that overflows a byte.
+/// Flash saturates, and `bitmap_data_thorough/perlinNoise` reads the
+/// resulting 0xFFs back.
 fn unmul(c: u8, factor: u32) u8 {
-    return @intCast((@as(u32, c) * factor + 0x8000) >> 16);
+    return @intCast(@min((@as(u32, c) * factor + 0x8000) >> 16, 255));
 }
 
 /// Indexed by ALPHA. Brute-forced to reproduce Flash's own rounding when
