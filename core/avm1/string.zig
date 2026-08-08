@@ -69,8 +69,34 @@ pub fn ascii(comptime s: []const u8) []const u16 {
     return &arr;
 }
 
+/// LOSSY: an unpaired surrogate becomes U+FFFD rather than aborting the
+/// whole conversion. Flash keeps unpaired halves in its strings and
+/// prints them as the replacement character, so a strict encoder would
+/// silently drop the entire line.
 pub fn toUtf8(a: std.mem.Allocator, s: AvmString) ![]const u8 {
-    return std.unicode.utf16LeToUtf8Alloc(a, s);
+    if (std.unicode.utf16LeToUtf8Alloc(a, s)) |ok| return ok else |_| {}
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(a);
+    var i: usize = 0;
+    var buf: [4]u8 = undefined;
+    while (i < s.len) {
+        const hi = s[i];
+        var cp: u21 = hi;
+        if (hi >= 0xD800 and hi <= 0xDBFF and i + 1 < s.len and
+            s[i + 1] >= 0xDC00 and s[i + 1] <= 0xDFFF)
+        {
+            cp = @intCast(0x10000 + ((@as(u32, hi) - 0xD800) << 10) + (@as(u32, s[i + 1]) - 0xDC00));
+            i += 2;
+        } else {
+            if (hi >= 0xD800 and hi <= 0xDFFF) cp = 0xFFFD;
+            i += 1;
+        }
+        const n = std.unicode.utf8Encode(cp, &buf) catch blk: {
+            break :blk std.unicode.utf8Encode(0xFFFD, &buf) catch unreachable;
+        };
+        try out.appendSlice(a, buf[0..n]);
+    }
+    return out.toOwnedSlice(a);
 }
 
 pub fn eql(x: AvmString, y: AvmString) bool {

@@ -12,6 +12,7 @@ const value_mod = @import("../value.zig");
 const object_mod = @import("../object.zig");
 const runtime = @import("../runtime.zig");
 const decl = @import("decl.zig");
+const case_tables = @import("../case_tables.zig");
 const timers_mod = @import("../timers.zig");
 
 const Value = runtime.Value;
@@ -85,6 +86,7 @@ pub fn install(vm: *Vm) !void {
     try method(vm, vm.string_proto, "charAt", strCharAt, hidden);
     try method(vm, vm.string_proto, "charCodeAt", strCharCodeAt, hidden);
     try method(vm, vm.string_proto, "toUpperCase", strToUpper, hidden);
+    try method(vm, vm.string_proto, "concat", strConcat, hidden);
     try method(vm, vm.string_proto, "toLowerCase", strToLower, hidden);
     try method(vm, vm.string_proto, "indexOf", strIndexOf, hidden);
     try method(vm, vm.string_proto, "lastIndexOf", strLastIndexOf, hidden);
@@ -324,7 +326,12 @@ fn ctorObject(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
         else => return boxPrimitive(vm, a0),
     }
     if (vm.in_construct > 0 and this == .object) return this;
-    return .{ .object = try vm.newObject() };
+    // Called as a FUNCTION rather than with `new`, `Object()` gives a
+    // BARE object — no prototype, so it has no `toString` and traces as
+    // the type tag rather than "[object Object]".
+    const h = try vm.objects.create();
+    vm.objects.get(h).proto = .undefined_value;
+    return .{ .object = h };
 }
 
 /// A primitive in its wrapper object, with the matching prototype so the
@@ -1099,25 +1106,42 @@ fn strToString(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return .{ .string = try vm.toStringValue(this) };
 }
 
+/// The index WRAPS into an i32 first, so 4294967297 is 1. A negative
+/// one, or one past the end, is the empty string. The result is one CODE
+/// UNIT, which may be half a surrogate pair.
 fn strCharAt(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const s = try thisString(vm, this);
-    const i = try vm.toNumber(arg(args, 0));
-    if (std.math.isNan(i) or i < 0 or i >= @as(f64, @floatFromInt(s.len))) {
-        return .{ .string = S("") };
-    }
-    const idx: usize = @intFromFloat(i);
+    const i = value_mod.toInt32(try vm.toNumber(arg(args, 0)));
+    if (i < 0 or i >= s.len) return .{ .string = S("") };
+    const idx: usize = @intCast(i);
     return .{ .string = s[idx .. idx + 1] };
 }
 
+/// `concat` stringifies EVERY argument, including null and undefined,
+/// and appends them all.
+fn strConcat(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    var out: std.ArrayList(u16) = .empty;
+    const a = vm.arena();
+    try out.appendSlice(a, try thisString(vm, this));
+    for (args) |v| try out.appendSlice(a, try vm.toStringValue(v));
+    return .{ .string = try out.toOwnedSlice(a) };
+}
+
+/// The index WRAPS into an i32 first. Out of range is NaN — except at
+/// SWF5 exactly, where it is ZERO.
 fn strCharCodeAt(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const s = try thisString(vm, this);
-    const i = try vm.toNumber(arg(args, 0));
-    if (std.math.isNan(i) or i < 0 or i >= @as(f64, @floatFromInt(s.len))) {
-        return .{ .number = std.math.nan(f64) };
-    }
-    return .{ .number = @floatFromInt(s[@intFromFloat(i)]) };
+    const i = value_mod.toInt32(try vm.toNumber(arg(args, 0)));
+    const out_of_range: Value = if (vm.swf_version == 5)
+        .{ .number = 0 }
+    else
+        .{ .number = std.math.nan(f64) };
+    if (i < 0) return .{ .number = std.math.nan(f64) };
+    if (i >= s.len) return out_of_range;
+    return .{ .number = @floatFromInt(s[@intCast(i)]) };
 }
 
 fn strFromCharCode(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -1139,7 +1163,7 @@ fn strToUpper(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const s = try thisString(vm, this);
     const out = try vm.arena().alloc(u16, s.len);
-    for (s, 0..) |c, i| out[i] = if (c >= 'a' and c <= 'z') c - 32 else c;
+    for (s, 0..) |c, i| out[i] = case_tables.toUpper(c);
     return .{ .string = out };
 }
 
@@ -1148,19 +1172,23 @@ fn strToLower(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const s = try thisString(vm, this);
     const out = try vm.arena().alloc(u16, s.len);
-    for (s, 0..) |c, i| out[i] = strings.foldCase(c);
+    for (s, 0..) |c, i| out[i] = case_tables.toLower(c);
     return .{ .string = out };
 }
 
+/// No pattern at all is UNDEFINED, not -1. A start index past the end
+/// of the string is -1 rather than a clamped search from the end.
 fn strIndexOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
+    if (args.len == 0) return .undefined_value;
     const s = try thisString(vm, this);
-    const needle = try vm.toStringValue(arg(args, 0));
+    const needle = try vm.toStringValue(args[0]);
     var from: usize = 0;
-    if (args.len > 1) {
-        const f = try vm.toNumber(args[1]);
-        if (f > 0) from = @min(@as(usize, @intFromFloat(f)), s.len);
+    if (args.len > 1 and args[1] != .undefined_value) {
+        const f = value_mod.toInt32(try vm.toNumber(args[1]));
+        from = @intCast(@max(f, 0));
     }
+    if (from > s.len) return .{ .number = -1 };
     if (needle.len == 0) return .{ .number = @floatFromInt(from) };
     if (std.mem.indexOfPos(u16, s, from, needle)) |i| {
         return .{ .number = @floatFromInt(i) };
@@ -1168,11 +1196,22 @@ fn strIndexOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return .{ .number = -1 };
 }
 
+/// The start index is where the MATCH may end, not where it may begin —
+/// the pattern's own length is added to it before the search. A negative
+/// one bails out at -1 without searching.
 fn strLastIndexOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
+    if (args.len == 0) return .undefined_value;
     const s = try thisString(vm, this);
-    const needle = try vm.toStringValue(arg(args, 0));
-    if (std.mem.lastIndexOf(u16, s, needle)) |i| {
+    const needle = try vm.toStringValue(args[0]);
+    var limit: usize = s.len;
+    if (args.len > 1 and args[1] != .undefined_value) {
+        const n = value_mod.toInt32(try vm.toNumber(args[1]));
+        if (n < 0) return .{ .number = -1 };
+        limit = @as(usize, @intCast(n)) + needle.len;
+    }
+    const window = if (limit <= s.len) s[0..limit] else s;
+    if (std.mem.lastIndexOf(u16, window, needle)) |i| {
         return .{ .number = @floatFromInt(i) };
     }
     return .{ .number = -1 };
@@ -1180,10 +1219,12 @@ fn strLastIndexOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Valu
 
 fn strSubstring(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
+    // No arguments at all is UNDEFINED, not the whole string.
+    if (args.len == 0) return .undefined_value;
     const s = try thisString(vm, this);
-    var a: i64 = clampIndex(try vm.toNumber(arg(args, 0)), s.len);
+    var a: i64 = stringIndex(value_mod.toInt32(try vm.toNumber(args[0])), s.len);
     var b: i64 = if (args.len > 1 and args[1] != .undefined_value)
-        clampIndex(try vm.toNumber(args[1]), s.len)
+        stringIndex(value_mod.toInt32(try vm.toNumber(args[1])), s.len)
     else
         @intCast(s.len);
     if (a > b) std.mem.swap(i64, &a, &b);
@@ -1192,31 +1233,48 @@ fn strSubstring(p: *anyopaque, this: Value, args: []const Value) anyerror!Value 
 
 fn strSlice(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
+    if (args.len == 0) return .undefined_value;
     const s = try thisString(vm, this);
-    const len: i64 = @intCast(s.len);
-    var a: i64 = if (args.len > 0) @intFromFloat(@trunc(try vm.toNumber(args[0]))) else 0;
-    var b: i64 = if (args.len > 1 and args[1] != .undefined_value) @intFromFloat(@trunc(try vm.toNumber(args[1]))) else len;
-    if (a < 0) a = @max(0, len + a);
-    if (b < 0) b = @max(0, len + b);
-    a = @min(a, len);
-    b = @min(b, len);
+    const a: i64 = wrappingIndex(value_mod.toInt32(try vm.toNumber(args[0])), s.len);
+    const b: i64 = if (args.len > 1 and args[1] != .undefined_value)
+        wrappingIndex(value_mod.toInt32(try vm.toNumber(args[1])), s.len)
+    else
+        @intCast(s.len);
     if (a >= b) return .{ .string = S("") };
     return .{ .string = s[@intCast(a)..@intCast(b)] };
 }
 
+/// The second argument is a LENGTH, but a negative one is not clamped to
+/// zero: `start + length` becomes a WRAPPING end index, so
+/// `"hello world".substr(0, -1)` is "hello worl".
 fn strSubstr(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
+    if (args.len == 0) return .undefined_value;
     const s = try thisString(vm, this);
-    const len: i64 = @intCast(s.len);
-    var start: i64 = if (args.len > 0) @intFromFloat(@trunc(try vm.toNumber(args[0]))) else 0;
-    if (start < 0) start = @max(0, len + start);
-    start = @min(start, len);
-    var count: i64 = if (args.len > 1 and args[1] != .undefined_value)
-        @intFromFloat(@trunc(try vm.toNumber(args[1])))
+    const start = wrappingIndex(value_mod.toInt32(try vm.toNumber(args[0])), s.len);
+    const count: i64 = if (args.len > 1 and args[1] != .undefined_value)
+        value_mod.toInt32(try vm.toNumber(args[1]))
     else
-        len - start;
-    count = @max(0, @min(count, len - start));
-    return .{ .string = s[@intCast(start)..@intCast(start + count)] };
+        @intCast(s.len);
+    const end = wrappingIndex(@truncate(start + count), s.len);
+    if (start >= end) return .{ .string = S("") };
+    return .{ .string = s[@intCast(start)..@intCast(end)] };
+}
+
+/// A CLAMPING index: negative is the start of the string, and anything
+/// past the end is the end. `substring` uses this.
+fn stringIndex(i: i32, len: usize) i64 {
+    if (i < 0) return 0;
+    return @min(@as(i64, i), @as(i64, @intCast(len)));
+}
+
+/// A WRAPPING index: negative counts BACK from the end. `slice` and
+/// `substr` use this — which is why `substr(0, -1)` is the whole string
+/// bar its last character rather than the empty one.
+fn wrappingIndex(i: i32, len: usize) i64 {
+    const l: i64 = @intCast(len);
+    if (i < 0) return @max(0, l + @as(i64, i));
+    return @min(@as(i64, i), l);
 }
 
 fn clampIndex(n: f64, len: usize) i64 {
@@ -1224,30 +1282,58 @@ fn clampIndex(n: f64, len: usize) i64 {
     return @intFromFloat(@min(n, @as(f64, @floatFromInt(len))));
 }
 
+/// `split(delimiter, limit)`.
+///
+/// Two SWF5-only quirks: the default delimiter there is a COMMA rather
+/// than "no split at all", and an EMPTY delimiter behaves the way
+/// undefined does at later versions. An empty delimiter otherwise splits
+/// into single characters WITHOUT the leading and trailing empties a
+/// naive split produces.
 fn strSplit(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const s = try thisString(vm, this);
     const arr = try vm.newArray();
+
+    const limit: usize = blk: {
+        if (args.len < 2 or args[1] == .undefined_value) break :blk std.math.maxInt(usize);
+        break :blk @intCast(@max(value_mod.toInt32(try vm.toNumber(args[1])), 0));
+    };
+    const is_swf5 = vm.swf_version == 5;
+
+    var sep: ?strings.AvmString = null;
     if (args.len == 0 or args[0] == .undefined_value) {
+        if (is_swf5) sep = S(",");
+    } else {
+        const got = try vm.toStringValue(args[0]);
+        if (!(is_swf5 and got.len == 0)) sep = got;
+    }
+
+    const delim = sep orelse {
+        // No delimiter: the whole string, as one element — and the limit
+        // does not apply.
         try vm.arraySet(arr, 0, .{ .string = s });
         return .{ .object = arr };
-    }
-    const sep = try vm.toStringValue(args[0]);
+    };
+
     var n: u32 = 0;
-    if (sep.len == 0) {
+    if (delim.len == 0) {
         for (s) |c| {
+            if (n >= limit) break;
             const one = try vm.arena().alloc(u16, 1);
             one[0] = c;
             try vm.arraySet(arr, n, .{ .string = one });
             n += 1;
         }
+        try vm.setArrayLength(arr, n);
         return .{ .object = arr };
     }
-    var it = std.mem.splitSequence(u16, s, sep);
+    var it = std.mem.splitSequence(u16, s, delim);
     while (it.next()) |part| {
+        if (n >= limit) break;
         try vm.arraySet(arr, n, .{ .string = part });
         n += 1;
     }
+    try vm.setArrayLength(arr, n);
     return .{ .object = arr };
 }
 

@@ -283,6 +283,7 @@ new_object_enumerate
 new_object_wrap
 o
 object_constructor
+object_function
 object_prototypes
 object_string_coerce_swf5
 object_string_coerce_swf6
@@ -326,6 +327,9 @@ stage_scale_mode
 strictequals_swf6
 strictly_equals
 string_coercion
+string_methods
+string_methods_negative_args
+string_methods_swfv5
 string_paths_basic
 string_paths_eval
 string_paths_hidden

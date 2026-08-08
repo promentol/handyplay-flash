@@ -1327,6 +1327,7 @@ test {
     _ = @import("bitmap/decode.zig");
     _ = @import("bitmap/turbulence.zig");
     _ = @import("xml/parser.zig");
+    _ = @import("avm1/case_tables.zig");
     _ = @import("text/format.zig");
     _ = @import("text/spans.zig");
     _ = @import("text/html.zig");
