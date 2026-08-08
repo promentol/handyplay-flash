@@ -19,6 +19,7 @@ const runtime = @import("runtime.zig");
 const display_object = @import("../display/display_object.zig");
 const movie_clip = @import("../display/movie_clip.zig");
 const bounds_mod = @import("../display/bounds.zig");
+const bitmap_data_mod = @import("../bitmap/data.zig");
 pub const drawing = @import("../display/drawing.zig");
 
 const Value = value_mod.Value;
@@ -72,7 +73,7 @@ pub fn targetOf(vm: *Vm, handle: ObjectHandle) ?Target {
 pub fn isScriptable(kind: DisplayObject.Kind) bool {
     return switch (kind) {
         .clip, .button, .edit_text => true,
-        .shape, .morph_shape, .text, .bitmap => false,
+        .shape, .morph_shape, .text, .bitmap, .attached_bitmap => false,
     };
 }
 
@@ -1117,6 +1118,23 @@ pub fn createTextFieldAt(
     obj.matrix.tx = twipsFromPixels(x);
     obj.matrix.ty = twipsFromPixels(y);
     try obj.setName(ctx.gpa, name);
+    try parent.finishInstantiate(ctx, obj, false);
+    return obj;
+}
+
+/// `MovieClip.attachBitmap`: a script `BitmapData` placed at a depth,
+/// replacing whatever was there. No character, so nothing to construct.
+pub fn attachBitmapAt(
+    vm: *Vm,
+    parent: *MovieClip,
+    data: *const bitmap_data_mod.BitmapData,
+    depth: i32,
+    smoothing: bool,
+) !?*DisplayObject {
+    const ctx = displayCtx(vm) orelse return null;
+    try parent.removeAtDepth(ctx, depth);
+    const obj = try parent.instantiateAttachedBitmap(ctx, depth, data, smoothing);
+    obj.placed_by_script = true;
     try parent.finishInstantiate(ctx, obj, false);
     return obj;
 }

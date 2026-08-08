@@ -47,6 +47,24 @@ pub fn decode(gpa: std.mem.Allocator, bmp: library.Bitmap, jpeg_tables: ?[]const
     };
 }
 
+/// The pixel size WITHOUT decoding. A lossless tag states it outright; a
+/// JPEG family one needs a header peek, which stb does without allocating
+/// the pixels. Bounds need this and nothing else, so a display object that
+/// is never drawn is never decoded.
+pub fn sizeOf(bmp: library.Bitmap) ?[2]u32 {
+    const bytes = switch (bmp) {
+        .lossless => |b| return .{ b.width, b.height },
+        // A DefineBits payload is headless without its tables, but the
+        // SOF marker that carries the dimensions is in the SCAN data, not
+        // the tables, so peeking still works.
+        .jpeg_needs_tables => |b| b.jpeg_data,
+        .jpeg2 => |b| b.data,
+        .jpeg3 => |b| b.data,
+    };
+    const info = simdra.decode.peekInfo(removeInvalidJpegData(bytes)) catch return null;
+    return .{ info.width, info.height };
+}
+
 // --- JPEG (and whatever else stb recognises) ---------------------------------
 
 fn decodeJpeg(

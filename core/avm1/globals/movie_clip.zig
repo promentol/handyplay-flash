@@ -17,6 +17,7 @@ const decl = @import("decl.zig");
 const display_object = @import("../../display/display_object.zig");
 const activation = @import("../activation.zig");
 const geom = @import("geom.zig");
+const bitmap_data = @import("bitmap_data.zig");
 
 const Value = value_mod.Value;
 const Vm = runtime.Vm;
@@ -37,11 +38,13 @@ pub fn install(vm: *Vm) !void {
     const proto = vm.movieclip_proto;
     try method(vm, proto, "duplicateMovieClip", duplicateMovieClip, hidden);
     try method(vm, proto, "attachMovie", attachMovie, hidden);
+    try method(vm, proto, "attachBitmap", attachBitmap, ver(hidden, decl.V8));
     try method(vm, proto, "createEmptyMovieClip", createEmptyMovieClip, ver(hidden, decl.V6));
     try method(vm, proto, "removeMovieClip", removeMovieClip, hidden);
     try method(vm, proto, "createTextField", createTextField, hidden);
     try method(vm, proto, "swapDepths", swapDepths, hidden);
     try method(vm, proto, "beginFill", beginFill, ver(hidden, decl.V6));
+    try method(vm, proto, "beginBitmapFill", beginBitmapFill, ver(hidden, decl.V8));
     try method(vm, proto, "endFill", endFill, ver(hidden, decl.V6));
     try method(vm, proto, "lineStyle", lineStyle, ver(hidden, decl.V6));
     try method(vm, proto, "moveTo", moveTo, ver(hidden, decl.V6));
@@ -591,6 +594,53 @@ fn beginFill(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     }
     const rgb: u32 = @bitCast(value_mod.toInt32(try vm.toNumber(args[0])));
     try d.setFillStyle(.{ .solid = rgbaFrom(rgb, try alphaArg(vm, args, 1)) });
+    return .undefined_value;
+}
+
+/// `beginBitmapFill(bitmapData, matrix, repeating, smoothed)`. The
+/// matrix maps bitmap PIXELS to clip pixels, which is the same thing a
+/// tag's bitmap fill matrix does one scale factor apart — `matrixOf`
+/// already converts its translation, so nothing else is needed.
+///
+/// Anything but a live BitmapData in the first argument stops the fill,
+/// exactly as `beginFill()` with no colour does.
+fn beginBitmapFill(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const d = drawingFor(vm, this) orelse return .undefined_value;
+    const bd = bitmap_data.dataOf(vm, arg(args, 0)) orelse {
+        try d.setFillStyle(null);
+        return .undefined_value;
+    };
+    var m: swf.reader.Matrix = .{};
+    if (arg(args, 1) == .object) m = try geom.matrixOf(vm, args[1].object);
+    // `repeating` defaults to TRUE and `smoothed` to false — the opposite
+    // pair of defaults, and neither is what the documentation says.
+    const repeating = if (args.len > 2) value_mod.toBoolean(args[2], vm.swf_version) else true;
+    const smoothed = args.len > 3 and value_mod.toBoolean(args[3], vm.swf_version);
+    try d.setFillStyle(.{ .bitmap = .{
+        .id = 0,
+        .matrix = m,
+        .is_smoothed = smoothed,
+        .is_repeating = repeating,
+        .live = @ptrCast(bd),
+    } });
+    return .undefined_value;
+}
+
+/// `attachBitmap(bitmapData, depth, pixelSnapping, smoothing)`. Every
+/// argument but the first two is advisory; a missing depth means the
+/// call does nothing at all rather than defaulting.
+fn attachBitmap(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    const clip = t.clip orelse return .undefined_value;
+    const bd = bitmap_data.dataOf(vm, arg(args, 0)) orelse return .undefined_value;
+    if (args.len < 2) return .undefined_value;
+    const depth = stage.biasDepth(try depthArg(vm, args[1]));
+    // Pixel snapping (argument 2) is not modelled: the rasteriser has no
+    // texel grid to snap to.
+    const smoothing = args.len > 3 and value_mod.toBoolean(args[3], vm.swf_version);
+    _ = try stage.attachBitmapAt(vm, clip, bd, depth, smoothing);
     return .undefined_value;
 }
 

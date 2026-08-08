@@ -22,6 +22,8 @@ const data_mod = @import("../../bitmap/data.zig");
 const ops = @import("../../bitmap/operations.zig");
 const decl = @import("decl.zig");
 const geom = @import("geom.zig");
+const stage = @import("../stage_object.zig");
+const bitmap_decode = @import("../../bitmap/decode.zig");
 
 const Value = value_mod.Value;
 const Vm = runtime.Vm;
@@ -77,6 +79,7 @@ pub fn install(vm: *Vm, display_ns: ObjectHandle) !void {
     inline for (.{ "RED", "GREEN", "BLUE", "ALPHA" }, .{ 1, 2, 4, 8 }) |name, bit| {
         try vm.objects.putWithAttrs(ctor, S(name ++ "_CHANNEL"), .{ .number = bit }, .{}, false);
     }
+    try decl.method(vm, ctor, "loadBitmap", loadBitmap, ver(decl.hidden, decl.V8));
     try vm.objects.putWithAttrs(ctor, S("prototype"), .{ .object = proto }, decl.hidden, false);
     try vm.objects.putWithAttrs(proto, S("constructor"), .{ .object = ctor }, decl.hidden, false);
     try vm.objects.putWithAttrs(display_ns, S("BitmapData"), .{ .object = ctor }, .{}, false);
@@ -662,4 +665,45 @@ fn draw(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     _ = dataOf(vm, this) orelse return BAD;
     return .undefined_value;
+}
+
+/// `BitmapData.loadBitmap(exportName)` — a STATIC on the constructor,
+/// not a member. It pulls a linkage-exported `DefineBits*` character out
+/// of the library and decodes it into a fresh buffer; an unknown name,
+/// a character that is not a bitmap, or a payload that will not decode
+/// are all plain `undefined`.
+///
+/// The result is always TRANSPARENT even when the source has no alpha —
+/// the decoder fills 255 for those, so the flag costs nothing and
+/// matches what Flash reports.
+fn loadBitmap(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    const name = try vm.toStringValue(arg(args, 0));
+    const id = try stage.exportedCharacter(vm, name) orelse return .undefined_value;
+    const ctx = stage.displayCtxOf(vm) orelse return .undefined_value;
+    const ch = ctx.movie.lib.characters.get(id) orelse return .undefined_value;
+    const bmp = switch (ch) {
+        .bitmap => |b| b,
+        else => return .undefined_value,
+    };
+    var img = bitmap_decode.decode(vm.gpa, bmp, ctx.movie.jpeg_tables) catch return .undefined_value;
+    defer img.deinit(vm.gpa);
+
+    const bd = try vm.arena().create(BitmapData);
+    bd.* = try BitmapData.init(vm.gpa, img.width, img.height, true, 0);
+    // Decoded pixels are STRAIGHT; storage is premultiplied.
+    for (bd.data, 0..) |*slot, i| {
+        slot.* = pixels.Color.rgba(
+            img.rgba[i * 4 + 0],
+            img.rgba[i * 4 + 1],
+            img.rgba[i * 4 + 2],
+            img.rgba[i * 4 + 3],
+        ).toPremultiplied(true);
+    }
+
+    const out = try vm.objects.create();
+    vm.objects.get(out).proto = .{ .object = vm.bitmapdata_proto };
+    vm.objects.get(out).native = .{ .bitmap_data = @ptrCast(bd) };
+    return .{ .object = out };
 }

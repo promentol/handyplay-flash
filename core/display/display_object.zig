@@ -17,6 +17,7 @@ const library = @import("library.zig");
 const movie_clip = @import("movie_clip.zig");
 const button_mod = @import("button.zig");
 const edit_text_mod = @import("edit_text.zig");
+const bitmap_data = @import("../bitmap/data.zig");
 
 /// One text field bound to one property name on the object holding it.
 pub const TextBinding = struct {
@@ -113,9 +114,27 @@ pub const DisplayObject = struct {
         /// Owned: a button is a container with its own child lists
         /// (button.zig), not a bare pointer into the library.
         button: *button_mod.Button,
-        bitmap: u16, // character id; decoded pixels cached in M4
+        /// A library bitmap on the display list. The SIZE travels with
+        /// it because bounds must not force a decode — it is read from
+        /// the tag header at instantiation.
+        bitmap: LibraryBitmap,
+        /// `MovieClip.attachBitmap`: a script `BitmapData` on the display
+        /// list. NOT owned — the buffer belongs to the AVM1 object, which
+        /// outlives every display object that shows it.
+        attached_bitmap: AttachedBitmap,
         /// Sprites instantiate their own timeline.
         clip: *movie_clip.MovieClip,
+    };
+
+    pub const LibraryBitmap = struct {
+        id: u16,
+        width: u32 = 0,
+        height: u32 = 0,
+    };
+
+    pub const AttachedBitmap = struct {
+        data: *const bitmap_data.BitmapData,
+        smoothing: bool,
     };
 
     pub fn deinit(self: *DisplayObject, gpa: std.mem.Allocator) void {

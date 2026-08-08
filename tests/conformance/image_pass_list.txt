@@ -1,2 +1,3 @@
+bitmap_data_pixeldissolve_image
 color
 display_object_properties

@@ -28,6 +28,7 @@ const display_font = @import("../display/font.zig");
 const edit_text_device = @import("../display/device_font.zig");
 const text_layout = @import("../display/text_layout.zig");
 const bitmap_decode = @import("../bitmap/decode.zig");
+const bitmap_data = @import("../bitmap/data.zig");
 
 pub const Error = std.mem.Allocator.Error || error{OutOfMemory};
 
@@ -99,11 +100,20 @@ pub const Renderer = struct {
     /// Ready-to-sample patterns, keyed by character id plus the two style
     /// bits that change how the texels are read. The transform is set per
     /// use; the pixels are shared.
-    patterns: std.AutoHashMapUnmanaged(u32, simdra.SmPattern) = .empty,
+    patterns: std.AutoHashMapUnmanaged(u64, simdra.SmPattern) = .empty,
 
     pub fn init(movie_arena: std.mem.Allocator) Renderer {
         return .{ .arena = movie_arena };
     }
+
+    /// Where a bitmap's pixels come from. A library character is decoded
+    /// once and never changes; a script `BitmapData` is live and may have
+    /// been written since the last frame, so its pattern is refreshed on
+    /// every use.
+    pub const BitmapSource = union(enum) {
+        character: u16,
+        live: *const bitmap_data.BitmapData,
+    };
 
     /// A character's pixels, decoded once. Null when the id is not a
     /// bitmap or the payload would not decode.
@@ -123,23 +133,43 @@ pub const Renderer = struct {
         return if (gop.value_ptr.*) |*img| img else null;
     }
 
-    /// The pattern for a bitmap fill. Cached with its pixels; only the
-    /// transform changes between uses, so it is set by the caller.
-    fn pattern(self: *Renderer, id: u16, repeating: bool, smoothed: bool) Error!?*simdra.SmPattern {
-        const key = @as(u32, id) |
-            (@as(u32, @intFromBool(repeating)) << 16) |
-            (@as(u32, @intFromBool(smoothed)) << 17);
+    fn sizeOfSource(self: *Renderer, src: BitmapSource) ?[2]u32 {
+        return switch (src) {
+            .character => |id| if (self.decodedBitmap(id)) |img| .{ img.width, img.height } else null,
+            .live => |bd| if (bd.width == 0 or bd.height == 0) null else .{ bd.width, bd.height },
+        };
+    }
+
+    /// The pattern for a bitmap fill, keyed by its source and the two
+    /// style bits that change how the texels are read. Library pixels are
+    /// uploaded once; live ones are re-read every time, because script
+    /// may have painted into the buffer between frames.
+    fn pattern(self: *Renderer, src: BitmapSource, repeating: bool, smoothed: bool) Error!?*simdra.SmPattern {
+        const base: u64 = switch (src) {
+            .character => |id| id,
+            .live => |bd| @intFromPtr(bd),
+        };
+        const key = (base << 2) |
+            (@as(u64, @intFromBool(repeating)) << 1) |
+            @intFromBool(smoothed);
+        const size = self.sizeOfSource(src) orelse return null;
+
         const gop = try self.patterns.getOrPut(self.arena, key);
-        if (!gop.found_existing) {
-            const img = self.decodedBitmap(id) orelse {
-                _ = self.patterns.remove(key);
-                return null;
-            };
+        errdefer _ = self.patterns.remove(key);
+        // A live buffer can be resized (or disposed and rebuilt) under a
+        // pattern that was cached for the old dimensions.
+        const stale = gop.found_existing and
+            (gop.value_ptr.width != size[0] or gop.value_ptr.height != size[1]);
+        if (!gop.found_existing or stale) {
+            if (stale) gop.value_ptr.deinit();
+            const blank = try self.arena.alloc(u8, @as(usize, size[0]) * size[1] * 4);
+            defer self.arena.free(blank);
+            @memset(blank, 0);
             gop.value_ptr.* = simdra.SmPattern.createWithAllocator(
                 self.arena,
-                img.rgba,
-                img.width,
-                img.height,
+                blank,
+                size[0],
+                size[1],
                 if (repeating) .repeat else .no_repeat,
             ) catch {
                 _ = self.patterns.remove(key);
@@ -147,28 +177,45 @@ pub const Renderer = struct {
             };
             gop.value_ptr.setFilter(if (smoothed) .bilinear else .nearest);
         }
+
+        switch (src) {
+            .character => |id| if (!gop.found_existing or stale) {
+                const img = self.decodedBitmap(id) orelse return null;
+                @memcpy(gop.value_ptr.data, img.rgba);
+            },
+            // Storage is premultiplied and a pattern samples straight
+            // RGBA, so every pixel converts on the way out.
+            .live => |bd| for (bd.data, 0..) |c, i| {
+                const u = c.toUnmultiplied();
+                gop.value_ptr.data[i * 4 + 0] = u.r;
+                gop.value_ptr.data[i * 4 + 1] = u.g;
+                gop.value_ptr.data[i * 4 + 2] = u.b;
+                gop.value_ptr.data[i * 4 + 3] = if (bd.transparency) u.a else 255;
+            },
+        }
         return gop.value_ptr;
     }
 
     /// A bitmap placed DIRECTLY on the display list — no shape, no fill
     /// style. Flash draws it as its own pixel rectangle at one twip-scaled
     /// pixel per texel, which is the same job as a bitmap fill over a
-    /// unit-sized box.
+    /// box the size of the image.
     fn renderBitmap(
         self: *Renderer,
         ctx: *simdra.SmCanvas,
-        id: u16,
+        src: BitmapSource,
+        smoothing: bool,
         t: Transform,
         cx: swf.reader.ColorTransform,
     ) Error!void {
-        const img = self.decodedBitmap(id) orelse return;
-        const pat = try self.pattern(id, false, false) orelse return;
+        const size = self.sizeOfSource(src) orelse return;
+        const pat = try self.pattern(src, false, smoothing) orelse return;
         pat.setTransform(t.a * 20, t.b * 20, t.c * 20, t.d * 20, t.tx, t.ty);
 
         ctx.setTransform(t.a, t.b, t.c, t.d, t.tx, t.ty);
         ctx.setColorTransform(toSimdraCxform(cx));
         ctx.setFillPattern(pat);
-        boxPath(ctx, 0, 0, @as(f64, @floatFromInt(img.width)) * 20, @as(f64, @floatFromInt(img.height)) * 20);
+        boxPath(ctx, 0, 0, @as(f64, @floatFromInt(size[0])) * 20, @as(f64, @floatFromInt(size[1])) * 20);
         ctx.fill(.nonzero);
     }
 
@@ -243,7 +290,8 @@ pub const Renderer = struct {
                 .button => |b| try self.renderClip(ctx, &b.container, t, cx),
                 .text => |txt| try self.renderText(ctx, txt, t, cx),
                 .edit_text => |et| try self.renderEditText(ctx, et, t, cx),
-                .bitmap => |id| try self.renderBitmap(ctx, id, t, cx),
+                .bitmap => |b| try self.renderBitmap(ctx, .{ .character = b.id }, false, t, cx),
+                .attached_bitmap => |b| try self.renderBitmap(ctx, .{ .live = b.data }, b.smoothing, t, cx),
                 .morph_shape => {}, // M7
             }
         }
@@ -749,7 +797,11 @@ fn applyFillStyle(
             ctx.setFillGradient(&grad_out.*.?);
         },
         .bitmap => |b| {
-            if (try self.pattern(b.id, b.is_repeating, b.is_smoothed)) |pat| {
+            const src: Renderer.BitmapSource = if (b.live) |ptr|
+                .{ .live = @ptrCast(@alignCast(ptr)) }
+            else
+                .{ .character = b.id };
+            if (try self.pattern(src, b.is_repeating, b.is_smoothed)) |pat| {
                 // The pattern samples in DEVICE space, so its forward
                 // matrix is the whole chain: texel → bitmap twips (20 per
                 // pixel) → shape twips (the style matrix) → device.

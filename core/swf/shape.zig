@@ -39,6 +39,11 @@ pub const FillStyle = union(enum) {
         matrix: rdr.Matrix,
         is_smoothed: bool,
         is_repeating: bool,
+        /// A LIVE `BitmapData` instead of a library character — set only
+        /// by the script drawing API (`beginBitmapFill`), never by the
+        /// parser. Opaque because `swf/` is the parser and must not know
+        /// what a `BitmapData` is; `core/render/renderer.zig` casts it.
+        live: ?*const anyopaque = null,
     },
 };
 

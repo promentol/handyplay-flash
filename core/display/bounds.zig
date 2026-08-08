@@ -28,14 +28,30 @@ pub fn selfBounds(obj: *const DisplayObject) ?Rectangle {
         .shape => |s| s.bounds,
         .text => |t| t.bounds,
         .edit_text => |et| et.bounds,
+        // A bitmap's box is its pixel size in twips, whether the pixels
+        // came from a tag or from script.
+        .bitmap => |b| pixelBox(b.width, b.height),
+        .attached_bitmap => |b| pixelBox(b.data.width, b.data.height),
         // A button's geometry is entirely its state children, like a
-        // clip's is its own. Bitmaps need their decoded size (M4-E) and
-        // morph shapes stay undecoded until M7 — ruffle reports the start
-        // shape for a morph under BoundsMode::Script, a known gap.
-        .button, .bitmap, .morph_shape => null,
+        // clip's is its own. Morph shapes stay undecoded until M7 —
+        // ruffle reports the start shape for a morph under
+        // BoundsMode::Script, a known gap.
+        .button, .morph_shape => null,
         // A clip's own geometry is whatever the drawing API put there
         // (ruffle MovieClip::self_bounds -> drawing.self_bounds).
         .clip => |mc| if (mc.drawing) |d| d.bounds else null,
+    };
+}
+
+/// A w×h pixel image occupies w*20 × h*20 twips from the origin. A
+/// zero-sized one has no box at all rather than a degenerate point.
+fn pixelBox(w: u32, h: u32) ?Rectangle {
+    if (w == 0 or h == 0) return null;
+    return .{
+        .xmin = 0,
+        .ymin = 0,
+        .xmax = @intCast(w * 20),
+        .ymax = @intCast(h * 20),
     };
 }
 
@@ -163,8 +179,9 @@ pub fn hitTestShape(
             return false;
         },
         // A field's box IS its geometry — Flash hit-tests the rectangle,
-        // not the glyphs. Bitmaps land in M4-E and morph shapes in M7.
-        .edit_text, .bitmap, .morph_shape => {
+        // not the glyphs. A bitmap is the same: its box, not its opaque
+        // pixels. Morph shapes land in M7.
+        .edit_text, .bitmap, .attached_bitmap, .morph_shape => {
             const box = selfBounds(obj) orelse return false;
             return contains(box, local[0], local[1]);
         },

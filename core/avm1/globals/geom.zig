@@ -428,7 +428,9 @@ pub fn newMatrix(vm: *Vm, m: Matrix) !Value {
 
 /// Read the six fields back out. Translation is in PIXELS on the script
 /// side and twips inside.
-fn matrixOf(vm: *Vm, h: ObjectHandle) !Matrix {
+/// A `flash.geom.Matrix` object's six numbers. `tx`/`ty` are PIXELS on
+/// the script side and twips inside, so they convert here.
+pub fn matrixOf(vm: *Vm, h: ObjectHandle) !Matrix {
     return .{
         .a = @floatCast(try getNum(vm, h, "a")),
         .b = @floatCast(try getNum(vm, h, "b")),

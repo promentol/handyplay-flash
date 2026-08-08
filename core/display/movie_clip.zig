@@ -19,6 +19,8 @@ const display_object = @import("display_object.zig");
 const drawing_mod = @import("drawing.zig");
 const button_mod = @import("button.zig");
 const edit_text_mod = @import("edit_text.zig");
+const bitmap_decode = @import("../bitmap/decode.zig");
+const bitmap_data_mod = @import("../bitmap/data.zig");
 
 const DisplayObject = display_object.DisplayObject;
 
@@ -682,7 +684,10 @@ pub const MovieClip = struct {
                     bt.* = button_mod.Button.init(btn);
                     break :b bt;
                 } },
-                .bitmap => .{ .bitmap = id },
+                .bitmap => |b| .{ .bitmap = bm: {
+                    const size = bitmap_decode.sizeOf(b) orelse .{ 0, 0 };
+                    break :bm .{ .id = id, .width = size[0], .height = size[1] };
+                } },
                 .sprite => |sprite| .{ .clip = c: {
                     const mc = try ctx.gpa.create(MovieClip);
                     mc.* = MovieClip.init(sprite.frames);
@@ -725,6 +730,27 @@ pub const MovieClip = struct {
             .depth = depth,
             .place_frame = 1,
             .kind = .{ .edit_text = inst },
+        };
+        obj.parent = self;
+        return obj;
+    }
+
+    /// `attachBitmap`: a script `BitmapData` on the display list. The
+    /// buffer is BORROWED — the AVM1 object owns it and outlives this
+    /// object, so `owns_kind` stays false for the pixels.
+    pub fn instantiateAttachedBitmap(
+        self: *MovieClip,
+        ctx: *Context,
+        depth: i32,
+        data: *const bitmap_data_mod.BitmapData,
+        smoothing: bool,
+    ) Error!*DisplayObject {
+        const obj = try ctx.gpa.create(DisplayObject);
+        obj.* = .{
+            .character_id = 0,
+            .depth = depth,
+            .place_frame = 1,
+            .kind = .{ .attached_bitmap = .{ .data = data, .smoothing = smoothing } },
         };
         obj.parent = self;
         return obj;
@@ -823,7 +849,7 @@ pub const MovieClip = struct {
 fn takesInstanceName(kind: DisplayObject.Kind) bool {
     return switch (kind) {
         .clip, .button, .edit_text => true,
-        .shape, .morph_shape, .text, .bitmap => false,
+        .shape, .morph_shape, .text, .bitmap, .attached_bitmap => false,
     };
 }
 
