@@ -65,7 +65,33 @@ pub const Host = struct {
     /// One NUL-terminated message, already framed.
     socket_send: ?*const fn (ctx: *anyopaque, sock: ObjectHandle, data: []const u8) void = null,
     socket_close: ?*const fn (ctx: *anyopaque, sock: ObjectHandle) void = null,
+    /// `flash.net.FileReference`: run a dialog and, for download/upload,
+    /// the transfer that follows it. Queued like a load — the events come
+    /// back at the end of the tick.
+    file_dialog: ?*const fn (ctx: *anyopaque, req: FileDialogRequest) void = null,
 };
+
+/// One entry of `FileReference.browse`'s filter argument. Only the
+/// description is load-bearing here: the test backend keys its simulated
+/// selection on it.
+pub const FileFilter = struct {
+    description: []const u8,
+    extension: []const u8,
+};
+
+pub const FileDialogRequest = struct {
+    /// The FileReference (or FileReferenceList) that asked.
+    obj: ObjectHandle,
+    what: union(enum) {
+        browse: []const FileFilter,
+        browse_multi: []const FileFilter,
+        /// A save dialog, then a fetch of `url` into it.
+        download: struct { url: []const u8, name: []const u8 },
+        /// No dialog: post the already-picked file to `url`.
+        upload: []const u8,
+    },
+};
+
 
 /// A browser navigation, which unlike a fetch has no reply.
 pub const NavigateRequest = struct {
@@ -380,6 +406,12 @@ pub const Vm = struct {
     xmlnode_ctor: ObjectHandle = 0,
     xml_proto: ObjectHandle = 0,
     loadvars_proto: ObjectHandle = 0,
+    /// The `flash.net` namespace, made by geom.zig and filled by
+    /// singletons.zig once the broadcaster functions exist.
+    flash_net: ObjectHandle = 0,
+    /// `flash.net.FileReference.prototype` — a `FileReferenceList` builds
+    /// its `fileList` entries against it, not against its own.
+    filereference_proto: ObjectHandle = 0,
     /// `_level1` and up: the levels a `loadMovieNum` has created, as
     /// (id, script object). Level 0 is `root_object` and is not listed.
     /// `stage_object.parseLevel` is the only reader; the Player keeps it
@@ -500,7 +532,10 @@ pub const Vm = struct {
     }
 
     pub fn isCallable(self: *Vm, v: Value) bool {
-        if (v != .object) return false;
+        // Handle 0 is the null handle, not slot 0 — `Objects.get` indexes
+        // `h - 1` and would wrap. It reaches here whenever a built-in
+        // stores an absent object in a Value rather than as an optional.
+        if (v != .object or v.object == 0) return false;
         return self.objects.get(v.object).native == .function;
     }
 

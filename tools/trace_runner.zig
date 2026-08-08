@@ -132,6 +132,9 @@ pub fn main(init: std.process.Init) !u8 {
         .socket_close = SocketScript.close,
         .socket_poll = SocketScript.poll,
         .socket_user = @ptrCast(&sock),
+        .open_dialog = Dialogs.open,
+        .open_multi_dialog = Dialogs.openMulti,
+        .save_dialog = Dialogs.save,
     }) catch {
         // A movie we can't run produces no trace output (several corpus
         // dirs are AVM2/image-comparison tests whose expected stdout is
@@ -249,6 +252,48 @@ fn feedUntilWait(player: *flash.Player, events: []const std.json.Value, start: u
 /// run: a loaded SWF is parsed IN PLACE, so its buffer has to outlive the
 /// clip that holds it, and a conformance run is short enough that never
 /// freeing is the simplest correct policy.
+/// The simulated file dialogs ruffle's test UI backend provides. An OPEN
+/// dialog succeeds only when the filter list carries the magic
+/// "debug-select-success" description; a SAVE dialog only when the
+/// suggested name is "debug-success.txt". Everything else is a
+/// cancellation, which is how the corpus exercises both branches without
+/// a real user.
+const Dialogs = struct {
+    const CONTENTS = "Hello, World!";
+
+    fn magic(filters: []const flash.avm1.runtime.FileFilter) bool {
+        for (filters) |f| {
+            if (std.mem.eql(u8, f.description, "debug-select-success")) return true;
+        }
+        return false;
+    }
+
+    /// The single-file dialog picks "test.txt"; the multi-file one picks
+    /// test1/test2/test3.txt. Different names on purpose — the corpus
+    /// checks each list entry by name.
+    fn open(user: ?*anyopaque, filters: []const flash.avm1.runtime.FileFilter) ?[]const flash.Player.DialogFile {
+        _ = user;
+        if (!magic(filters)) return null;
+        return &.{.{ .name = "test.txt", .file_type = ".txt", .contents = CONTENTS }};
+    }
+
+    fn openMulti(user: ?*anyopaque, filters: []const flash.avm1.runtime.FileFilter) ?[]const flash.Player.DialogFile {
+        _ = user;
+        if (!magic(filters)) return null;
+        return &.{
+            .{ .name = "test1.txt", .file_type = ".txt", .contents = CONTENTS },
+            .{ .name = "test2.txt", .file_type = ".txt", .contents = CONTENTS },
+            .{ .name = "test3.txt", .file_type = ".txt", .contents = CONTENTS },
+        };
+    }
+
+    fn save(user: ?*anyopaque, name: []const u8) ?flash.Player.DialogFile {
+        _ = user;
+        if (!std.mem.eql(u8, name, "debug-success.txt")) return null;
+        return .{ .name = "debug-success.txt", .file_type = ".txt", .contents = CONTENTS };
+    }
+};
+
 /// Replays the corpus's `socket.json`, which is a SCRIPT of what the far
 /// end does: `Receive` waits for the movie to send exactly those bytes,
 /// `Send` pushes bytes at it, `Disconnect` hangs up. The script only ever
@@ -353,9 +398,25 @@ const FileServer = struct {
     /// Everything served lives here until the process exits.
     store: std.heap.ArenaAllocator,
 
-    fn read(user: ?*anyopaque, url: []const u8) ?[]const u8 {
+    fn read(user: ?*anyopaque, url: []const u8, status: *flash.Player.FetchStatus) ?[]const u8 {
         const self: *FileServer = @ptrCast(@alignCast(user orelse return null));
         const keep = self.store.allocator();
+        // Ruffle's test navigator answers three magic query strings
+        // without touching the filesystem, so a test can exercise the
+        // success and the two failure shapes against a real-looking URL.
+        if (std.mem.indexOf(u8, url, "?debug-success") != null) {
+            status.* = .ok;
+            return "Hello, World!";
+        }
+        if (std.mem.indexOf(u8, url, "?debug-error-statuscode") != null) {
+            status.* = .http_error;
+            return null;
+        }
+        if (std.mem.indexOf(u8, url, "?debug-error-dns") != null) {
+            status.* = .dns_error;
+            return null;
+        }
+        status.* = .ok;
         // Flash allows a query string on a local URL and Ruffle strips it
         // before touching the filesystem.
         var rel = url;

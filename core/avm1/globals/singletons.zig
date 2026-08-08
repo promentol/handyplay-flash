@@ -157,6 +157,12 @@ pub fn install(vm: *Vm) !void {
         try makeBroadcasterMethods(vm, mcl);
     }
 
+    // --- flash.net -----------------------------------------------------------
+    // Deferred to here from geom.zig: FileReference and FileReferenceList
+    // are broadcasters, and the three shared functions above have only
+    // just been made.
+    if (vm.flash_net != 0) try @import("file_reference.zig").install(vm, vm.flash_net);
+
     // --- Color ---------------------------------------------------------------
     const color_proto = try vm.objects.create();
     vm.objects.get(color_proto).proto = .{ .object = vm.object_proto };

@@ -47,6 +47,10 @@ pub fn install(vm: *Vm) !void {
     try @import("filters.zig").install(vm, flash);
     const display = try decl.subObject(vm, flash, "display", .{});
     try @import("bitmap_data.zig").install(vm, display);
+    // `flash.net`'s classes are BROADCASTERS, and the shared broadcaster
+    // functions do not exist until singletons.zig has run — so the
+    // namespace is made here and filled from there.
+    vm.flash_net = try decl.subObject(vm, flash, "net", .{});
     const geom = try decl.subObject(vm, flash, "geom", .{});
 
     vm.point_proto = try protoUnder(vm, geom, "Point", ctorPoint);

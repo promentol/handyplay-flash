@@ -316,8 +316,9 @@ const FileServer = struct {
     base: []const u8,
     store: std.heap.ArenaAllocator,
 
-    fn read(user: ?*anyopaque, url: []const u8) ?[]const u8 {
+    fn read(user: ?*anyopaque, url: []const u8, status: *flash.Player.FetchStatus) ?[]const u8 {
         const self: *FileServer = @ptrCast(@alignCast(user orelse return null));
+        status.* = .ok;
         var rel = url;
         // Flash allows a query string on a local URL; the filesystem does not.
         if (std.mem.indexOfScalar(u8, rel, '?')) |q| rel = rel[0..q];
@@ -328,7 +329,7 @@ const FileServer = struct {
             const after = rel[scheme + 3 ..];
             const slash = std.mem.indexOfScalar(u8, after, '/') orelse after.len;
             var host = after[0..slash];
-            if (std.mem.indexOfScalar(u8, host, ':')) |c| host = host[0..c];
+            if (std.mem.indexOfScalar(u8, host, ':')) |colon| host = host[0..colon];
             const tail = after[slash..];
             var joined_buf: [1024]u8 = undefined;
             rel = std.fmt.bufPrint(&joined_buf, "{s}{s}", .{ host, tail }) catch return null;

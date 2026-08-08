@@ -16,6 +16,7 @@ pub const avm1 = struct {
     pub const stage_object = @import("avm1/stage_object.zig");
     pub const singletons = @import("avm1/globals/singletons.zig");
     pub const loader = @import("avm1/globals/loader.zig");
+    pub const file_reference = @import("avm1/globals/file_reference.zig");
     pub const text_binding = @import("avm1/text_binding.zig");
 };
 
@@ -110,7 +111,7 @@ pub const Player = struct {
     /// which runs its future executor after `run_frame` and the timers.
     pending_loads: std.ArrayList(avm1.runtime.FetchRequest) = .empty,
     /// The frontend's file reader, and whether requests are traced.
-    load_file: ?*const fn (user: ?*anyopaque, url: []const u8) ?[]const u8 = null,
+    load_file: ?*const fn (user: ?*anyopaque, url: []const u8, status: *FetchStatus) ?[]const u8 = null,
     load_user: ?*anyopaque = null,
     log_fetch: bool = false,
     /// Movies loaded at runtime, owned here. Every parsed struct in the
@@ -136,6 +137,16 @@ pub const Player = struct {
     socket_close_fn: ?*const fn (user: ?*anyopaque) void = null,
     socket_poll: ?*const fn (user: ?*anyopaque) ?SocketEvent = null,
     socket_user: ?*anyopaque = null,
+    open_dialog: ?*const fn (user: ?*anyopaque, filters: []const avm1.runtime.FileFilter) ?[]const DialogFile = null,
+    open_multi_dialog: ?*const fn (user: ?*anyopaque, filters: []const avm1.runtime.FileFilter) ?[]const DialogFile = null,
+    save_dialog: ?*const fn (user: ?*anyopaque, name: []const u8) ?DialogFile = null,
+    dialog_user: ?*anyopaque = null,
+    /// FileReference dialogs awaiting the end of the tick.
+    pending_dialogs: std.ArrayList(avm1.runtime.FileDialogRequest) = .empty,
+    /// The bytes behind each picked FileReference, for `upload`. Keyed by
+    /// the script object, so a reference that is browsed twice replaces
+    /// its own contents.
+    file_data: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
 
     /// Safety valve: max timeline frames advanced per tick call.
     const MAX_FRAMES_PER_TICK = 5;
@@ -171,7 +182,7 @@ pub const Player = struct {
         /// The returned slice must stay valid for the Player's lifetime —
         /// a loaded SWF is parsed in place, not copied. `null` = the load
         /// failed, which scripts observe as an unsuccessful `onData`.
-        load_file: ?*const fn (user: ?*anyopaque, url: []const u8) ?[]const u8 = null,
+        load_file: ?*const fn (user: ?*anyopaque, url: []const u8, status: *FetchStatus) ?[]const u8 = null,
         load_user: ?*anyopaque = null,
         /// `test.toml`'s `log_fetch`: trace every request and navigation
         /// the way ruffle's test navigator does. Off for a real frontend.
@@ -185,7 +196,27 @@ pub const Player = struct {
         socket_close: ?*const fn (user: ?*anyopaque) void = null,
         socket_poll: ?*const fn (user: ?*anyopaque) ?SocketEvent = null,
         socket_user: ?*anyopaque = null,
+        /// `flash.net.FileReference`'s dialogs. Answered synchronously —
+        /// the delay the script sees comes from the request being drained
+        /// at the end of the tick, not from the frontend. `null` means the
+        /// user cancelled.
+        open_dialog: ?*const fn (user: ?*anyopaque, filters: []const avm1.runtime.FileFilter) ?[]const DialogFile = null,
+        open_multi_dialog: ?*const fn (user: ?*anyopaque, filters: []const avm1.runtime.FileFilter) ?[]const DialogFile = null,
+        save_dialog: ?*const fn (user: ?*anyopaque, name: []const u8) ?DialogFile = null,
+        dialog_user: ?*anyopaque = null,
     };
+
+    /// A file the host's dialog picked.
+    pub const DialogFile = struct {
+        name: []const u8,
+        file_type: ?[]const u8 = null,
+        contents: []const u8 = &.{},
+    };
+
+    /// Why a fetch produced no bytes. Only `FileReference` distinguishes
+    /// them, and it has to: a name that does not resolve never reports
+    /// `onOpen`, while a live server answering 404 does.
+    pub const FetchStatus = enum { ok, dns_error, http_error };
 
     /// What a socket can tell the movie. `data` is raw bytes, unframed:
     /// splitting them into NUL-terminated messages is the Player's job,
@@ -239,6 +270,10 @@ pub const Player = struct {
         self.socket_close_fn = opts.socket_close;
         self.socket_poll = opts.socket_poll;
         self.socket_user = opts.socket_user;
+        self.open_dialog = opts.open_dialog;
+        self.open_multi_dialog = opts.open_multi_dialog;
+        self.save_dialog = opts.save_dialog;
+        self.dialog_user = opts.dialog_user;
         // The ROOT consumes instance0 without keeping it: ruffle runs
         // post_instantiation (which names it) and only then
         // set_default_root_name, which blanks the name again for AVM1
@@ -319,6 +354,8 @@ pub const Player = struct {
         self.pending_loads.deinit(gpa);
         self.pending_init.deinit(gpa);
         self.socket_buf.deinit(gpa);
+        self.pending_dialogs.deinit(gpa);
+        self.file_data.deinit(gpa);
         for (self.levels.items) |lv| {
             lv.deinit(gpa);
             gpa.destroy(lv);
@@ -366,7 +403,9 @@ pub const Player = struct {
     /// loads advances one link per tick rather than running to exhaustion.
     fn finishTick(self: *Player) !bool {
         const sockets = self.socket_poll != null and self.socket_obj != 0;
-        if (self.pending_loads.items.len == 0 and !sockets) return false;
+        if (self.pending_loads.items.len == 0 and self.pending_dialogs.items.len == 0 and !sockets) {
+            return false;
+        }
         const batch = try self.pending_loads.toOwnedSlice(self.gpa);
         defer self.gpa.free(batch);
         var ctx = self.makeContext();
@@ -383,8 +422,161 @@ pub const Player = struct {
             self.completeLoad(req) catch |e| self.reportUncaught(e);
             try self.drainActions(&ctx);
         }
+        // Dialogs run to EXHAUSTION, unlike loads: ruffle's executor keeps
+        // polling until its task list is empty, so an `upload` started
+        // from inside an `onSelect` handler still completes on this tick —
+        // which the upload dirs need, since they only run one.
+        var rounds: u32 = 0;
+        while (self.pending_dialogs.items.len > 0 and rounds < 16) : (rounds += 1) {
+            const dialogs = try self.pending_dialogs.toOwnedSlice(self.gpa);
+            defer self.gpa.free(dialogs);
+            for (dialogs) |req| {
+                self.runFileDialog(req) catch |e| self.reportUncaught(e);
+                try self.drainActions(&ctx);
+            }
+        }
         self.retireDead(&ctx);
         return true;
+    }
+
+    fn hostFileDialog(ctx: *anyopaque, req: avm1.runtime.FileDialogRequest) void {
+        const self: *Player = @ptrCast(@alignCast(ctx));
+        self.pending_dialogs.append(self.gpa, req) catch {};
+    }
+
+    /// The three FileReference sequences. Each one is exactly ruffle's,
+    /// and the differences between them are the point: a DNS failure never
+    /// reports `onOpen`, an HTTP failure does and then still reports
+    /// `onProgress` after the error, and an upload's `onProgress` counts
+    /// the bytes it SENT rather than any it received.
+    fn runFileDialog(self: *Player, req: avm1.runtime.FileDialogRequest) !void {
+        const fr = avm1.file_reference;
+        const vm = self.vm;
+        switch (req.what) {
+            .browse => |filters| {
+                const picked = if (self.open_dialog) |f| f(self.dialog_user, filters) else null;
+                const files = picked orelse {
+                    try fr.fire(vm, req.obj, avm1.strings.ascii("onCancel"), &.{});
+                    return;
+                };
+                if (files.len == 0) {
+                    try fr.fire(vm, req.obj, avm1.strings.ascii("onCancel"), &.{});
+                    return;
+                }
+                try self.adoptFile(req.obj, files[0]);
+                try fr.fire(vm, req.obj, avm1.strings.ascii("onSelect"), &.{});
+            },
+            .browse_multi => |filters| {
+                const picked = if (self.open_multi_dialog) |f| f(self.dialog_user, filters) else null;
+                const files = picked orelse {
+                    try fr.fire(vm, req.obj, avm1.strings.ascii("onCancel"), &.{});
+                    return;
+                };
+                // `fileList` is a read-only array of fresh FileReferences.
+                const list = try vm.newArray();
+                for (files, 0..) |file, i| {
+                    const child = try vm.objects.create();
+                    // A FileReference, not another List: the entries answer
+                    // `name`/`type`/`size`, which only that prototype has.
+                    vm.objects.get(child).proto = .{ .object = vm.filereference_proto };
+                    try self.adoptFile(child, file);
+                    try vm.arraySet(list, @intCast(i), .{ .object = child });
+                }
+                try vm.setArrayLength(list, @intCast(files.len));
+                try vm.objects.putWithAttrs(
+                    req.obj,
+                    avm1.strings.ascii("fileList"),
+                    .{ .object = list },
+                    .{ .dont_enum = true, .dont_delete = true, .read_only = true },
+                    false,
+                );
+                try fr.fire(vm, req.obj, avm1.strings.ascii("onSelect"), &.{});
+            },
+            .download => |d| {
+                const picked = if (self.save_dialog) |f| f(self.dialog_user, d.name) else null;
+                const dest = picked orelse {
+                    try fr.fire(vm, req.obj, avm1.strings.ascii("onCancel"), &.{});
+                    return;
+                };
+                // onSelect reports the DESTINATION, before a byte moves.
+                try self.adoptFile(req.obj, dest);
+                try fr.fire(vm, req.obj, avm1.strings.ascii("onSelect"), &.{});
+                var status: FetchStatus = .dns_error;
+                const body = if (self.load_file) |f| f(self.load_user, d.url, &status) else null;
+                if (body) |bytes| {
+                    try fr.fire(vm, req.obj, avm1.strings.ascii("onOpen"), &.{});
+                    // The file now holds what was downloaded, and both
+                    // callbacks below must see that, not the empty stub.
+                    try self.adoptFile(req.obj, .{
+                        .name = dest.name,
+                        .file_type = dest.file_type,
+                        .contents = bytes,
+                    });
+                    const n: f64 = @floatFromInt(bytes.len);
+                    try fr.fire(vm, req.obj, avm1.strings.ascii("onProgress"), &.{
+                        .{ .number = n },
+                        .{ .number = n },
+                    });
+                    try fr.fire(vm, req.obj, avm1.strings.ascii("onComplete"), &.{});
+                    return;
+                }
+                switch (status) {
+                    // A domain that does not resolve never opened.
+                    .dns_error => {
+                        try self.traceFmt("Error opening URL '{s}'", .{d.url});
+                        try fr.fire(vm, req.obj, avm1.strings.ascii("onIOError"), &.{});
+                    },
+                    // A bad status code arrived over a live connection, so
+                    // onOpen fires — and onProgress STILL fires after the
+                    // error, which is Flash's, not a mistake.
+                    .http_error, .ok => {
+                        try fr.fire(vm, req.obj, avm1.strings.ascii("onOpen"), &.{});
+                        try self.traceFmt("Error opening URL '{s}'", .{d.url});
+                        try fr.fire(vm, req.obj, avm1.strings.ascii("onIOError"), &.{});
+                        try fr.fire(vm, req.obj, avm1.strings.ascii("onProgress"), &.{
+                            .{ .number = 0 },
+                            .{ .number = 0 },
+                        });
+                    },
+                }
+            },
+            .upload => |url| {
+                const data = self.file_data.get(req.obj) orelse "";
+                var status: FetchStatus = .dns_error;
+                const body = if (self.load_file) |f| f(self.load_user, url, &status) else null;
+                try fr.fire(vm, req.obj, avm1.strings.ascii("onOpen"), &.{});
+                const n: f64 = @floatFromInt(data.len);
+                if (body != null) {
+                    try fr.fire(vm, req.obj, avm1.strings.ascii("onProgress"), &.{
+                        .{ .number = n },
+                        .{ .number = n },
+                    });
+                    try fr.fire(vm, req.obj, avm1.strings.ascii("onComplete"), &.{});
+                    return;
+                }
+                switch (status) {
+                    .dns_error => try fr.fire(vm, req.obj, avm1.strings.ascii("onIOError"), &.{}),
+                    .http_error, .ok => {
+                        try fr.fire(vm, req.obj, avm1.strings.ascii("onProgress"), &.{
+                            .{ .number = n },
+                            .{ .number = n },
+                        });
+                        try fr.fire(vm, req.obj, avm1.strings.ascii("onHTTPError"), &.{});
+                    },
+                }
+            },
+        }
+    }
+
+    fn adoptFile(self: *Player, obj: u32, file: DialogFile) !void {
+        try avm1.file_reference.applySelection(
+            self.vm,
+            obj,
+            file.name,
+            file.file_type,
+            file.contents.len,
+        );
+        try self.file_data.put(self.gpa, obj, file.contents);
     }
 
     /// Ruffle's `update_sockets`, minus the handle table: deliver whatever
@@ -464,7 +656,8 @@ pub const Player = struct {
     /// read files.
     fn completeLoad(self: *Player, req: avm1.runtime.FetchRequest) !void {
         if (self.log_fetch) try self.traceFetch(req);
-        const body: ?[]const u8 = if (self.load_file) |f| f(self.load_user, req.url) else null;
+        var status: FetchStatus = .dns_error;
+        const body: ?[]const u8 = if (self.load_file) |f| f(self.load_user, req.url, &status) else null;
         switch (req.target) {
             .form => |h| try avm1.loader.completeForm(self.vm, h, body),
             .load_vars => |h| try avm1.loader.completeLoadVars(self.vm, h, body),
@@ -1124,6 +1317,7 @@ pub const Player = struct {
             .socket_connect = hostSocketConnect,
             .socket_send = hostSocketSend,
             .socket_close = hostSocketClose,
+            .file_dialog = hostFileDialog,
         };
     }
 
@@ -1777,6 +1971,7 @@ test {
     _ = @import("avm1/globals/bitmap_data.zig");
     _ = @import("avm1/globals/loader.zig");
     _ = @import("avm1/globals/socket.zig");
+    _ = @import("avm1/globals/file_reference.zig");
     _ = @import("avm1/text_binding.zig");
     _ = @import("bitmap/pixels.zig");
     _ = @import("bitmap/data.zig");
