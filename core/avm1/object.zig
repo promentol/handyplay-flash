@@ -193,6 +193,11 @@ pub const ScriptObject = struct {
     /// (ActionImplements). `instanceof` must walk these as well as the
     /// prototype chain.
     interfaces: []const ObjectHandle = &.{},
+    /// Has `implements` run on this object at all? An EMPTY list still
+    /// counts — ruffle's `get_or_insert` locks the slot on the first
+    /// call, so a later `implements` is ignored even when the first
+    /// named nothing usable (corpus interface_implements_op).
+    interfaces_set: bool = false,
     /// Scope-chain parent link (scope objects only; 0 = none).
     scope_parent: ObjectHandle = 0,
     /// `Object.prototype.watch` registrations. Almost always empty.

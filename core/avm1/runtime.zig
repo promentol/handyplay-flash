@@ -1800,7 +1800,16 @@ pub const Vm = struct {
         if (preload and fl.preload_super) next_reg += 1;
         // _root/_parent/_global preloads.
         if (preload and fl.preload_root) {
-            if (next_reg < registers.len) registers[next_reg] = self.root_object;
+            // The BASE CLIP's root, not the main timeline: inside a movie
+            // loaded into `_level1`, `_root` is `_level1`
+            // (corpus cross_movie_root).
+            if (next_reg < registers.len) {
+                const stage = @import("stage_object.zig");
+                registers[next_reg] = if (eff_base != 0) blk: {
+                    const t = stage.targetOf(self, eff_base) orelse break :blk self.root_object;
+                    break :blk stage.rootValueFor(self, t) catch self.root_object;
+                } else self.root_object;
+            }
             next_reg += 1;
         }
         // An ABSENT `_parent` does not take a register — it is skipped

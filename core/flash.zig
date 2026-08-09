@@ -1489,8 +1489,17 @@ pub const Player = struct {
             // where they do not exist. A _global entry would leak them
             // into SWF4 — corpus target_paths/swf4.
             const S = avm1.strings.ascii;
-            _ = self.vm.objects.deleteOwn(self.vm.globals, S("_root"), self.vm.case_sensitive);
-            _ = self.vm.objects.deleteOwn(self.vm.globals, S("_level0"), self.vm.case_sensitive);
+            // BOTH environments — a movie on the other side of the SWF7
+            // line has its own `_global` and would still find them.
+            for ([_]avm1.runtime.ObjectHandle{
+                self.vm.globals,
+                self.vm.env_lo.globals,
+                self.vm.env_hi.globals,
+            }) |g| {
+                if (g == 0) continue;
+                _ = self.vm.objects.deleteOwn(g, S("_root"), self.vm.case_sensitive);
+                _ = self.vm.objects.deleteOwn(g, S("_level0"), self.vm.case_sensitive);
+            }
         }
         return h;
     }

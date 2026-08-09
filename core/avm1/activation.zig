@@ -1536,12 +1536,24 @@ pub const Activation = struct {
                     const iface = self.pop();
                     if (iface != .object) continue;
                     const ip = self.vm.objects.getChained(iface.object, S("prototype"), self.vm.case_sensitive) orelse continue;
-                    if (ip == .object) try list.append(self.vm.arena(), ip.object);
+                    if (ip != .object) continue;
+                    // A DISPLAY OBJECT is not an interface: Flash keeps a
+                    // clip as its own kind of value, and only a plain
+                    // object counts here.
+                    const n = self.vm.objects.get(ip.object).native;
+                    if (n == .clip or n == .display or n == .removed_display) continue;
+                    try list.append(self.vm.arena(), ip.object);
                 }
                 if (count > 0 and self.swf_version >= 7 and ctor == .object) {
                     const cp = self.vm.objects.getChained(ctor.object, S("prototype"), self.vm.case_sensitive) orelse Value.undefined_value;
-                    if (cp == .object) {
+                    // ONCE. Ruffle's `set_interfaces` is a
+                    // `get_or_insert`, so a second `implements` on the
+                    // same class is ignored outright rather than
+                    // replacing the first (corpus
+                    // interface_implements_op).
+                    if (cp == .object and !self.vm.objects.get(cp.object).interfaces_set) {
                         self.vm.objects.get(cp.object).interfaces = try list.toOwnedSlice(self.vm.arena());
+                        self.vm.objects.get(cp.object).interfaces_set = true;
                     }
                 }
             },

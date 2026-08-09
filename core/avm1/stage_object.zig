@@ -957,9 +957,23 @@ pub fn rootValueFor(vm: *Vm, t: Target) !Value {
     var clip: ?*MovieClip = t.clip orelse t.obj.parent;
     while (clip) |c| {
         if (c.lock_root) return .{ .object = try clipObject(vm, c) };
-        clip = c.parent;
+        // A clip with NO parent is a root in its own right: that is what
+        // makes `_root` inside `_level1` mean `_level1` and not the main
+        // timeline (ruffle walks `avm1_parent` and stops when there is
+        // none — corpus cross_movie_root).
+        const parent = c.parent orelse {
+            if (c == rootClip(vm)) return vm.root_object;
+            return .{ .object = try clipObject(vm, c) };
+        };
+        clip = parent;
     }
     return vm.root_object;
+}
+
+/// The main timeline's clip, or null in pure-VM tests.
+fn rootClip(vm: *Vm) ?*MovieClip {
+    if (vm.root_object != .object) return null;
+    return clipOfHandle(vm, vm.root_object.object);
 }
 
 pub fn nameEql(vm: *Vm, a: []const u16, b: []const u16) bool {

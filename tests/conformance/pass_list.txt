@@ -121,6 +121,7 @@ color_transform
 conflicting_instance_names
 constructor_function
 create_empty_movie_clip
+cross_movie_root
 custom_clip_methods
 date
 default_names
@@ -295,6 +296,7 @@ init_array_invalid
 init_object_invalid
 init_object_order
 instanceof_coercions
+interface_implements_op
 is_finite
 is_finite_swf6
 is_prototype_of
@@ -396,6 +398,7 @@ movieclip_invalid_get_bounds_6
 movieclip_invalid_get_bounds_7
 movieclip_invalid_get_bounds_8
 movieclip_line_gradient_style
+movieclip_lockroot
 movieclip_methods_with_loaded_image
 movieclip_name_from_timeline
 movieclip_prototype_extension
