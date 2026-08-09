@@ -193,9 +193,40 @@ fn clear(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 
 /// Fetching a sheet over the network needs the loader (M5); until then it
 /// reports the failure honestly rather than pretending to start.
+/// `load(url)` starts a fetch and answers true straight away — false
+/// only when there was no url to fetch. What arrives is handed to the
+/// object's OWN `parse` (so an override sees it), and `onLoad` hears
+/// whether that returned true (corpus stylesheet_load).
 fn load(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = .{ p, this, args };
-    return .{ .boolean = false };
+    const vm = vmOf(p);
+    if (this != .object or args.len == 0) return .{ .boolean = false };
+    const url = try vm.toStringThrowing(args[0]);
+    const f = vm.host.fetch orelse return .{ .boolean = false };
+    f(vm.host.ctx.?, .{
+        .url = try strings.toUtf8(vm.arena(), url),
+        .method = .none,
+        .target = .{ .stylesheet = this.object },
+    });
+    return .{ .boolean = true };
+}
+
+pub fn completeLoad(vm: *Vm, h: ObjectHandle, body: ?[]const u8) !void {
+    const this: Value = .{ .object = h };
+    var success: Value = .{ .boolean = false };
+    if (body) |bytes| {
+        const text = try strings.fromSwf(vm.arena(), bytes, 8);
+        const parse = try vm.getProperty(h, S("parse"), this);
+        if (vm.isCallable(parse)) {
+            vm.call_special = true;
+            success = vm.callFunction(parse, this, &.{.{ .string = text }}) catch
+                Value{ .boolean = false };
+        }
+    }
+    const on_load = try vm.getProperty(h, S("onLoad"), this);
+    if (vm.isCallable(on_load)) {
+        vm.call_special = true;
+        _ = vm.callFunction(on_load, this, &.{success}) catch {};
+    }
 }
 
 /// CSS property names → a `TextFormat`. Everything unrecognised is
@@ -372,52 +403,198 @@ fn parseColor(s: []const u16) ?u32 {
     return rgb;
 }
 
-/// `selector { prop: value; … }`, repeated. Comma-separated selectors are
-/// each given the same rule; a malformed sheet answers false.
+/// `selector { prop: value; … }`, repeated — ruffle's `CssStream`, whose
+/// rules are more particular than they look:
+///
+///   * A space INSIDE a selector or a property name is an ERROR, one
+///     before it is skipped, and one after a property name is KEPT as
+///     part of the name (until the colon).
+///   * A property VALUE keeps its trailing space: `kerning: 5 ;` is the
+///     string "5 ".
+///   * `/* … */` comments are skipped anywhere whitespace is.
+///   * Any error abandons the WHOLE sheet: nothing is applied and the
+///     call answers false (corpus stylesheet).
+const Css = struct {
+    src: []const u16,
+    pos: usize = 0,
+
+    const Error = error{Malformed};
+
+    fn peek(self: *const Css) ?u16 {
+        return if (self.pos < self.src.len) self.src[self.pos] else null;
+    }
+
+    fn isWs(c: u16) bool {
+        return c == ' ' or c == '\n' or c == '\r' or c == '\t';
+    }
+
+    fn skipWsAndComments(self: *Css) bool {
+        var found = false;
+        while (true) {
+            if (self.skipComment()) {
+                found = true;
+                continue;
+            }
+            const c = self.peek() orelse break;
+            if (!isWs(c)) break;
+            self.pos += 1;
+            found = true;
+        }
+        return found;
+    }
+
+    fn skipComment(self: *Css) bool {
+        if (self.pos + 1 >= self.src.len) return false;
+        if (!(self.src[self.pos] == '/' and self.src[self.pos + 1] == '*')) return false;
+        self.pos += 2;
+        while (self.pos + 1 < self.src.len) {
+            if (self.src[self.pos] == '*' and self.src[self.pos + 1] == '/') {
+                self.pos += 2;
+                return true;
+            }
+            self.pos += 1;
+        }
+        self.pos = self.src.len;
+        return false; // EOF without a close
+    }
+
+    fn consumeUntilAny(self: *Css, set: []const u16) []const u16 {
+        const start = self.pos;
+        outer: while (self.pos < self.src.len) {
+            for (set) |x| {
+                if (self.src[self.pos] == x) break :outer;
+            }
+            self.pos += 1;
+        }
+        return self.src[start..self.pos];
+    }
+
+    fn parseSelectors(self: *Css, out: *std.ArrayList([]const u16), a: std.mem.Allocator) !void {
+        while (true) {
+            _ = self.skipWsAndComments();
+            const name = self.consumeUntilAny(&.{ '{', ',', ' ', '\n', '\r', '\t' });
+            if (name.len > 0) try out.append(a, name);
+            _ = self.skipWsAndComments();
+            const c = self.peek() orelse return Error.Malformed;
+            if (c == '{') {
+                self.pos += 1;
+                if (out.items.len == 0) try out.append(a, &.{});
+                return;
+            }
+            if (c == ',') {
+                self.pos += 1;
+                continue;
+            }
+            return Error.Malformed; // a space inside a selector name
+        }
+    }
+
+    const Prop = struct { key: []const u16, value: []const u16 };
+
+    fn parseProperties(self: *Css, out: *std.ArrayList(Prop), a: std.mem.Allocator) !void {
+        main: while (true) {
+            _ = self.skipWsAndComments();
+            const first = self.peek() orelse return;
+            if (first == '}') {
+                self.pos += 1;
+                return;
+            }
+            const name_start = self.pos;
+            var name = self.consumeUntilAny(&.{ ':', ' ', '\n', '\r', '\t' });
+            if (self.skipWsAndComments()) {
+                const next = self.peek();
+                if (next != null and next.? == ':') {
+                    // Trailing spaces belong to the NAME.
+                    name = self.src[name_start..self.pos];
+                } else if (next != null) {
+                    return Error.Malformed; // a space inside a property name
+                }
+            }
+            if (self.peek()) |c| {
+                if (c != ':') unreachable;
+                self.pos += 1;
+            } else return Error.Malformed;
+
+            _ = self.skipWsAndComments();
+            const value_start = self.pos;
+            var value = self.consumeUntilAny(&.{ ';', ':', '}' });
+            while (true) {
+                const c = self.peek() orelse return Error.Malformed;
+                if (c == ':') {
+                    // A second colon: the value runs to the end of the
+                    // LINE, if there is one.
+                    self.pos = value_start;
+                    const possible = self.consumeUntilAny(&.{ '\n', '\r' });
+                    if (self.peek()) |nl| {
+                        if (nl == '\n' or nl == '\r') {
+                            self.pos += 1;
+                            try out.append(a, .{ .key = name, .value = possible });
+                            continue :main;
+                        }
+                    }
+                    self.pos = value_start;
+                    value = self.consumeUntilAny(&.{ ';', '}' });
+                    continue;
+                }
+                if (c == ';') {
+                    self.pos += 1;
+                    try out.append(a, .{ .key = name, .value = value });
+                    continue :main;
+                }
+                if (c == '}') {
+                    self.pos += 1;
+                    // The last value in a block stops at a newline.
+                    var end = value.len;
+                    for (value, 0..) |ch, idx| {
+                        if (ch == '\n' or ch == '\r') {
+                            end = idx;
+                            break;
+                        }
+                    }
+                    try out.append(a, .{ .key = name, .value = value[0..end] });
+                    return;
+                }
+                unreachable;
+            }
+        }
+    }
+};
+
 fn parseCss(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .{ .boolean = false };
     const src = try vm.toStringValue(arg(args, 0));
-    var i: usize = 0;
-    while (i < src.len) {
-        while (i < src.len and isSpace(src[i])) i += 1;
-        const sel_start = i;
-        while (i < src.len and src[i] != '{') i += 1;
-        if (i >= src.len) break;
-        const selectors = src[sel_start..i];
-        i += 1;
-        const body_start = i;
-        while (i < src.len and src[i] != '}') i += 1;
-        const body = src[body_start..@min(i, src.len)];
-        if (i < src.len) i += 1;
+    const a = vm.arena();
 
+    // Parse the WHOLE sheet first: one error and nothing is applied.
+    const Rule = struct { selectors: [][]const u16, props: []Css.Prop };
+    var rules: std.ArrayList(Rule) = .empty;
+    var s: Css = .{ .src = src };
+    while (true) {
+        _ = s.skipWsAndComments();
+        if (s.peek() == null) break;
+        var sels: std.ArrayList([]const u16) = .empty;
+        s.parseSelectors(&sels, a) catch return .{ .boolean = false };
+        var props: std.ArrayList(Css.Prop) = .empty;
+        s.parseProperties(&props, a) catch return .{ .boolean = false };
+        try rules.append(a, .{
+            .selectors = try sels.toOwnedSlice(a),
+            .props = try props.toOwnedSlice(a),
+        });
+    }
+
+    for (rules.items) |rule| {
         const style = try vm.newObject();
-        var j: usize = 0;
-        while (j < body.len) {
-            const k_start = j;
-            while (j < body.len and body[j] != ':' and body[j] != ';') j += 1;
-            if (j >= body.len or body[j] == ';') {
-                j += 1;
-                continue;
-            }
-            const key = trim(body[k_start..j]);
-            j += 1;
-            const v_start = j;
-            while (j < body.len and body[j] != ';') j += 1;
-            const val = trim(body[v_start..j]);
-            if (j < body.len) j += 1;
+        for (rule.props) |prop| {
+            const key = try camelCase(vm, prop.key);
+            // A property with an EMPTY name parses fine and then goes
+            // nowhere — `a{:}` yields a style object with nothing in it.
             if (key.len == 0) continue;
-            try vm.objects.put(style, try camelCase(vm, key), .{ .string = val }, false);
+            try vm.objects.put(style, key, .{ .string = prop.value }, vm.case_sensitive);
         }
-
-        var s: usize = 0;
-        while (s <= selectors.len) {
-            const start = s;
-            while (s < selectors.len and selectors[s] != ',') s += 1;
-            const one = trim(selectors[start..s]);
-            s += 1;
-            if (one.len == 0) continue;
-            _ = try setStyle(p, this, &.{ .{ .string = one }, .{ .object = style } });
+        for (rule.selectors) |sel| {
+            if (sel.len == 0) continue;
+            _ = try setStyle(p, this, &.{ .{ .string = sel }, .{ .object = style } });
         }
     }
     return .{ .boolean = true };
@@ -429,10 +606,13 @@ fn camelCase(vm: *Vm, s: []const u16) ![]const u16 {
     var out: std.ArrayList(u16) = .empty;
     var upper = false;
     for (s) |c| {
-        if (c == '-') {
+        if (c == '-' and !upper) {
             upper = true;
             continue;
         }
+        // The character after a dash is UPPERCASED — including a second
+        // dash, whose uppercase is itself, so `a--b` keeps one dash
+        // while `a-b` loses it (corpus stylesheet).
         try out.append(vm.arena(), if (upper and c >= 'a' and c <= 'z') c - 32 else c);
         upper = false;
     }

@@ -175,6 +175,10 @@ pub const FetchRequest = struct {
         /// SWF replaces the target clip's entire timeline, library and
         /// version.
         movie: Movie,
+        /// `TextField.StyleSheet.load`: the body is handed to the
+        /// object's own `parse` and then `onLoad` hears whether it
+        /// worked.
+        stylesheet: ObjectHandle,
         /// `NetConnection.call`: the reply is an AMF packet whose
         /// messages name a responder method — `/1/onResult` calls
         /// `onResult` on the responder of call 1.

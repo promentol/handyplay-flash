@@ -525,6 +525,8 @@ string_paths_unload
 string_paths_variable_alias
 string_paths_variable_scopes
 string_relational_compare
+stylesheet
+stylesheet_load
 stylesheet_transform
 super_edge_cases
 swf4_actions_bool

@@ -17,6 +17,7 @@ pub const avm1 = struct {
     pub const stage_object = @import("avm1/stage_object.zig");
     pub const singletons = @import("avm1/globals/singletons.zig");
     pub const loader = @import("avm1/globals/loader.zig");
+    pub const style_sheet = @import("avm1/globals/style_sheet.zig");
     pub const local_connection = @import("avm1/globals/local_connection.zig");
     pub const net_connection = @import("avm1/globals/net_connection.zig");
     pub const sound = @import("avm1/globals/sound.zig");
@@ -720,6 +721,7 @@ pub const Player = struct {
             .sound => |h| try avm1.sound.completeLoad(self.vm, h, body),
             .movie => |m| try self.completeMovieLoad(m, req.url, body),
             .net_connection => |h| try avm1.net_connection.completeCall(self.vm, h, body),
+            .stylesheet => |h| try avm1.style_sheet.completeLoad(self.vm, h, body),
         }
     }
 
