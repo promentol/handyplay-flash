@@ -136,6 +136,7 @@ delete
 delete2
 depth_replacement_audio_unloading
 device_font_spacing
+displacementmapfilter_mappoint_throw_error
 display_object_properties
 divide_swf4
 do_init_action
@@ -438,6 +439,7 @@ register_class
 register_class_return_value
 register_class_swf6
 register_globals_across_frames
+register_underflow
 remove_different_level
 remove_movie_clip
 removed_base_clip_tell_target

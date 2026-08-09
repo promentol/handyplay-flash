@@ -144,16 +144,17 @@ pub const Activation = struct {
         return self.vm.toStringValue(self.pop());
     }
 
+    /// A register index PAST the function's own count falls through to
+    /// the four GLOBAL registers — it is not undefined, and writing it
+    /// is visible after the function returns (corpus register_underflow).
     fn getRegister(self: *Activation, idx: u8) Value {
-        if (self.local_registers.len > 0) {
-            return if (idx < self.local_registers.len) self.local_registers[idx] else .undefined_value;
-        }
+        if (idx < self.local_registers.len) return self.local_registers[idx];
         return if (idx < 4) self.vm.registers[idx] else .undefined_value;
     }
 
     fn setRegister(self: *Activation, idx: u8, v: Value) void {
-        if (self.local_registers.len > 0) {
-            if (idx < self.local_registers.len) self.local_registers[idx] = v;
+        if (idx < self.local_registers.len) {
+            self.local_registers[idx] = v;
             return;
         }
         if (idx < 4) self.vm.registers[idx] = v;

@@ -543,19 +543,52 @@ const MAP_POINT_Y = "__mapY";
 /// A point with BOTH coordinates present, or the origin. They are read as
 /// OWN properties — an inherited `x` does not make an object a point —
 /// and a non-object resets it rather than being ignored.
+/// The point is STORED even when reading it throws — a component whose
+/// coercion threw lands as i32::MIN, the pair is written, and only then
+/// does the throw carry on. Ruffle: "propagate possible errors, the
+/// value is set regardless of those"
+/// (corpus displacementmapfilter_mappoint_throw_error).
 fn storeMapPoint(vm: *Vm, state: ObjectHandle, v: Value) !void {
     var x: f64 = 0;
     var y: f64 = 0;
+    var ex: ?anyerror = null;
+    var ey: ?anyerror = null;
+    var thrown: ?anyerror = null;
     if (v == .object) {
-        const gx = vm.objects.getOwn(v.object, S("x"), vm.case_sensitive);
-        const gy = vm.objects.getOwn(v.object, S("y"), vm.case_sensitive);
+        // The STORED value, own or inherited — an accessor is not run.
+        const gx = vm.objects.getChained(v.object, S("x"), vm.case_sensitive);
+        const gy = vm.objects.getChained(v.object, S("y"), vm.case_sensitive);
+        // Each is coerced whether or not the other is there; the POINT
+        // is only written when both are.
+        const cx = if (gx) |g| component(vm, g, &ex) else 0;
+        const vx = vm.pending_throw;
+        const cy = if (gy) |g| component(vm, g, &ey) else 0;
+        const vy = vm.pending_throw;
         if (gx != null and gy != null) {
-            x = @floatFromInt(value_mod.toInt32(try vm.toNumber(gx.?)));
-            y = @floatFromInt(value_mod.toInt32(try vm.toNumber(gy.?)));
+            x = cx;
+            y = cy;
+        }
+        // X's error wins, and its THROWN VALUE has to be put back — the
+        // second coercion has already overwritten it.
+        if (ex) |e| {
+            thrown = e;
+            vm.pending_throw = vx;
+        } else if (ey) |e| {
+            thrown = e;
+            vm.pending_throw = vy;
         }
     }
     try vm.objects.put(state, S(MAP_POINT_X), .{ .number = x }, false);
     try vm.objects.put(state, S(MAP_POINT_Y), .{ .number = y }, false);
+    if (thrown) |e| return e;
+}
+
+fn component(vm: *Vm, v: Value, thrown: *?anyerror) f64 {
+    const n = vm.toNumberThrowing(v) catch |e| {
+        if (thrown.* == null) thrown.* = e;
+        return @floatFromInt(std.math.minInt(i32));
+    };
+    return @floatFromInt(value_mod.toInt32(n));
 }
 
 fn loadMapPoint(vm: *Vm, state: ObjectHandle) !Value {
