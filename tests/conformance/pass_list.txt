@@ -298,6 +298,7 @@ greaterthan_swf8
 has_own_property
 hittest_lockroot
 hittest_morph
+hittest_morph_input
 hittest_winding_rule
 infinite_recursion_function
 infinite_recursion_function_in_setter

@@ -55,6 +55,10 @@ pub const Character = union(enum) {
         version: u8,
         body: []const u8,
         start_bounds: swf.reader.Rectangle = .{},
+        /// The END shape's bounds. Scripts never see them, but the
+        /// PLAYER interpolates between the two to know where a
+        /// half-tweened morph is on the screen and under the mouse.
+        end_bounds: swf.reader.Rectangle = .{},
         edge_bounds: swf.reader.Rectangle = .{},
     },
     font: swf.font_text.Font,

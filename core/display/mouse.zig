@@ -122,7 +122,7 @@ pub fn pick(
             // BUTTON-only property, read when the event is dispatched
             // (ruffle Avm1Button::enabled); the pick's `mouse_enabled`
             // gate is the AVM2 flag, which AVM1 never clears.
-            if (containsPoint(obj, world, point) and
+            if (containsPoint(ctx, obj, world, point) and
                 isButtonMode(ctx, mc) and bounds.hitTestShape(obj, point, parent_matrix, &ctx.movie.lib))
             {
                 return obj;
@@ -148,7 +148,7 @@ pub fn pick(
         // invisible to the mouse, which is why it neither takes focus nor
         // blocks what is behind it (ruffle `mouse_pick_avm1`).
         .edit_text => |et| {
-            if (!containsPoint(obj, world, point)) return null;
+            if (!containsPoint(ctx, obj, world, point)) return null;
             if (et.selectable) return obj;
             // A field that is not selectable is invisible to the mouse
             // EXCEPT over a link, which stays clickable.
@@ -179,8 +179,11 @@ fn pickChildren(
     return null;
 }
 
-fn containsPoint(obj: *const DisplayObject, world: swf.reader.Matrix, point: [2]i32) bool {
-    const box = bounds.boundsWithTransform(obj, world) orelse return false;
+/// The mouse asks where things ARE, so this is the engine flavour of the
+/// bounds: a half-tweened morph sits between its two declared boxes, not
+/// on the start one that `getBounds` reports.
+fn containsPoint(ctx: *Context, obj: *const DisplayObject, world: swf.reader.Matrix, point: [2]i32) bool {
+    const box = bounds.engineBoundsWithTransform(obj, world, &ctx.movie.lib) orelse return false;
     return bounds.contains(box, point[0], point[1]);
 }
 

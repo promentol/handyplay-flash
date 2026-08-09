@@ -36,6 +36,56 @@ pub fn selfBounds(obj: *const DisplayObject) ?Rectangle {
     return selfBoundsIn(obj, null);
 }
 
+/// Where the object actually IS — ruffle's `BoundsMode::Engine`, the
+/// flavour the renderer and the MOUSE use. It differs from the script
+/// flavour on exactly one kind: a morph shape is somewhere between its
+/// two declared boxes, at its placement's ratio, while `getBounds` keeps
+/// answering with the start shape however far the tween has gone.
+pub fn engineSelfBounds(obj: *const DisplayObject, lib: ?*const library.Library) ?Rectangle {
+    if (obj.kind == .morph_shape) return morphEngineBounds(lib, obj.kind.morph_shape, obj.ratio);
+    return selfBoundsIn(obj, lib);
+}
+
+/// The tag declares both end shapes' bounds, so the tween's box needs no
+/// edges — which is the only reason a morph can be hit at all before M7
+/// decodes them. What it CANNOT do is tell the inside of the shape from
+/// the corner of its box; that precision waits for the edges.
+fn morphEngineBounds(lib: ?*const library.Library, id: u16, ratio: u16) ?Rectangle {
+    const l = lib orelse return null;
+    const ch = l.getConstPtr(id) orelse return null;
+    const m = switch (ch.*) {
+        .morph_shape => |ms| ms,
+        else => return null,
+    };
+    const t: f64 = @as(f64, @floatFromInt(ratio)) / 65535.0;
+    return .{
+        .xmin = lerpTwips(m.start_bounds.xmin, m.end_bounds.xmin, t),
+        .xmax = lerpTwips(m.start_bounds.xmax, m.end_bounds.xmax, t),
+        .ymin = lerpTwips(m.start_bounds.ymin, m.end_bounds.ymin, t),
+        .ymax = lerpTwips(m.start_bounds.ymax, m.end_bounds.ymax, t),
+    };
+}
+
+fn lerpTwips(a: i32, b: i32, t: f64) i32 {
+    const av: f64 = @floatFromInt(a);
+    const bv: f64 = @floatFromInt(b);
+    return @intFromFloat(@round(av + (bv - av) * t));
+}
+
+/// `boundsWithTransform` in the ENGINE flavour, children included.
+pub fn engineBoundsWithTransform(
+    obj: *const DisplayObject,
+    m: Matrix,
+    lib: ?*const library.Library,
+) ?Rectangle {
+    var acc: ?Rectangle = if (engineSelfBounds(obj, lib)) |b| m.transformRect(b) else null;
+    for (childrenOf(obj)) |child| {
+        const child_box = engineBoundsWithTransform(child, m.mul(child.matrix), lib) orelse continue;
+        acc = if (acc) |a| unionRect(a, child_box) else child_box;
+    }
+    return acc;
+}
+
 /// `selfBounds`, with the library available — a MORPH shape needs it to
 /// reach the bounds its tag declared.
 pub fn selfBoundsIn(obj: *const DisplayObject, lib: ?*const library.Library) ?Rectangle {
@@ -219,9 +269,12 @@ pub fn hitTestShape(
         },
         // A field's box IS its geometry — Flash hit-tests the rectangle,
         // not the glyphs. A bitmap is the same: its box, not its opaque
-        // pixels. Morph shapes land in M7.
+        // pixels. A morph is hit through its INTERPOLATED box: ruffle
+        // gates on that box and then tests the tween's edges, which stay
+        // undecoded until M7, so the box is as fine as this gets
+        // (corpus hittest_morph_input).
         .edit_text, .bitmap, .attached_bitmap, .morph_shape => {
-            const box = selfBoundsIn(obj, lib) orelse return false;
+            const box = engineSelfBounds(obj, lib) orelse return false;
             return contains(box, local[0], local[1]);
         },
     }

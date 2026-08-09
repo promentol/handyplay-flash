@@ -212,7 +212,7 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
                 const id = try r.readU16();
                 const ver: u8 = if (tag.code == .define_morph_shape) 1 else 2;
                 const start_bounds = try r.readRectangle();
-                _ = try r.readRectangle(); // end shape bounds
+                const end_bounds = try r.readRectangle();
                 var edge_bounds = start_bounds;
                 if (ver >= 2) {
                     edge_bounds = try r.readRectangle();
@@ -223,6 +223,7 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
                     .version = ver,
                     .body = tag.body,
                     .start_bounds = start_bounds,
+                    .end_bounds = end_bounds,
                     .edge_bounds = edge_bounds,
                 } });
             },
