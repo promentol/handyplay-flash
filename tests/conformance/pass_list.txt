@@ -94,6 +94,7 @@ catch_references_registers
 click_block
 clip_constructors
 clip_event_propagation_order
+clip_events
 clone_sprite_edittext
 clone_sprite_edittext_dynamic
 closure_scope
@@ -177,8 +178,10 @@ equals_swf4_alt
 equals_swf5
 error
 escape
+execution_order1
 execution_order2
 execution_order3
+execution_order4
 export_assets
 extends_chain
 extends_native_type
@@ -333,6 +336,7 @@ movieclip_get_instance_at_depth
 movieclip_getbounds
 movieclip_gettextsnapshot
 movieclip_hittest
+movieclip_in_removed_button
 movieclip_init_object
 movieclip_invalid_get_bounds_1
 movieclip_invalid_get_bounds_2

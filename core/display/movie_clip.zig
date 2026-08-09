@@ -70,6 +70,13 @@ pub const Context = struct {
     /// DoInitAction uses this; everything else goes through the queue.
     run_inline: ?*const fn (user: *anyopaque, clip: *MovieClip, code: []const u8) void = null,
 
+    /// A clip has just joined a timeline. The Player keeps the global
+    /// EXECUTION LIST ruffle iterates in place of a tree walk — every new
+    /// clip is prepended to it, so a child runs its frame before the
+    /// parent that placed it (corpus execution_order1). Null in
+    /// pure-display tests, which walk the tree instead.
+    clip_created: ?*const fn (user: *anyopaque, clip: *MovieClip) void = null,
+
     /// Emit a player warning through the trace sink. Null in pure-display
     /// tests, where there is no sink.
     warn_fn: ?*const fn (user: *anyopaque, msg: []const u8) void = null,
@@ -364,10 +371,9 @@ pub const MovieClip = struct {
                 self.current_frame = @max(next, 1);
             }
         }
-        // Tick child clips (M3 replaces this tree walk with the global
-        // instantiation-order exec list). Clips placed during THIS tick
-        // already ran their first frame in `instantiate`.
-        try self.tickChildren(ctx);
+        // Only when nobody is driving a global execution list. With one,
+        // every clip is its own entry and the tree walk would double-tick.
+        if (ctx.clip_created == null) try self.tickChildren(ctx);
     }
 
     /// Advance every child timeline. A button is not a timeline itself but
@@ -1010,6 +1016,9 @@ pub const MovieClip = struct {
             if (ctx.object_instantiated) |f| f(ctx.class_lookup_user.?, obj);
         }
         if (obj.kind == .clip) {
+            // Into the execution list BEFORE its own frame runs, so the
+            // children that frame places land ahead of it.
+            if (ctx.clip_created) |f| f(ctx.class_lookup_user.?, obj.kind.clip);
             // Construct is queued BEFORE the first frame runs. Ruffle's
             // instantiate_child passes `run_frame = false` to
             // post_instantiation and only then calls run_frame_avm1, so a

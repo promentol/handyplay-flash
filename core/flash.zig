@@ -128,6 +128,12 @@ pub const Player = struct {
     levels: std.ArrayList(*display.display_object.DisplayObject) = .empty,
     /// Loads whose `onLoadInit` is still owed — see `fireLoadInits`.
     pending_init: std.ArrayList(avm1.runtime.FetchRequest.Movie) = .empty,
+    /// Ruffle's `clip_exec_list`, NEWEST FIRST. Every clip is prepended
+    /// when it joins a timeline, which is why a child takes its frame
+    /// before the parent that placed it and why a level loaded later runs
+    /// ahead of the root. Removed clips are dropped as the walk meets
+    /// them, exactly as ruffle's does.
+    exec_list: std.ArrayList(*MovieClipT) = .empty,
     /// Sounds started this tick. With no audio device a sound is over the
     /// moment it starts, but `onSoundComplete` must still arrive on a
     /// LATER tick — firing it inside `start()` would run the handler
@@ -329,6 +335,9 @@ pub const Player = struct {
         // DoAction drains the CHILD first, so every `_root`-anchored path
         // resolved against Vm.create's placeholder object instead of the
         // real clip — and a movie with no DoAction at all never bound it.
+        // The root is the FIRST entry in the execution list, so it ends
+        // up LAST: everything placed after it runs before it.
+        try self.exec_list.append(gpa, &self.root);
         const root_obj = try self.clipObject(&self.root);
         // `$version` is an ordinary, ENUMERABLE variable on the root
         // timeline — which is why a POST `getURL` sends it along with the
@@ -360,6 +369,7 @@ pub const Player = struct {
         self.pending_loads.deinit(gpa);
         self.pending_init.deinit(gpa);
         self.pending_sound_done.deinit(gpa);
+        self.exec_list.deinit(gpa);
         self.socket_buf.deinit(gpa);
         self.pending_dialogs.deinit(gpa);
         self.file_data.deinit(gpa);
@@ -864,8 +874,10 @@ pub const Player = struct {
             .owns_kind = true,
         };
         mc.placement = obj;
-        // Highest level first, matching the execution order below.
+        // Highest level first for RENDERING; the execution order comes
+        // from the shared list, where a level prepended later runs first.
         try self.levels.insert(self.gpa, 0, obj);
+        try self.exec_list.insert(self.gpa, 0, mc);
         const handle = try self.clipObject(mc);
         try self.vm.levels.append(self.vm.arena(), .{ .id = id, .obj = handle });
         return mc;
@@ -944,8 +956,14 @@ pub const Player = struct {
             .bool_property = hostBoolProperty,
             .key_focus = hostKeyFocus,
             .object_instantiated = hostObjectInstantiated,
+            .clip_created = hostClipCreated,
             .warn_fn = hostWarn,
         };
+    }
+
+    fn hostClipCreated(user: *anyopaque, clip: *MovieClipT) void {
+        const self: *Player = @ptrCast(@alignCast(user));
+        self.exec_list.insert(self.gpa, 0, clip) catch {};
     }
 
     /// A player warning, on the same sink as `trace` and with Flash's own
@@ -953,6 +971,17 @@ pub const Player = struct {
     fn hostWarn(user: *anyopaque, msg: []const u8) void {
         const self: *Player = @ptrCast(@alignCast(user));
         self.traceFmt("Warning: {s}", .{msg}) catch {};
+    }
+
+    /// Removed clips leave the execution list the first time the walk
+    /// notices them, which is where ruffle unlinks them too.
+    fn dropDeadFromExecList(self: *Player) void {
+        var i: usize = 0;
+        while (i < self.exec_list.items.len) {
+            if (self.exec_list.items[i].removed) {
+                _ = self.exec_list.orderedRemove(i);
+            } else i += 1;
+        }
     }
 
     fn runOneFrame(self: *Player) !void {
@@ -965,16 +994,19 @@ pub const Player = struct {
             self.vm.display_ctx = null;
         }
         try self.runInitActions(&ctx);
-        // Levels run BEFORE the root, newest first. Ruffle has no tree
-        // walk here at all: it iterates one global list that every new
-        // clip is PREPENDED to, so a level loaded on a later tick takes
-        // its frame ahead of the main timeline's next one (corpus
-        // unloadmovienum).
-        for (self.levels.items) |lv| {
-            if (lv.kind != .clip) continue;
-            try lv.kind.clip.runFrame(&ctx);
+        // ONE list, newest first — no tree walk. A clip prepended during
+        // this pass is not visited by it, which is ruffle's rule too
+        // ("adding while iterating is safe, as this does not modify any
+        // active nodes"): a clip placed this tick already ran its first
+        // frame inside `finishInstantiate`.
+        const snapshot = try self.gpa.dupe(*MovieClipT, self.exec_list.items);
+        defer self.gpa.free(snapshot);
+        for (snapshot) |mc| {
+            if (mc.removed) continue;
+            if (mc.ran_this_tick) continue;
+            try mc.runFrame(&ctx);
         }
-        try self.root.runFrame(&ctx);
+        self.dropDeadFromExecList();
         for (self.levels.items) |lv| {
             if (lv.kind == .clip) try lv.kind.clip.applyPendingGoto(&ctx);
         }
@@ -1224,8 +1256,32 @@ pub const Player = struct {
         for (ctx.graveyard.items) |obj| {
             self.severClipObjects(obj);
             self.rebindMouseTargets(ctx, obj);
+            // The execution list holds raw pointers, so a clip about to
+            // be FREED has to leave it here — noticing it on the next
+            // walk would already be a use-after-free.
+            self.unlistSubtree(obj);
         }
         ctx.drainGraveyard(self.gpa);
+    }
+
+    fn unlistSubtree(self: *Player, obj: *display.display_object.DisplayObject) void {
+        switch (obj.kind) {
+            .clip => |mc| {
+                self.unlistClip(mc);
+                for (mc.children.items) |c| self.unlistSubtree(c);
+            },
+            .button => |b| for (b.container.children.items) |c| self.unlistSubtree(c),
+            else => {},
+        }
+    }
+
+    fn unlistClip(self: *Player, mc: *MovieClipT) void {
+        var i: usize = 0;
+        while (i < self.exec_list.items.len) {
+            if (self.exec_list.items[i] == mc) {
+                _ = self.exec_list.orderedRemove(i);
+            } else i += 1;
+        }
     }
 
     /// A goto can destroy the very object the pointer is on. Ruffle keeps
