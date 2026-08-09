@@ -219,6 +219,8 @@ focusrect_property_swf7
 focusrect_swf5
 focusrect_swf6
 form_loader_encoding_1
+frame_size_translated_negative
+frame_size_translated_positive
 function_base_clip
 function_base_clip_readded
 get_bytes_total
@@ -377,6 +379,7 @@ prototype_properties
 recursive_prototypes
 register_and_init_order
 register_class_return_value
+register_globals_across_frames
 remove_movie_clip
 removed_base_clip_tell_target
 removed_clip_halts_script
@@ -400,6 +403,7 @@ set_target_2_swf6
 set_target_2_swf7
 set_variable_scope
 shared_object_serialize_typed_objects
+shared_stack
 single_frame
 slash_syntax
 sound

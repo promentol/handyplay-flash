@@ -316,6 +316,9 @@ pub const Player = struct {
         self.vm.root_swf_version = self.movie.swf_version;
         self.vm.movie_url = avm1.strings.fromSwf(self.vm.arena(), opts.url, 8) catch &.{};
         self.vm.epoch_ms = opts.epoch_ms;
+        const inv_tw = 1.0 / @as(f64, swf.reader.TWIPS_PER_PX);
+        self.vm.stage_origin_x = @as(f64, @floatFromInt(movie.header.xmin)) * inv_tw;
+        self.vm.stage_origin_y = @as(f64, @floatFromInt(movie.header.ymin)) * inv_tw;
         self.vm.stage_width = w;
         self.vm.stage_height = h;
         self.vm.movie_width = @floatFromInt(w);
@@ -1016,6 +1019,14 @@ pub const Player = struct {
         try self.fireSoundCompletes();
         try self.drainActions(&ctx);
         try self.updateTimers(&ctx);
+        // "Looks like the stack is cleared between frames" (ruffle
+        // avm1/runtime.rs). AVM1's operand stack and its four global
+        // registers are shared by every DoAction in the movie, so a block
+        // that leaves a value behind hands it to the NEXT block to run —
+        // across clips, even across levels. The one boundary that wipes it
+        // is the frame (corpus shared_stack).
+        self.vm.stack.clearRetainingCapacity();
+        self.vm.registers = @splat(.undefined_value);
         self.root.clearRanThisTick();
         for (self.levels.items) |lv| {
             if (lv.kind == .clip) lv.kind.clip.clearRanThisTick();

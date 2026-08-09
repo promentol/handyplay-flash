@@ -394,6 +394,13 @@ pub const Vm = struct {
     /// SWF version of the ROOT movie — `getBounds`'s latch consults it even
     /// when the running code is older. Set by the Player.
     root_swf_version: u8 = 0,
+    /// The stage RECT's origin, in pixels. A header rect that does not
+    /// start at (0,0) shifts the whole coordinate system: ruffle folds
+    /// `translate(x_min, y_min).inverse()` into the viewport matrix, so
+    /// rendering subtracts it and the mouse position ADDS it back
+    /// (corpus frame_size_translated_negative/positive).
+    stage_origin_x: f64 = 0,
+    stage_origin_y: f64 = 0,
     /// What `_url` reports. The Player sets it from the path it loaded;
     /// `core/` does no I/O and never derives it itself.
     movie_url: strings.AvmString = &.{},

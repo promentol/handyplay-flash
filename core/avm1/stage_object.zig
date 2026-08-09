@@ -1456,8 +1456,12 @@ pub fn recomputeView(vm: *Vm) bool {
 
 /// A pointer position in VIEWPORT pixels, in stage pixels.
 pub fn viewportToStage(vm: *Vm, x: f64, y: f64) [2]f64 {
-    if (vm.view_scale_x == 0 or vm.view_scale_y == 0) return .{ x, y };
-    return .{ (x - vm.view_tx) / vm.view_scale_x, (y - vm.view_ty) / vm.view_scale_y };
+    if (vm.view_scale_x == 0 or vm.view_scale_y == 0)
+        return .{ x + vm.stage_origin_x, y + vm.stage_origin_y };
+    return .{
+        (x - vm.view_tx) / vm.view_scale_x + vm.stage_origin_x,
+        (y - vm.view_ty) / vm.view_scale_y + vm.stage_origin_y,
+    };
 }
 
 // --- focus -------------------------------------------------------------------
