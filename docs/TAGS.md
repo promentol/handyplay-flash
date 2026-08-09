@@ -65,14 +65,14 @@ is rejected (`error.Avm2Unsupported`).
 | 13 | DefineFontInfo | 1 | M1/M4 | done | glyph→codepoint map, plus the face name/bold/italic a DefineFont1 has nowhere else |
 | 62 | DefineFontInfo2 | 6 | M1/M4 | done | |
 | 73 | FontAlignZones | 8 | M1 | parse | parse-skip |
-| 74 | CsmTextSettings | 8 | M1/M4 | exec | the field's `antiAliasType`/`gridFitType`/thickness/sharpness; the tag may sit on EITHER side of its DefineEditText |
+| 74 | CsmTextSettings | 8 | M1/M4 | exec | the field's `antiAliasType`/`gridFitType`/thickness/sharpness; the tag may sit on EITHER side of its DefineEditText. The flashtype bit also changes STATIC text's hit test — advanced rendering is hit through the whole box, not glyph by glyph |
 | 88 | DefineFontName | 9 | M1 | parse | parse-skip (a display name, not the one lookup uses) |
 | 11 | DefineText | 1 | M1/M4 | done | sticky TextRecord state; rendered and hit-tested per glyph |
 | 33 | DefineText2 | 3 | M1/M4 | done | RGBA |
 | 37 | DefineEditText | 4 | M1/M4 | done | a full instance: spans, HTML, layout, selection, input, two-way `variable` binding. A face the movie does not embed uses the host's TTF when one is registered, and measures zero otherwise |
 | 14 | DefineSound | 1 | M1/M6 | parse | PCM/ADPCM/MP3 |
-| 46 | DefineMorphShape | 3 | M7 | todo | raw body captured by preload |
-| 84 | DefineMorphShape2 | 8 | M7 | todo | raw body captured by preload |
-| 60/61 | DefineVideoStream/VideoFrame | 6 | — | oos | video |
+| 46 | DefineMorphShape | 3 | M1/M7 | parse | both style arrays and both edge lists decoded (`swf/morph.zig`); a frame at any ratio is interpolated on demand and HIT-TESTED. Rendering is M7 |
+| 84 | DefineMorphShape2 | 8 | M1/M7 | parse | as above, plus edge bounds and the stroke-scaling flags |
+| 60/61 | DefineVideoStream/VideoFrame | 6 | — | oos | video. The CONTAINER is not: `core/flv.zig` frames an FLV for `NetStream`, whose script tags reach AVM1 as `onMetaData` |
 | 78 | DefineScalingGrid | 8 | — | oos | 9-slice |
 | 87 | DefineBinaryData | 9 | — | oos | AVM2 |

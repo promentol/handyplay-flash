@@ -941,3 +941,79 @@ for `getBytesLoaded`; an image has one frame and it is the current one;
 unloaded is entered on the NEXT frame and forgets the load entirely. A
 clip a load emptied reports zero frames where a fresh
 `createEmptyMovieClip` reports one.
+
+## The last fifty-four, in one place
+
+The dirs that fell after the workstreams closed. Every one of these is a
+rule that reads like a bug until you see the test that pins it.
+
+**An array index is a WRAPPING i32.** `a[4294967296]` is element 0 and
+`a["302231454903659441160191"]` is element 2147483647: the property NAME
+is parsed as digits modulo 2^32 and read as signed (ruffle parses it as
+`Wrapping<i32>`). The comparison against `length` is signed too, so once
+the length has wrapped negative every further write pushes it one step
+up from -2147483648 through -1, 0, 1 and around. Leading whitespace, a
+sign and leading zeros are all accepted (`array_length`).
+
+**A variable holding a clip holds a PATH.** The value caches the object,
+but the moment the clip is removed the cache is dropped for good and the
+reference walks its recorded path down from the level, reporting
+whatever it finds there. The path was recorded when the value was
+captured, so a `_name` written afterwards is not part of it: remove a
+clip called `foo` that was created as `clipInstance2`, put a new
+`clipInstance2` in its place, and the dead reference reports
+`_level0.clipInstance2` (`string_paths_other`).
+
+**`System.useCodepage` makes the form loader guess.** Flash asks the
+operating system for its codepage; a player has none, so ruffle runs a
+statistical detector and we do it structurally: valid UTF-8 is UTF-8, a
+body whose every high byte begins an assigned Shift-JIS pair is
+Shift-JIS, everything else is Windows-1252. Lone half-width katakana
+(0xA1..0xDF) deliberately does not count as Japanese — those bytes also
+spell `ÄÖÜ ß` (`form_loader_encoding_3`).
+
+**`hitTest(x, y, true)` is not the mouse's hit test.** It skips masks
+but NOT invisible objects; the mouse skips both. An object used as a
+mask is never hit itself and is hit even while invisible; a masked
+object is hit only where its mask is; a clipping LAYER applies the same
+rule from the container's side, over the depths up to its `clipDepth`.
+Two more: a static text with the CSMTextSettings flashtype bit is hit
+through its whole box rather than glyph by glyph, and Flash's 1px stroke
+minimum is a DEVICE-space width, so converting it needs the
+global→local matrix — pass the wrong direction and a clip scaled 7.8×
+gets a hairline 62× too fat (`movieclip_hittest_shapeflag`).
+
+**A morph shape has two boxes and Flash uses both.** `getBounds` answers
+with the START shape's box however far the tween has gone (ruffle's
+`BoundsMode::Script`); the renderer and the mouse use the interpolated
+one (`BoundsMode::Engine`). The outline itself is interpolated edge by
+edge as the hit test walks it — the two edge lists need not line up
+record for record, so each side carries its own pen and only the side
+that produced a record advances (`hittest_morph_input`,
+`movieclip_hittest_shapeflag`).
+
+**ExternalInterface's flat value model.** Everything crossing the bridge
+loses its prototype, its identity and any cycles; strings become UTF-8
+and an object becomes a SORTED list of pairs, because ruffle marshals
+through a `BTreeMap`. A clip crosses as null. Below SWF9 a string that
+is nothing but whitespace crosses back as the four letters "null"
+(`external_interface`).
+
+**A NetStream's status sequence.** `play` says Play.Start before a byte
+has arrived; the bytes say Buffer.Full; each tick consumes the FLV tags
+whose timestamps have passed, and a script tag's AMF0 name IS the method
+it calls (`onMetaData`). Running out of tags with the download finished
+is the end — Buffer.Flush, Play.Stop, Buffer.Empty, and the stream
+pauses itself; running out while still downloading says only the first
+and the last. A seek is queued and executed by the next tick, which is
+why Seek.Notify lands after whatever else that frame traced — and why a
+seek still works while paused (`netstream_play_flv`,
+`netstream_seek_flv`).
+
+**A timeline loops on what the STREAM held, not what its header said.**
+Two exceptions to "run off the end and go back to frame 1": there was
+really only one frame however many the header declared, or the tag
+stream never ended. `frames_loaded` counts ShowFrames — a stream ending
+mid-frame leaves a trailing partial frame that runs once and is never
+returned to — and a sprite with two full frames and no End tag stops
+dead (`looping_child_swf5`, `_swf9`, `_swf32`).

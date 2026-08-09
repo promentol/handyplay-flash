@@ -1,6 +1,6 @@
 # handyflash — Project State & Handover
 
-**Authoritative snapshot. Last updated: 2026-08-09 (workstream L close, then a long semantics sweep — closures, coercions, SWF4 rules, the ASnative tables and the missing global classes; 668/680).**
+**Authoritative snapshot. Last updated: 2026-08-09 (workstream L close, then a long semantics sweep — closures, coercions, SWF4 rules, the ASnative tables and the missing global classes — and then the last 54 dirs, one at a time: 679/679, the whole scorable corpus.)**
 Read this first if you are picking up the project with no prior context.
 For executing the next milestone, then read `docs/M4-SPEC.md`.
 
@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**668/680**, images **12/26**); F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**679/679** traces, images **12/26**); F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -59,8 +59,8 @@ transform, channel copy, merge, threshold, compare, hit-test, colour
 bounds, pixel dissolve, both forms of `copyPixels`, `paletteMap`, plus
 `attachBitmap`, `beginBitmapFill`, `loadBitmap` and `draw` — including
 Perlin noise, a ColorMatrixFilter through `applyFilter`, and blend modes.
-453 of Ruffle's 680 scorable conformance dirs pass, and 8 of its 26
-runnable image comparisons; EVERY bitmap dir in the corpus passes both.
+Every one of Ruffle's 679 scorable conformance dirs passes, and 12 of
+its 26 runnable image comparisons; EVERY bitmap dir passes both.
 **XML today**: `XML` and `XMLNode` in full — parse, build, walk, clone,
 reparent, serialise, namespaces, `idMap`, the lot — over a hand-written
 UTF-16 parser. Everything but `load`/`sendAndLoad`, which need I/O.
@@ -338,7 +338,7 @@ recipe that used to live here is gone; the script IS the recipe):
 
 ```sh
 ~/.zvm/0.16.0/zig build -Doptimize=ReleaseFast      # REQUIRED first
-sh tests/conformance/sweep.sh /tmp/r.txt            # prints "156 of 680"
+sh tests/conformance/sweep.sh /tmp/r.txt            # prints "679 of 679"
 grep PASS /tmp/r.txt | sed 's/^PASS //' | sort > /tmp/new.txt
 comm -23 <(sort tests/conformance/pass_list.txt) /tmp/new.txt   # LOST — stop
 comm -13 <(sort tests/conformance/pass_list.txt) /tmp/new.txt   # gained
@@ -483,28 +483,25 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
-**Workstreams A, B, C, D, E and L are CLOSED at 668/680** (images
-12/26), with every bitmap dir and every loader dir passing.
-Pick up F (PlaceObject3 blend modes and clipDepth masks) next —
-`Renderer.blendModeFromSwf` already has the mapping F needs, because
-`BitmapData.draw` takes the same numbering. `docs/M4-SPEC.md` §4, §5, §6
-and §7 list, by name and cause, every dir those workstreams could not
-reach; do not re-derive them.
+**Workstreams A, B, C, D, E and L are CLOSED, and the trace corpus is
+GREEN: 679 of 679** (images 12/26). Pick up F (PlaceObject3 blend modes
+and clipDepth masks) next — `Renderer.blendModeFromSwf` already has the
+mapping F needs, because `BitmapData.draw` takes the same numbering.
+`docs/M4-SPEC.md` §4, §5, §6 and §7 name, by dir and cause, everything
+those workstreams could not reach at the time; the last 54 of those are
+now closed and the tables are history, not a hit list.
 
-**The remaining 12 failures, every one diagnosed.** None is a mystery;
-each entry says what it would take.
-
-| dirs | what it needs |
-|---|---|
-| `looping_child_swf5`, `_swf9`, `_swf32` | Ruffle plays a sprite from a TAG-STREAM POSITION, not a frame index. A sprite whose tags end without a final ShowFrame runs those trailing tags once and stops; one with the ShowFrame loops. We index frames, so ours loops either way. The fix is the playback model, not a rule. |
-| `netstream_play_flv`, `netstream_seek_flv` | A NetStream state machine over a real FLV: Play.Start, Buffer.Full, onMetaData, Seek.Notify, and the Buffer.Flush/Play.Stop/Buffer.Empty at the end. Needs FLV parsing and a playhead, plus `Video.attachVideo`. |
-| `movieclip_hittest_shapeflag` | 297 differing lines of shape-exact hit testing against curves and strokes — a `shape_utils` gap, not an AVM1 one. |
-| `hittest_morph_input` | Hovering a morph shape: needs the morph's EDGES decoded (M7), not just the bounds the tag declares. |
-| `external_interface` | The harness's simulated JS bridge: `ExternalInterface.call` has to reach a scripted host and come back. The MARSHALLING half is done. |
-| `form_loader_encoding_3` | `System.useCodepage` makes the form loader charset-DETECT each file; needs a Shift-JIS table. |
-| `string_paths_other` | The one dir still wanting `Value::MovieClip` as a re-resolving PATH reference — a clip pushed on the stack remembers its path and re-resolves it, so a removed clip whose path is refilled reports the NEW occupant. A value-model change for one line of output. |
-| `array_length` | `length` as a WRAPPING i32 counter; ours is a u32. Converting the array model is wide for one dir. |
-| `bitmap_data_thorough/pixelDissolve` | The dissolve's RETURN value (the next seed) is one behind Flash's in 36 places; the pixels it writes are correct everywhere. The Feistel permutation, the block size and the clamp all match ruffle's — the off-by-one is somewhere else. |
+**The one dir the corpus does NOT score, and why.**
+`bitmap_data_thorough/pixelDissolve` carries
+`known_failure.panic = "attempt to add with overflow"`: ruffle crashes
+on it, so it is not part of the set anyone expects to pass, and the
+sweep now honours all three spellings of that flag. It is worth knowing
+how far off we are anyway: the dissolved PIXELS match Flash in every
+case, and what differs is the permutation index the call RETURNS, in
+ten of about two hundred argument permutations — the ones passing null,
+undefined, `{}` or a negative where a seed or a count belongs. Flash's
+Feistel round function is not ruffle's (ruffle's is a stated guess), and
+eleven recorded return values are not enough to recover the real one.
 
 **Also measured and left**: the two `frame_size_translated_*` dirs pass
 their traces but fail their IMAGE comparison, because `images.sh` does
