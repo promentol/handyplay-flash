@@ -1100,6 +1100,11 @@ pub const Renderer = struct {
                     // Flash's 1px hairline minimum.
                     const scale = @sqrt(@abs(t.a * t.d - t.b * t.c));
                     const width_px = @max(1.0, @as(f64, @floatFromInt(s.style.width)) * scale);
+                    // A stroke can be painted with anything a fill can —
+                    // `lineGradientStyle` and a LineStyle2's `HAS_FILL`
+                    // both put a gradient or a bitmap on the line.
+                    var stroke_grad: ?simdra.SmGradient = null;
+                    defer if (stroke_grad) |*g| g.deinit();
                     switch (s.style.fill) {
                         .solid => |c| ctx.setStrokeStyle(
                             @truncate(c & 0xFF),
@@ -1107,7 +1112,7 @@ pub const Renderer = struct {
                             @truncate((c >> 16) & 0xFF),
                             @truncate((c >> 24) & 0xFF),
                         ),
-                        else => {}, // gradient/bitmap strokes: M7
+                        else => try applyStrokeStyle(self, ctx, &s.style.fill, t, &stroke_grad),
                     }
                     ctx.setLineWidth(width_px);
                     ctx.setLineCap(switch (s.style.start_cap) {
@@ -1203,6 +1208,49 @@ fn boxPath(ctx: *simdra.SmCanvas, x0: f64, y0: f64, x1: f64, y1: f64) void {
     ctx.lineTo(@floatCast(x1), @floatCast(y1));
     ctx.lineTo(@floatCast(x0), @floatCast(y1));
     ctx.closePath();
+}
+
+/// The same paints as `applyFillStyle`, on the STROKE side of the canvas.
+fn applyStrokeStyle(
+    self: *Renderer,
+    ctx: *simdra.SmCanvas,
+    style: *const swf.shape.FillStyle,
+    t: Transform,
+    grad_out: *?simdra.SmGradient,
+) Error!void {
+    switch (style.*) {
+        .solid => |c| ctx.setStrokeStyle(
+            @truncate(c & 0xFF),
+            @truncate((c >> 8) & 0xFF),
+            @truncate((c >> 16) & 0xFF),
+            @truncate((c >> 24) & 0xFF),
+        ),
+        .linear_gradient => |g| {
+            grad_out.* = try buildGradient(ctx, g, t, .linear, 0);
+            ctx.setStrokeGradient(&grad_out.*.?);
+        },
+        .radial_gradient => |g| {
+            grad_out.* = try buildGradient(ctx, g, t, .radial, 0);
+            ctx.setStrokeGradient(&grad_out.*.?);
+        },
+        .focal_gradient => |fg| {
+            grad_out.* = try buildGradient(ctx, fg.gradient, t, .radial, fg.focal_point);
+            ctx.setStrokeGradient(&grad_out.*.?);
+        },
+        .bitmap => |b| {
+            const src: Renderer.BitmapSource = if (b.live) |ptr|
+                .{ .live = @ptrCast(@alignCast(ptr)) }
+            else
+                .{ .character = b.id };
+            if (try self.pattern(src, b.is_repeating, b.is_smoothed)) |pat| {
+                const full = t.concat(b.matrix);
+                pat.setTransform(full.a * 20, full.b * 20, full.c * 20, full.d * 20, full.tx, full.ty);
+                ctx.setStrokePattern(pat);
+            } else {
+                ctx.setStrokeStyle(128, 128, 128, 255);
+            }
+        },
+    }
 }
 
 fn applyFillStyle(
