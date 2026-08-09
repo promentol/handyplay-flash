@@ -656,7 +656,7 @@ pub const Vm = struct {
         // no prototype of its own, so a raw chain walk finds no toString
         // and `trace(super)` degrades to "[type Object]" instead of
         // "[object Object]" (corpus clip_constructors).
-        const m = self.getProperty(v.object, name, v) catch Value.undefined_value;
+        const m = self.getPropertyStored(v.object, name, v) catch Value.undefined_value;
         if (!self.isCallable(m)) return .undefined_value;
         // An implicit coercion call is ruffle's `ExecutionReason::Special`:
         // it keeps closure semantics even in a SWF5 caller.
@@ -714,7 +714,7 @@ pub const Vm = struct {
             S("toString")
         else
             S("valueOf");
-        const m = try self.getProperty(v.object, name, v);
+        const m = try self.getPropertyStored(v.object, name, v);
         // No callable `valueOf` at all is UNDEFINED, not the object —
         // ruffle's `call_method` on a missing method answers undefined
         // and `to_primitive` passes that straight out.
@@ -738,7 +738,7 @@ pub const Vm = struct {
         }
         // Reading `valueOf` can throw too — it may be a getter (corpus
         // coerce_to_primitive_resolve's obj3).
-        const m = try self.getProperty(v.object, S("valueOf"), v);
+        const m = try self.getPropertyStored(v.object, S("valueOf"), v);
         if (!self.isCallable(m)) return value_mod.toNumberPrimitive(v, self.swf_version);
         self.call_special = true;
         const p = try self.callFunction(m, v, &.{});
@@ -811,7 +811,7 @@ pub const Vm = struct {
             .clip, .display, .removed_display, .boxed_string => return self.toStringValue(v),
             else => {},
         }
-        const m = try self.getProperty(h, S("toString"), v);
+        const m = try self.getPropertyStored(h, S("toString"), v);
         if (self.isCallable(m)) {
             self.call_special = true;
             const r = try self.callFunction(m, v, &.{});
@@ -953,6 +953,26 @@ pub const Vm = struct {
 
     /// Property read honoring addProperty getters (proto-chain aware).
     pub fn getProperty(self: *Vm, h: ObjectHandle, name: strings.AvmString, this: Value) anyerror!Value {
+        return self.getPropertyOpt(h, name, this, true);
+    }
+
+    /// A read that does NOT fall back to `__resolve`. Ruffle: "'special'
+    /// method calls appear to skip the `__resolve` fallback logic" — so
+    /// an implicit `valueOf`/`toString` coercion, and the
+    /// `__constructor__` lookup behind `super()`, do not manufacture a
+    /// method out of a `__resolve` handler (corpus
+    /// coerce_to_primitive_resolve, super_edge_cases).
+    pub fn getPropertyStored(self: *Vm, h: ObjectHandle, name: strings.AvmString, this: Value) anyerror!Value {
+        return self.getPropertyOpt(h, name, this, false);
+    }
+
+    fn getPropertyOpt(
+        self: *Vm,
+        h: ObjectHandle,
+        name: strings.AvmString,
+        this: Value,
+        call_resolve: bool,
+    ) anyerror!Value {
         var start = h;
         var recv = this;
         // `super` owns nothing: a read on it resolves from the base
@@ -966,7 +986,7 @@ pub const Vm = struct {
             recv = .{ .object = self.objects.get(h).native.super_obj.this };
         }
         const loc = self.objects.findChainedLocated(start, name, self.case_sensitive) orelse
-            return .undefined_value;
+            return if (call_resolve) self.callResolve(start, name, recv) else .undefined_value;
         if (loc.prop.getter != 0) {
             const getter = loc.prop.getter;
             if (self.enterPropertyCall(loc.owner, name)) |_| {
@@ -979,6 +999,41 @@ pub const Vm = struct {
             return self.objects.findOwn(loc.owner, name, self.case_sensitive).?.value;
         }
         return loc.prop.value;
+    }
+
+    fn isDisplayObject(self: *Vm, h: ObjectHandle) bool {
+        return switch (self.objects.get(h).native) {
+            .clip, .display, .removed_display => true,
+            else => false,
+        };
+    }
+
+    /// The `__resolve` fallback: a read that finds NOTHING anywhere on
+    /// the prototype chain looks for a `__resolve` function — also up the
+    /// chain — and calls it with the name. Its return value is the read's
+    /// result and is NOT stored, so the next read calls it again
+    /// (corpus object_resolve). A non-function `__resolve` is skipped and
+    /// the search continues up.
+    fn callResolve(self: *Vm, start: ObjectHandle, name: strings.AvmString, this: Value) anyerror!Value {
+        if (strings.eqlIgnoreCase(name, S("__resolve"))) return .undefined_value;
+        var cur: Value = .{ .object = start };
+        var depth: u32 = 0;
+        while (cur == .object and depth < 255) : (depth += 1) {
+            if (self.objects.getOwn(cur.object, S("__resolve"), self.case_sensitive)) |v| {
+                // An OBJECT here ends the search whether or not it is
+                // callable — a non-callable one just answers undefined.
+                // Primitives are skipped, and so is a display object,
+                // which Flash keeps as its own kind of value rather than
+                // an object (corpus object_resolve assigns 42, `_root`
+                // and `{}` in turn).
+                if (v == .object and !isDisplayObject(self, v.object)) {
+                    if (!self.isCallable(v)) return .undefined_value;
+                    return self.callFunction(v, this, &.{.{ .string = name }});
+                }
+            }
+            cur = self.protoValue(cur.object);
+        }
+        return .undefined_value;
     }
 
     /// The prototype of `h` as the chain walk sees it. A `super` in the
@@ -1384,7 +1439,7 @@ pub const Vm = struct {
         // `get_opt(.., call_resolve_fn = false)`: an addProperty getter for
         // `__constructor__` IS honoured, but a `__resolve` fallback is not
         // (ruffle super_object.rs:82-86).
-        const ctor = try self.getProperty(base, S("__constructor__"), .{ .object = base });
+        const ctor = try self.getPropertyStored(base, S("__constructor__"), .{ .object = base });
         if (!self.isCallable(ctor)) return .undefined_value;
         return self.callWithSuperDepth(ctor, .{ .object = s.this }, args, s.depth +| 1);
     }
