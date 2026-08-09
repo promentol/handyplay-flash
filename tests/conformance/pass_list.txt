@@ -335,6 +335,7 @@ loadmovie_registerclass
 loadmovie_replace_root
 loadmovie_var_persistence
 loadmovienum
+loadmovienum_cross_version_prototype
 loadvariables
 loadvariables2
 loadvariables_method

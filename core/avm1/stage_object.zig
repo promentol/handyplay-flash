@@ -840,10 +840,25 @@ pub fn clipObject(vm: *Vm, mc: *MovieClip) !ObjectHandle {
     if (mc.owner_button) |obj| return displayObject(vm, obj);
     if (mc.avm_object != 0) return mc.avm_object;
     const h = try vm.objects.create();
-    vm.objects.get(h).proto = .{ .object = if (vm.movieclip_proto != 0) vm.movieclip_proto else vm.object_proto };
     vm.objects.get(h).native = .{ .clip = @ptrCast(mc) };
     mc.avm_object = h;
+    // The prototype comes from the clip's OWN movie's environment: a
+    // SWF8 movie loaded into `_level2` gets the SWF7+ side's
+    // `MovieClip.prototype`, and the SWF6 movie that loaded it cannot
+    // reach it by extending its own (corpus
+    // loadmovienum_cross_version_prototype).
+    const env = envFor(vm, mc);
+    vm.objects.get(h).proto = .{
+        .object = if (env.movieclip_proto != 0) env.movieclip_proto else env.object_proto,
+    };
     return h;
+}
+
+fn envFor(vm: *Vm, mc: *MovieClip) *const runtime.Env {
+    const v = clipSwfVersion(vm, mc.avm_object) orelse vm.swf_version;
+    const hi = v >= 7;
+    if (hi == vm.env_hi_active) return vm.activeEnv();
+    return if (hi) &vm.env_hi else &vm.env_lo;
 }
 
 /// A clip AS A SCRIPT VALUE. SWF4 has no object model, so a clip simply

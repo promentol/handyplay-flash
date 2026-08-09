@@ -777,6 +777,18 @@ pub const Player = struct {
             .bytes = if (loaded) |m| m.compressed_len else @intCast(bytes.len),
             .version = if (loaded) |m| m.swf_version else 0,
         };
+        // The clip's script object now belongs to the LOADED movie's
+        // environment: a SWF8 movie in `_level2` gets the SWF7+ side's
+        // `MovieClip.prototype`, whatever version loaded it (corpus
+        // loadmovienum_cross_version_prototype).
+        if (loaded) |m| {
+            const env = if (m.swf_version >= 7) &self.vm.env_hi else &self.vm.env_lo;
+            const active = self.vm.env_hi_active == (m.swf_version >= 7);
+            const proto = if (active) self.vm.movieclip_proto else env.movieclip_proto;
+            if (proto != 0) {
+                self.vm.objects.get(target.clip).proto = .{ .object = proto };
+            }
+        }
         // Loading into _level0 REPLACES the root movie, and the stage
         // takes the new movie's size — `Stage.width` reports the
         // incoming header, not the one the player started with

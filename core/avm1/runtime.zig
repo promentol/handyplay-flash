@@ -604,6 +604,8 @@ pub const Vm = struct {
     env_hi: Env = .{},
     /// Which of the two is currently loaded.
     env_hi_active: bool = false,
+    /// Scratch copy of the active environment, for `activeEnv`.
+    env_scratch: Env = .{},
     /// `LocalConnection.connect` claims a name; `send` finds it here.
     local_connections: std.ArrayList(LocalConnection) = .empty,
     /// Messages waiting for the end of the tick — delivery is
@@ -668,6 +670,13 @@ pub const Vm = struct {
         self.case_sensitive = hi;
         self.envLoad(.{});
         try @import("globals/globals.zig").install(self);
+    }
+
+    /// The environment currently loaded into the flat fields, as a
+    /// struct — for code that needs to compare it with the other one.
+    pub fn activeEnv(self: *Vm) *const Env {
+        self.env_scratch = self.envSave();
+        return &self.env_scratch;
     }
 
     fn envSave(self: *Vm) Env {
