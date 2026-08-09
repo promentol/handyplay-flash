@@ -513,6 +513,20 @@ fn keyOf(ev: std.json.Value) [2]i32 {
             const ch = o.get("Char") orelse o.get("Numpad") orelse return .{ 0, 0 };
             if (ch != .string or ch.string.len == 0) return .{ 0, 0 };
             const c: i32 = ch.string[0];
+            // A PUNCTUATION key reports the US-layout virtual key code,
+            // not the character's own — `"` is the quote key, 222, and
+            // its ASCII stays 34 (corpus input_dead_keys_windows).
+            const punct = [_][2]i32{
+                .{ '-', 189 }, .{ '_', 189 }, .{ '=', 187 }, .{ '+', 187 },
+                .{ '[', 219 }, .{ '{', 219 }, .{ ']', 221 }, .{ '}', 221 },
+                .{ '\\', 220 }, .{ '|', 220 }, .{ ';', 186 }, .{ ':', 186 },
+                .{ '\'', 222 }, .{ '"', 222 }, .{ ',', 188 }, .{ '<', 188 },
+                .{ '.', 190 }, .{ '>', 190 }, .{ '/', 191 }, .{ '?', 191 },
+                .{ '`', 192 }, .{ '~', 192 },
+            };
+            for (punct) |pair| {
+                if (pair[0] == c) return .{ pair[1], c };
+            }
             const upper: i32 = if (c >= 'a' and c <= 'z') c - 32 else c;
             return .{ upper, c };
         },

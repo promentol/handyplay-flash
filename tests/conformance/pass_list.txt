@@ -296,6 +296,7 @@ infinite_recursion_virtual_property
 init_array_invalid
 init_object_invalid
 init_object_order
+input_dead_keys_windows
 instanceof_coercions
 interface_implements_op
 is_finite
@@ -435,6 +436,7 @@ placeobject_all_event_flags
 placeobject_occupied_depth
 point
 primitive_instanceof
+primitive_type_globals
 property_invalid_base_clip
 prototype_delete
 prototype_enumerate

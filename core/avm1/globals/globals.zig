@@ -1443,27 +1443,30 @@ fn numToString(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     } else if (this == .number) {
         n = this.number;
     }
-    const radix: f64 = if (args.len > 0) try vm.toNumber(args[0]) else 10;
-    if (radix != 10 and radix >= 2 and radix <= 36) {
-        const i: i64 = @intFromFloat(@trunc(n));
-        var buf: [72]u8 = undefined;
-        const s = std.fmt.bufPrint(&buf, "{d}", .{i}) catch unreachable;
-        _ = s;
-        // Radix formatting for integers.
-        var tmp: [72]u8 = undefined;
+    const radix_f: f64 = if (args.len > 0) try vm.toNumber(args[0]) else 10;
+    const radix: i32 = if (radix_f >= 2 and radix_f <= 36) @intFromFloat(radix_f) else 10;
+    if (radix != 10) {
+        // The value is CLAMPED to i32 first — NaN becomes i32::MIN — and
+        // the digits come out of a wrapping negate with no bounds check,
+        // so a negative remainder walks BELOW '0' into punctuation.
+        // `NaN.toString(3)` really is "-/.//./..././/0.0./0." in Flash 7+
+        // (corpus primitive_type_globals).
+        var v = value_mod.clampToI32(n);
+        if (v == 0) return .{ .string = S("0") };
+        const negative = v < 0;
+        if (negative) v = -%v;
+        var tmp: [33]u8 = undefined;
         var idx: usize = tmp.len;
-        var v: u64 = @abs(i);
-        const digits = "0123456789abcdefghijklmnopqrstuvwxyz";
-        if (v == 0) {
+        while (v != 0) {
+            const digit = @rem(v, radix);
+            v = @divTrunc(v, radix);
             idx -= 1;
-            tmp[idx] = '0';
+            tmp[idx] = @intCast(if (digit < 10)
+                @as(i32, '0') + digit
+            else
+                @as(i32, 'a') + digit - 10);
         }
-        while (v > 0) {
-            idx -= 1;
-            tmp[idx] = digits[@intCast(v % @as(u64, @intFromFloat(radix)))];
-            v /= @intFromFloat(radix);
-        }
-        if (i < 0) {
+        if (negative) {
             idx -= 1;
             tmp[idx] = '-';
         }
