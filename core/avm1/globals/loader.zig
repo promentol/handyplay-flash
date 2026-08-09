@@ -129,16 +129,25 @@ fn percentDecode(a: std.mem.Allocator, src: []const u8) ![]const u8 {
 /// read in the movie's text encoding (Latin-1 below SWF6).
 pub fn decodeInto(vm: *Vm, target: ObjectHandle, body: []const u8) !void {
     const a = vm.arena();
+    // `System.useCodepage` swaps the movie's encoding for the FILE's:
+    // the guess is made once, over the whole body, and every pair is
+    // read with it (ruffle loader.rs:1004, corpus
+    // form_loader_encoding_3).
+    const enc: ?strings.Encoding = if (vm.use_codepage) strings.sniff(body) else null;
     var it = std.mem.splitScalar(u8, body, '&');
     while (it.next()) |pair| {
         if (pair.len == 0) continue;
         const eq = std.mem.indexOfScalar(u8, pair, '=');
         const k_raw = if (eq) |i| pair[0..i] else pair;
         const v_raw = if (eq) |i| pair[i + 1 ..] else "";
-        const k = try strings.fromSwf(a, try percentDecode(a, k_raw), vm.swf_version);
-        const v = try strings.fromSwf(a, try percentDecode(a, v_raw), vm.swf_version);
+        const k = try decodeHalf(vm, a, try percentDecode(a, k_raw), enc);
+        const v = try decodeHalf(vm, a, try percentDecode(a, v_raw), enc);
         try vm.setProperty(target, k, .{ .string = v }, .{ .object = target });
     }
+}
+
+fn decodeHalf(vm: *Vm, a: std.mem.Allocator, bytes: []const u8, enc: ?strings.Encoding) ![]const u16 {
+    return if (enc) |e| strings.decodeAs(a, bytes, e) else strings.fromSwf(a, bytes, vm.swf_version);
 }
 
 /// Ruffle's `Object::get_keys(include_hidden = false)`: prototype keys

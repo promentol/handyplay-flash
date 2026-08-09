@@ -4,6 +4,7 @@
 //! boundaries (SWF bytes in, trace/output out).
 
 const std = @import("std");
+const sjis = @import("shift_jis.zig");
 
 pub const AvmString = []const u16;
 
@@ -15,6 +16,95 @@ pub fn fromSwf(a: std.mem.Allocator, bytes: []const u8, swf_version: u8) ![]cons
         return decodeUtf8(a, bytes) catch latin1(a, bytes);
     }
     return ansi(a, bytes);
+}
+
+/// What `System.useCodepage` turns the form loader into: the bytes are
+/// read in THEIR OWN encoding rather than the movie's.
+pub const Encoding = enum { utf8, shift_jis, ansi };
+
+pub fn decodeAs(a: std.mem.Allocator, bytes: []const u8, enc: Encoding) ![]const u16 {
+    return switch (enc) {
+        .utf8 => decodeUtf8(a, bytes) catch latin1(a, bytes),
+        .shift_jis => shiftJis(a, bytes),
+        .ansi => ansi(a, bytes),
+    };
+}
+
+/// Guess the encoding of a loaded text file.
+///
+/// Flash asks the OPERATING SYSTEM for its codepage, which a player has
+/// no business having; ruffle runs `chardetng`, a statistical detector,
+/// over the whole body (loader.rs:1004). Ours is the structural version
+/// of the same idea, and it separates the three encodings the corpus
+/// cares about: valid UTF-8 is UTF-8; bytes whose every high half is a
+/// well-formed Shift-JIS double-byte pair are Shift-JIS; anything else
+/// is the Windows-1252 the rest of the player assumes.
+///
+/// Where a detector counts letter frequencies this counts nothing, so
+/// Latin text whose accents happen to pair up — `üß` is 0xFC 0xDF, a
+/// legal lead and trail — reads as one kanji. The lone half-width
+/// katakana bytes 0xA1..0xDF are deliberately NOT accepted as Shift-JIS
+/// for the same reason: they are also `¡`..`ß`, and a German sentence
+/// full of them is the likelier document (corpus form_loader_encoding_3).
+pub fn sniff(bytes: []const u8) Encoding {
+    if (validUtf8(bytes)) return .utf8;
+    if (validShiftJis(bytes)) return .shift_jis;
+    return .ansi;
+}
+
+/// `decodeUtf8` without the output — same CESU-8 tolerance, so a file
+/// carrying Flash's own surrogate pairs is still recognised as UTF-8.
+fn validUtf8(bytes: []const u8) bool {
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const len = std.unicode.utf8ByteSequenceLength(bytes[i]) catch return false;
+        if (i + len > bytes.len) return false;
+        const seq = bytes[i .. i + len];
+        i += len;
+        if (len == 3 and seq[0] == 0xED and seq[1] >= 0xA0 and seq[1] <= 0xBF and
+            seq[2] >= 0x80 and seq[2] <= 0xBF) continue;
+        _ = std.unicode.utf8Decode(seq) catch return false;
+    }
+    return true;
+}
+
+/// Every non-ASCII byte is the lead of an assigned double-byte pair.
+fn validShiftJis(bytes: []const u8) bool {
+    var i: usize = 0;
+    var pairs: usize = 0;
+    while (i < bytes.len) {
+        if (bytes[i] < 0x80) {
+            i += 1;
+            continue;
+        }
+        if (i + 1 >= bytes.len) return false;
+        if (sjis.pair(bytes[i], bytes[i + 1]) == null) return false;
+        pairs += 1;
+        i += 2;
+    }
+    return pairs > 0;
+}
+
+/// Shift-JIS → UTF-16. A byte that is not part of a legal pair is taken
+/// for its Windows-1252 self, which is what a lenient decoder does with
+/// a stray byte and keeps the length in step.
+pub fn shiftJis(a: std.mem.Allocator, bytes: []const u8) ![]const u16 {
+    var out: std.ArrayList(u16) = .empty;
+    try out.ensureTotalCapacity(a, bytes.len);
+    var i: usize = 0;
+    while (i < bytes.len) {
+        if (i + 1 < bytes.len) {
+            if (sjis.pair(bytes[i], bytes[i + 1])) |cp| {
+                try out.append(a, cp);
+                i += 2;
+                continue;
+            }
+        }
+        const b = bytes[i];
+        try out.append(a, if (b >= 0x80 and b <= 0x9F) CP1252_HIGH[b - 0x80] else b);
+        i += 1;
+    }
+    return out.toOwnedSlice(a);
 }
 
 /// WINDOWS-1252, which is what Flash means by "ANSI" for SWF5 and below
