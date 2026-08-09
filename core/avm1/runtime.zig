@@ -1162,7 +1162,7 @@ pub const Vm = struct {
 
     /// Split out so the hot path stays a single branch: only a DISPLAY
     /// object can carry bindings, and almost none of them do.
-    fn notifyTextBinding(self: *Vm, h: ObjectHandle, name: strings.AvmString, v: Value) !void {
+    pub fn notifyTextBinding(self: *Vm, h: ObjectHandle, name: strings.AvmString, v: Value) !void {
         const t = @import("stage_object.zig").targetOf(self, h) orelse return;
         try @import("text_binding.zig").notify(self, t.obj, name, v);
     }
@@ -1451,13 +1451,22 @@ pub const Vm = struct {
 
         const fl = f.flags;
         const preload = f.with_registers;
-        // this
+        // `this` is never a local VARIABLE — it lives on the activation
+        // and `resolve` answers it before the scope chain. Preloading it
+        // into a register (or suppressing it) means the activation's own
+        // `this` is INHERITED from the caller instead, so the two can
+        // disagree.
+        const inherits_this = preload and (fl.preload_this or fl.suppress_this);
+        const local_this: Value = if (inherits_this)
+            activation.Activation.callerThis(self, this)
+        else
+            this;
         if (preload and fl.preload_this) {
-            if (next_reg < registers.len) registers[next_reg] = this;
+            // Both flags at once preloads UNDEFINED, not `this`.
+            if (next_reg < registers.len) {
+                registers[next_reg] = if (fl.suppress_this) .undefined_value else this;
+            }
             next_reg += 1;
-        }
-        if (!(preload and fl.suppress_this)) {
-            try self.objects.putWithAttrs(local, S("this"), this, .{ .dont_enum = true, .dont_delete = true }, self.case_sensitive);
         }
         // arguments
         const wants_arguments = !preload or (!fl.suppress_arguments or fl.preload_arguments);
@@ -1539,7 +1548,7 @@ pub const Vm = struct {
             }
         }
 
-        var act = activation.Activation.init(self, f.body, this, local, f.constant_pool);
+        var act = activation.Activation.init(self, f.body, local_this, local, f.constant_pool);
         act.local_registers = registers;
         // SWF6+ functions are CLOSURES: they carry the base clip from
         // where they were defined. SWF5 functions are not — they adopt

@@ -117,6 +117,8 @@ define_function2
 define_function2_preload
 define_function2_preload_order
 define_function_case_sensitive
+define_local
+define_local_with_paths
 delete
 depth_replacement_audio_unloading
 device_font_spacing
@@ -261,6 +263,7 @@ greaterthan_swf8
 has_own_property
 hittest_lockroot
 hittest_winding_rule
+infinite_recursion_function_in_setter
 infinite_recursion_virtual_property
 init_array_invalid
 init_object_invalid
@@ -520,6 +523,8 @@ textsnapshot_props_swf5
 textsnapshot_props_swf6
 textsnapshot_text_order
 this_scoping
+this_swf5
+this_swf6
 this_swf7
 timeline_function_def
 timeout
@@ -552,7 +557,9 @@ watch_recursion_double_swf7
 watch_recursion_swf7
 watch_textfield
 watch_virtual_property_proto
+with
 with_return
+with_variable_scopes
 xml
 xml_append_child
 xml_append_child_with_parent

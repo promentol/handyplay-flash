@@ -255,6 +255,17 @@ pub const Activation = struct {
         return found orelse handle;
     }
 
+    /// The CALLER's `this`. A function that PRELOADS `this` into a
+    /// register (or suppresses it) does not get a `this` of its own —
+    /// the name inherits the caller's, which is why a constructor whose
+    /// body preloads `this` sees the new object in r1 but the caller's
+    /// timeline under the name (corpus this_swf5/this_swf6).
+    pub fn callerThis(vm: *runtime.Vm, fallback: Value) Value {
+        const p = vm.current_activation orelse return fallback;
+        const act: *Activation = @ptrCast(@alignCast(p));
+        return act.this;
+    }
+
     /// The SWF version of the frame doing the calling. Ruffle decides
     /// closure-vs-not from `activation.swf_version()`, not from a global:
     /// a SWF5 frame calling a SWF6 function gets the SWF5 rule even
@@ -544,8 +555,13 @@ pub const Activation = struct {
         if (self.swf_version >= 5) {
             // Below SWF6 the match is case-sensitive only inside a
             // function's local scope; timeline code is insensitive.
+            // …and only in a LOCAL scope. A `with {}` body is its own
+            // scope class, not a local one, so `tHiS` matches inside it
+            // even at SWF5 (corpus this_swf5).
             const this_cs = if (self.swf_version <= 5)
-                self.scope != self.timeline_scope
+                self.scope != self.timeline_scope and
+                    self.scope != 0 and
+                    !self.vm.objects.get(self.scope).is_with_scope
             else
                 cs;
             const hit = if (this_cs)
@@ -596,7 +612,15 @@ pub const Activation = struct {
     /// a `watch` on the clip applies to it — but only take the accessor-
     /// aware path when something is actually watching.
     fn storeInScope(self: *Activation, node: ObjectHandle, name: strings.AvmString, v: Value) !void {
-        if (self.vm.objects.get(node).watchers.len == 0) {
+        // A scope write is a full `set`, so a VIRTUAL property on the
+        // scope object runs its setter: `with (o) { prop = 2 }` where
+        // `o.prop` is an addProperty pair calls that setter (corpus with).
+        const virtual = if (self.vm.objects.get(node).find(name, self.vm.case_sensitive)) |i|
+            self.vm.objects.get(node).props.items[i].setter != 0 or
+                self.vm.objects.get(node).props.items[i].getter != 0
+        else
+            false;
+        if (self.vm.objects.get(node).watchers.len == 0 and !virtual) {
             try self.vm.objects.put(node, name, v, self.vm.case_sensitive);
             // A timeline variable is where text-field bindings live, so
             // the fast path has to notify too.
@@ -749,8 +773,11 @@ pub const Activation = struct {
                     .base_clip_path = try self.baseClipPath(),
                 });
                 if (f.name.len > 0) {
+                    // A NAMED function definition is a `var` too, path
+                    // and all: `function /:f1() {}` defines `f1` on the
+                    // root (corpus define_local_with_paths).
                     const name = try self.swfStr(f.name);
-                    try self.vm.scopeDefineLocal(self.localScope(), name, .{ .object = fn_obj });
+                    try self.defineLocal(name, .{ .object = fn_obj });
                 } else {
                     try self.push(.{ .object = fn_obj });
                 }
@@ -770,19 +797,28 @@ pub const Activation = struct {
                     .base_clip_path = try self.baseClipPath(),
                 });
                 if (f.name.len > 0) {
+                    // A NAMED function definition is a `var` too, path
+                    // and all: `function /:f1() {}` defines `f1` on the
+                    // root (corpus define_local_with_paths).
                     const name = try self.swfStr(f.name);
-                    try self.vm.scopeDefineLocal(self.localScope(), name, .{ .object = fn_obj });
+                    try self.defineLocal(name, .{ .object = fn_obj });
                 } else {
                     try self.push(.{ .object = fn_obj });
                 }
             },
             .with_op => |w| {
                 const target = self.pop();
+                // `with(undefined)` and `with(null)` SKIP the body; every
+                // other primitive is BOXED, so `with("STRING") { length }`
+                // reads 6 (corpus with).
+                if (target == .undefined_value or target == .null_value) return .next;
+                const boxed = if (target == .object)
+                    target
+                else
+                    try @import("globals/globals.zig").boxPrimitive(self.vm, target);
                 const with_scope = try self.vm.newScope(self.scope);
                 self.vm.objects.get(with_scope).is_with_scope = true;
-                if (target == .object) {
-                    self.vm.objects.get(with_scope).scope_values = target.object;
-                }
+                self.vm.objects.get(with_scope).scope_values = boxed.object;
                 const flow = try self.runSlice(w.body, with_scope);
                 if (flow != .next) return flow;
             },
@@ -1268,13 +1304,17 @@ pub const Activation = struct {
             .define_local => {
                 const v = self.pop();
                 const name = try self.popString();
-                try self.vm.scopeDefineLocal(self.localScope(), name, v);
+                try self.defineLocal(name, v);
             },
             .define_local2 => {
                 const name = try self.popString();
-                const sc = self.localScope();
-                if (!self.vm.objects.hasOwn(sc, name, self.vm.case_sensitive)) {
-                    try self.vm.scopeDefineLocal(sc, name, .undefined_value);
+                // The existence test walks the PROTOTYPE chain, so a name
+                // the prototype already carries is left alone.
+                if (!self.inLocalScope() and self.variableSeparator(name) != null) {
+                    const cur = try self.getVariable(name);
+                    if (cur == .undefined_value) try self.setVariable(name, .undefined_value);
+                } else if (self.vm.objects.getChained(self.localScope(), name, self.vm.case_sensitive) == null) {
+                    try self.defineLocal(name, .undefined_value);
                 }
             },
             .delete => {
@@ -1971,6 +2011,40 @@ pub const Activation = struct {
     /// the local scope; in timeline code it is the (possibly retargeted)
     /// timeline scope — `tellTarget(x) { var n = 1 }` defines n on x, and
     /// reading it back must find it there.
+    /// Is there a LOCAL scope between here and the timeline? Ruffle walks
+    /// the chain and stops at the first Local (yes) or Target (no); a
+    /// `with` scope is neither and is walked through.
+    fn inLocalScope(self: *Activation) bool {
+        var node = self.scope;
+        while (node != 0) {
+            if (node == self.timeline_scope) return false;
+            if (!self.vm.objects.get(node).is_with_scope) return true;
+            node = self.vm.objects.get(node).scope_parent;
+        }
+        return false;
+    }
+
+    /// `var name = value`. Outside a function a dotted or colon path is a
+    /// path ASSIGNMENT, not a local named with dots. Otherwise the write
+    /// lands on the innermost non-`with` scope — unless the `with` target
+    /// already owns the name, in which case it belongs to the target —
+    /// and it goes through `setProperty`, so virtual setters anywhere on
+    /// the prototype chain run (corpus define_local, with_variable_scopes).
+    fn defineLocal(self: *Activation, name: strings.AvmString, v: Value) !void {
+        if (!self.inLocalScope() and self.variableSeparator(name) != null) {
+            return self.setVariable(name, v);
+        }
+        var node = self.scope;
+        while (node != 0 and self.vm.objects.get(node).is_with_scope) {
+            const target = self.scopeObject(node);
+            if (self.vm.objects.hasOwn(target, name, self.vm.case_sensitive)) break;
+            node = self.vm.objects.get(node).scope_parent;
+        }
+        const target = self.scopeObject(if (node != 0) node else self.scope);
+        try self.vm.setProperty(target, name, v, .{ .object = target });
+        self.vm.notifyTextBinding(target, name, v) catch {};
+    }
+
     fn localScope(self: *Activation) ObjectHandle {
         return self.scopeObject(self.scope);
     }

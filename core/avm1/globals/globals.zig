@@ -338,7 +338,7 @@ fn ctorObject(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 
 /// A primitive in its wrapper object, with the matching prototype so the
 /// class's own methods are reachable.
-fn boxPrimitive(vm: *Vm, v: Value) !Value {
+pub fn boxPrimitive(vm: *Vm, v: Value) !Value {
     const h = try vm.objects.create();
     switch (v) {
         .number => |n| {
