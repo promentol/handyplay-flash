@@ -726,7 +726,24 @@ pub const Vm = struct {
     }
 
     /// ES3 §11.9.3 abstract equality (Equals2), incl. object arms.
+    ///
+    /// SWF5 calls `valueOf` on BOTH sides before comparing anything —
+    /// even for two objects, where `Object.prototype.valueOf` returns
+    /// `this` and the pointer comparison below still applies. That is
+    /// what makes `new Number(1) == new Number(1)` TRUE at SWF5 and
+    /// false above it (corpus equals2_swf5). The right-hand side is
+    /// coerced first, which is observable through a `valueOf` that
+    /// traces.
     pub fn abstractEquals(self: *Vm, a: Value, b: Value) Error!bool {
+        if (self.swf_version <= 5 and (a == .object or b == .object)) {
+            const pb = try self.toPrimitiveNum(b);
+            const pa = try self.toPrimitiveNum(a);
+            return self.abstractEqualsInner(pa, pb);
+        }
+        return self.abstractEqualsInner(a, b);
+    }
+
+    fn abstractEqualsInner(self: *Vm, a: Value, b: Value) Error!bool {
         // Same-type fast paths.
         if (@as(std.meta.Tag(Value), a) == @as(std.meta.Tag(Value), b)) {
             if (self.clipPath(a)) |pa| {

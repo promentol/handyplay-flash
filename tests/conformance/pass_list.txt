@@ -170,6 +170,7 @@ edittext_width_height
 empty_movieclip_can_attach_movies
 enumerate
 equals
+equals2_swf5
 equals2_swf6
 equals2_swf7
 equals_swf4_alt
