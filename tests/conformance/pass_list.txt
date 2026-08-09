@@ -16,6 +16,7 @@ array_call_method
 array_concat
 array_constructor
 array_enumerate
+array_length
 array_properties
 array_prototyping
 array_reverse

@@ -839,8 +839,28 @@ pub const Vm = struct {
         var wide: [12]u16 = undefined;
         for (key, 0..) |c, i| wide[i] = c;
         try self.objects.put(h, wide[0..key.len], v, self.case_sensitive);
-        const len = self.arrayLength(h);
-        if (index + 1 > len) try self.setArrayLength(h, index + 1);
+        const idx: i32 = @bitCast(index);
+        if (idx >= self.arrayLengthI32(h)) try self.setArrayLengthI32(h, idx +% 1);
+    }
+
+    /// `length` as Flash keeps it: a WRAPPING i32. Past 2^31-1 it goes
+    /// negative and keeps counting, and every element operation compares
+    /// against it signed.
+    pub fn arrayLengthI32(self: *Vm, h: ObjectHandle) i32 {
+        const v = self.objects.getOwn(h, S("length"), self.case_sensitive) orelse return 0;
+        return value_mod.toInt32(value_mod.toNumberPrimitive(v, self.swf_version));
+    }
+
+    /// Shortening an array DELETES the elements past the new end —
+    /// including when the new length is NEGATIVE, which deletes
+    /// everything from index 0 up.
+    pub fn setArrayLengthI32(self: *Vm, h: ObjectHandle, new_len: i32) Error!void {
+        const old: i64 = self.arrayLengthI32(h);
+        var i: i64 = @max(new_len, 0);
+        while (i < old) : (i += 1) {
+            _ = self.objects.deleteOwn(h, try self.indexKey(@intCast(i)), self.case_sensitive);
+        }
+        try self.setArrayLengthRaw(h, @floatFromInt(new_len));
     }
 
     pub fn arrayLength(self: *Vm, h: ObjectHandle) u32 {
@@ -1425,11 +1445,13 @@ pub const Vm = struct {
             }
             return;
         }
-        const index = parseArrayIndex(name) orelse return;
-        const len: i64 = @intCast(self.arrayLength(h));
-        if (index >= len) {
-            try self.setArrayLengthRaw(h, @floatFromInt(@as(i32, @truncate(index +% 1))));
-        }
+        // Only an ARRAY tracks a length.
+        if (self.objects.get(h).native != .array) return;
+        const idx = parseArrayIndex(name) orelse return;
+        // The comparison is SIGNED: `a[2147483648]` is index -2147483648
+        // as an i32, which is below any positive length and so leaves it
+        // alone — the element is still stored (corpus array_length).
+        if (idx >= self.arrayLengthI32(h)) try self.setArrayLengthI32(h, idx +% 1);
     }
 
     fn indexKey(self: *Vm, i: u32) !strings.AvmString {
@@ -1440,19 +1462,28 @@ pub const Vm = struct {
         return wide;
     }
 
-    /// A canonical non-negative decimal that fits an i32. Anything else —
-    /// a leading zero, a sign, a fraction, or an overflow — is a plain
-    /// property name.
-    fn parseArrayIndex(name: strings.AvmString) ?i64 {
-        if (name.len == 0 or name.len > 10) return null;
-        if (name[0] == '0' and name.len > 1) return null;
-        var acc: i64 = 0;
-        for (name) |c| {
-            if (c < '0' or c > '9') return null;
-            acc = acc * 10 + (c - '0');
-            if (acc > std.math.maxInt(i32)) return null;
+    /// A signed decimal, WRAPPED into an i32 — ruffle parses the name as
+    /// `Wrapping<i32>` (script_object.rs:1044), so an index that overflows
+    /// is still an index: `a[4294967296]` is element 0 and pushes `length`
+    /// to 1, and `a["302231454903659441160191"]` is element 2147483647.
+    /// Leading ASCII whitespace is skipped; a sign is allowed; leading
+    /// zeros are fine; anything else — a fraction, a trailing space, a
+    /// non-digit — is a plain property name (corpus array_length).
+    fn parseArrayIndex(name: strings.AvmString) ?i32 {
+        var i: usize = 0;
+        while (i < name.len and switch (name[i]) {
+            ' ', '\t', '\n', 0x0c, '\r' => true,
+            else => false,
+        }) i += 1;
+        const neg = i < name.len and name[i] == '-';
+        if (i < name.len and (name[i] == '-' or name[i] == '+')) i += 1;
+        if (i == name.len) return null;
+        var acc: u32 = 0;
+        while (i < name.len) : (i += 1) {
+            if (name[i] < '0' or name[i] > '9') return null;
+            acc = acc *% 10 +% @as(u32, @intCast(name[i] - '0'));
         }
-        return acc;
+        return @bitCast(if (neg) 0 -% acc else acc);
     }
 
     /// Split out so the hot path stays a single branch: only a DISPLAY
