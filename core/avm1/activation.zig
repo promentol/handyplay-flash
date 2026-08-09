@@ -359,8 +359,12 @@ pub const Activation = struct {
         while (path.len > 0) {
             // Any number of leading `:` are the same as none.
             if (is_swf5) {
+                // `foo`, `:foo` and `:::foo` are all the same. Trimming
+                // the tail to EMPTY does not end the walk, though — the
+                // step below then looks up the empty name and fails, so
+                // `clip1.clip2/clip4::` resolves to nothing rather than
+                // to clip4 (corpus path_string).
                 while (path.len > 0 and path[0] == ':') path = path[1..];
-                if (path.len == 0) break;
             }
 
             var val: Value = .undefined_value;

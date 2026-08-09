@@ -401,6 +401,7 @@ object_prototypes
 object_string_coerce_swf5
 object_string_coerce_swf6
 on_construct
+path_string
 placeobject_occupied_depth
 point
 primitive_instanceof
