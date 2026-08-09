@@ -52,6 +52,15 @@ pub fn install(vm: *Vm) !void {
     // namespace is made here and filled from there.
     vm.flash_net = try decl.subObject(vm, flash, "net", .{});
     try @import("external.zig").install(vm, flash);
+    // `flash.text.TextRenderer` is a class with an empty prototype — it
+    // exists to be feature-detected (corpus globals_swf8).
+    const text_ns = try decl.subObject(vm, flash, "text", .{});
+    const tr_proto = try vm.objects.create();
+    vm.objects.get(tr_proto).proto = .{ .object = vm.object_proto };
+    const tr_ctor = try vm.newNativeFn(textRendererCtor);
+    try vm.objects.putWithAttrs(tr_ctor, S("prototype"), .{ .object = tr_proto }, hidden, false);
+    try vm.objects.putWithAttrs(tr_proto, S("constructor"), .{ .object = tr_ctor }, hidden, false);
+    try vm.objects.putWithAttrs(text_ns, S("TextRenderer"), .{ .object = tr_ctor }, .{}, false);
     const geom = try decl.subObject(vm, flash, "geom", .{});
 
     vm.point_proto = try protoUnder(vm, geom, "Point", ctorPoint);
@@ -125,6 +134,13 @@ pub fn install(vm: *Vm) !void {
     try decl.property(vm, vm.transform_proto, "colorTransform", trGetColorTransform, trSetColorTransform, decl.ver(.{}, decl.V8));
     try decl.property(vm, vm.transform_proto, "concatenatedColorTransform", trGetConcatColorTransform, null, decl.ver(.{}, decl.V8));
     try decl.property(vm, vm.transform_proto, "pixelBounds", trGetPixelBounds, null, decl.ver(.{}, decl.V8));
+}
+
+fn textRendererCtor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = p;
+    _ = this;
+    _ = args;
+    return .undefined_value;
 }
 
 /// A class hung off `flash.geom` rather than off `_global`.

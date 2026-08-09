@@ -248,6 +248,9 @@ geturl_opcode_target_normalize
 geturl_target_normalize
 global_array
 global_is_bare
+globals_swf6
+globals_swf7
+globals_swf8
 goto_advance1
 goto_advance2
 goto_both_ways1
