@@ -731,3 +731,42 @@ default, so they are expected output. They must stay quiet during a GOTO
 replay: ruffle aggregates a goto into a placement delta and never
 re-places a depth it already filled, while our correctness-first replay
 does (`Context.replaying`).
+
+## After L — the near-miss sweep (522 → 539)
+
+**`clampToI32` is not ToInt32.** Anything outside i32's range — both
+infinities AND NaN — becomes `i32::MIN`, where `toInt32` wraps. Flash
+uses each in different places and the corpus tells them apart
+(`_soundbuftime` set to +Infinity reads back -2147483648).
+
+**Overwriting a property clears its SWF-version gate.** A member hidden
+by `ASSetPropFlags` becomes visible again the moment script assigns to
+it (ruffle property.rs `set_data`).
+
+**Above SWF9 the version-gate table runs out rather than saturating**, so
+a SWF10 movie hides nothing at all. Clamping to the v9 row instead is
+what made a v10 child report itself as 9.
+
+**`isNaN()` with no argument is TRUE and `Boolean()` with none is
+UNDEFINED** — neither is the coercion of a missing argument, which below
+SWF7 would make both false. `isFinite()`'s bare-false is the third of
+the set.
+
+**`hasOwnProperty("__proto__")` is true for anything with a prototype**:
+ruffle keeps `__proto__` as a real entry in the property map rather than
+a synthesized accessor.
+
+**A second construction changes nothing.** A native constructor run on an
+object that already carries its payload evaluates its arguments — a
+`valueOf` still fires — and stores none of them.
+
+**An ENGINE-initiated call keeps the function's defining base clip even
+below SWF6**, where an ordinary call adopts `this`'s instead (ruffle's
+`ExecutionReason::Special`). It is what lets an `XML.onLoad` defined in
+a loaded SWF7 movie see that movie's timeline variables when the root
+that loaded it is SWF5.
+
+**SWF5 calls `valueOf` on BOTH sides of `==` before comparing**, objects
+included — `Object.prototype.valueOf` returns `this`, so the pointer
+comparison still applies afterwards, but `new Number(1) == new Number(1)`
+comes out TRUE.
