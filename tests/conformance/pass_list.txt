@@ -494,6 +494,7 @@ swf5_global_funcs
 swf5_no_closure
 swf5_to_6_cross_call
 swf5_xml_event_handler_context
+swf6_case_insensitive
 swf6_global_funcs
 swf6_string_as_bool
 swf6_to_5_cross_call
