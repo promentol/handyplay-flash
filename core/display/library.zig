@@ -9,10 +9,24 @@
 const std = @import("std");
 const swf = @import("../swf/swf.zig");
 
+/// A preloaded tag stream: the frames themselves plus the two facts that
+/// decide whether the clip LOOPS. Neither is `frames.len`: a stream that
+/// ends mid-frame contributes a partial frame that runs once and never
+/// counts, and a stream with no End tag never loops at all (ruffle
+/// `determine_next_frame`).
+pub const Timeline = struct {
+    frames: []Frame,
+    /// ShowFrame tags seen — ruffle's `frames_loaded`.
+    frames_loaded: u16 = 0,
+    has_end: bool = false,
+};
+
 pub const Sprite = struct {
     id: u16,
     frame_count: u16,
     frames: []Frame,
+    frames_loaded: u16 = 0,
+    has_end: bool = false,
     /// Bytes of DefineSprite payload after the id/frame-count header —
     /// what `getBytesTotal()` reports for a clip that is not the root.
     tag_stream_len: usize = 0,

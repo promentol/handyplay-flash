@@ -361,6 +361,9 @@ lock_root
 logical_ops_swf4
 logical_ops_swf8
 looping
+looping_child_swf32
+looping_child_swf5
+looping_child_swf9
 looping_real_1_declared_1
 looping_real_1_declared_2
 looping_real_2_declared_1

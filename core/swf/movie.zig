@@ -49,6 +49,10 @@ pub const Movie = struct {
     lib: library.Library = .{},
     /// Main timeline frames (frames[i] = frame i+1 in Flash speak).
     frames: []library.Frame = &.{},
+    /// ShowFrame tags on the main timeline, and whether it ended with an
+    /// End tag — the two facts that decide whether the root loops.
+    frames_loaded: u16 = 0,
+    has_end: bool = false,
     /// Shared JPEG encoding tables (tag 8) for DefineBits characters.
     jpeg_tables: ?[]const u8 = null,
     /// First SetBackgroundColor (also replayed per frame via controls).
@@ -116,25 +120,34 @@ pub fn load(gpa: std.mem.Allocator, file_bytes: []const u8) Error!Movie {
         .compressed_len = @intCast(file_bytes.len),
         .header = h,
     };
-    movie.frames = try preloadTimeline(&movie, dec.body[h.tags_offset..], true);
+    const timeline = try preloadTimeline(&movie, dec.body[h.tags_offset..], true);
+    movie.frames = timeline.frames;
+    movie.frames_loaded = timeline.frames_loaded;
+    movie.has_end = timeline.has_end;
     return movie;
 }
 
 /// Walk one tag stream (main timeline or a sprite), registering
 /// definitions into the movie library and collecting per-frame controls.
-fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]library.Frame {
+fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error!library.Timeline {
     const a = movie.allocator();
     var frames: std.ArrayList(library.Frame) = .empty;
     var controls: std.ArrayList(library.Control) = .empty;
     var pending_label: ?[]const u8 = null;
+    var shown: u16 = 0;
+    var has_end = false;
 
     var it = tags.TagIterator.init(stream);
     while (it.next()) |tag| {
         const ctx: shape.Context = .{ .swf_version = movie.swf_version, .shape_version = 0 };
         _ = ctx;
         switch (tag.code) {
-            .end => break,
+            .end => {
+                has_end = true;
+                break;
+            },
             .show_frame => {
+                shown +|= 1;
                 try frames.append(a, .{
                     .label = pending_label,
                     .controls = try controls.toOwnedSlice(a),
@@ -266,11 +279,13 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
                 var r = rdr.Reader.init(tag.body);
                 const id = try r.readU16();
                 const frame_count = try r.readU16();
-                const sprite_frames = try preloadTimeline(movie, tag.body[4..], false);
+                const sprite_timeline = try preloadTimeline(movie, tag.body[4..], false);
                 try movie.lib.put(a, id, .{ .sprite = .{
                     .id = id,
                     .frame_count = frame_count,
-                    .frames = sprite_frames,
+                    .frames = sprite_timeline.frames,
+                    .frames_loaded = sprite_timeline.frames_loaded,
+                    .has_end = sprite_timeline.has_end,
                     // A sprite's getBytesTotal is the length of its OWN tag
                     // stream (ruffle MovieClip::tag_stream_len).
                     .tag_stream_len = tag.body.len -| 4,
@@ -377,13 +392,18 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
         }
     }
     // Flush a trailing partial frame (streams that end without ShowFrame).
+    // It RUNS, once, but it is not a frame the clip can loop over.
     if (controls.items.len > 0 or pending_label != null) {
         try frames.append(a, .{
             .label = pending_label,
             .controls = try controls.toOwnedSlice(a),
         });
     }
-    return frames.toOwnedSlice(a);
+    return .{
+        .frames = try frames.toOwnedSlice(a),
+        .frames_loaded = shown,
+        .has_end = has_end,
+    };
 }
 
 fn putShape(movie: *Movie, body: []const u8, version: u8) Error!void {

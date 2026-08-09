@@ -234,6 +234,13 @@ pub const QueuedAction = struct {
 pub const MovieClip = struct {
     /// Preloaded frames (root movie or sprite character).
     frames: []const library.Frame,
+    /// How many of those frames are COMPLETE — a tag stream that ends
+    /// mid-frame leaves a partial one at the end that runs once and is
+    /// not part of the loop. Ruffle's `frames_loaded`.
+    frames_loaded: u16 = 0,
+    /// Did the tag stream end with an End tag? A sprite whose stream just
+    /// runs out never loops, however many frames it has.
+    has_end_tag: bool = true,
     /// 1-based; 0 = nothing executed yet.
     current_frame: u16 = 0,
     playing: bool = true,
@@ -293,7 +300,13 @@ pub const MovieClip = struct {
     owner_button: ?*DisplayObject = null,
 
     pub fn init(frames: []const library.Frame) MovieClip {
-        return .{ .frames = frames };
+        return .{ .frames = frames, .frames_loaded = @intCast(frames.len) };
+    }
+
+    /// A clip built from a preloaded stream, which knows the two facts
+    /// `init` has to guess at.
+    pub fn initTimeline(frames: []const library.Frame, frames_loaded: u16, has_end: bool) MovieClip {
+        return .{ .frames = frames, .frames_loaded = frames_loaded, .has_end_tag = has_end };
     }
 
     /// The movie whose LIBRARY this clip's characters come from. A loaded
@@ -575,9 +588,15 @@ pub const MovieClip = struct {
     fn determineNextFrame(self: *const MovieClip) u16 {
         if (self.frames.len == 0) return 0;
         if (self.current_frame == 0) return 1;
+        // A trailing PARTIAL frame is still somewhere to go — it runs
+        // once, the way ruffle keeps reading tags past the last
+        // ShowFrame — but it is not a frame the clip can come back to.
         if (self.current_frame < self.frames.len) return self.current_frame + 1;
-        if (self.frames.len > 1) return 1; // loop
-        return self.current_frame; // single frame: implicit stop
+        // Two ways to have nowhere to go: there was really only one
+        // frame whatever the header claimed, or the tag stream never
+        // ended (ruffle `determine_next_frame`, corpus looping_child_*).
+        if (self.frames_loaded <= 1 or !self.has_end_tag) return self.current_frame;
+        return 1; // loop
     }
 
     /// What a GOTO replay needs to know beyond the frame number. Ruffle
@@ -858,6 +877,8 @@ pub const MovieClip = struct {
         // movieclip_state_values).
         self.emptied_by_load = movie == null;
         self.frames = if (movie) |m| m.frames else &.{};
+        self.frames_loaded = if (movie) |m| m.frames_loaded else 0;
+        self.has_end_tag = if (movie) |m| m.has_end else true;
         self.current_frame = 0;
         self.playing = true;
         self.initialized = false;
@@ -1003,7 +1024,7 @@ pub const MovieClip = struct {
                 } },
                 .sprite => |sprite| .{ .clip = c: {
                     const mc = try ctx.gpa.create(MovieClip);
-                    mc.* = MovieClip.init(sprite.frames);
+                    mc.* = MovieClip.initTimeline(sprite.frames, sprite.frames_loaded, sprite.has_end);
                     mc.tag_stream_len = sprite.tag_stream_len;
                     break :c mc;
                 } },
