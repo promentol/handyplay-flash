@@ -1608,72 +1608,31 @@ fn globalIsFinite(p: *anyopaque, this: Value, args: []const Value) anyerror!Valu
     return .{ .boolean = !(std.math.isNan(n) or std.math.isInf(n)) };
 }
 
+/// `parseFloat()` with NO argument is UNDEFINED, not NaN — an
+/// ECMA-262 violation Flash shares with `parseInt`. Everything else is
+/// the shared digit-by-digit parser, which is not `std.fmt.parseFloat`:
+/// Flash accumulates `digit * 10^exp` term by term and the rounding
+/// differs in the last places (corpus parse_float).
 fn globalParseFloat(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
     const vm = vmOf(p);
-    const s = try vm.toStringValue(arg(args, 0));
-    // parseFloat: longest valid prefix.
-    var buf: [64]u8 = undefined;
-    var n: usize = 0;
-    var i: usize = 0;
-    while (i < s.len and (s[i] == ' ' or s[i] == '\t')) i += 1;
-    while (i < s.len and n < buf.len) : (i += 1) {
-        const c = s[i];
-        if (c > 0x7F) break;
-        const ch: u8 = @intCast(c);
-        if ((ch >= '0' and ch <= '9') or ch == '.' or ch == '-' or ch == '+' or ch == 'e' or ch == 'E') {
-            buf[n] = ch;
-            n += 1;
-        } else break;
-    }
-    while (n > 0) {
-        if (std.fmt.parseFloat(f64, buf[0..n])) |v| {
-            return .{ .number = v };
-        } else |_| n -= 1;
-    }
-    return .{ .number = std.math.nan(f64) };
+    if (args.len == 0) return .undefined_value;
+    const s = try vm.toStringThrowing(args[0]);
+    return .{ .number = value_mod.parseFloatImpl(s, false) };
 }
 
 fn globalParseInt(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
     const vm = vmOf(p);
-    const s = try vm.toStringValue(arg(args, 0));
-    var radix: u8 = 0;
-    if (args.len > 1) {
-        const r = try vm.toNumber(args[1]);
-        if (r >= 2 and r <= 36) radix = @intFromFloat(r);
-    }
-    var i: usize = 0;
-    while (i < s.len and (s[i] == ' ' or s[i] == '\t' or s[i] == '\n' or s[i] == '\r')) i += 1;
-    var neg = false;
-    if (i < s.len and (s[i] == '+' or s[i] == '-')) {
-        neg = s[i] == '-';
-        i += 1;
-    }
-    if (radix == 0) {
-        if (i + 1 < s.len and s[i] == '0' and (s[i + 1] == 'x' or s[i + 1] == 'X')) {
-            radix = 16;
-            i += 2;
-        } else radix = 10;
-    } else if (radix == 16 and i + 1 < s.len and s[i] == '0' and (s[i + 1] == 'x' or s[i + 1] == 'X')) {
-        i += 2;
-    }
-    var acc: f64 = 0;
-    var any = false;
-    while (i < s.len) : (i += 1) {
-        const c = s[i];
-        const d: u8 = switch (c) {
-            '0'...'9' => @intCast(c - '0'),
-            'a'...'z' => @intCast(c - 'a' + 10),
-            'A'...'Z' => @intCast(c - 'A' + 10),
-            else => break,
-        };
-        if (d >= radix) break;
-        acc = acc * @as(f64, @floatFromInt(radix)) + @as(f64, @floatFromInt(d));
-        any = true;
-    }
-    if (!any) return .{ .number = std.math.nan(f64) };
-    return .{ .number = if (neg) -acc else acc };
+    if (args.len == 0) return .undefined_value;
+    // The RADIX is read first, and out of range it is NaN before the
+    // string is even looked at.
+    const radix: ?i32 = if (args.len > 1)
+        value_mod.toInt32(try vm.toNumberThrowing(args[1]))
+    else
+        null;
+    const s = try vm.toStringThrowing(args[0]);
+    return .{ .number = value_mod.parseIntImpl(s, radix) };
 }
 
 fn globalGetTimer(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -1953,31 +1912,54 @@ fn globalEscape(p: *anyopaque, this: Value, args: []const Value) anyerror!Value 
     return .{ .string = try out.toOwnedSlice(a) };
 }
 
+/// Ruffle's byte-at-a-time state machine, which is NOT "find %XX and
+/// decode it". A `%` arms a two-hex-digit countdown; any non-hex byte
+/// while armed DISARMS and is itself dropped, and a `%` with fewer than
+/// two digits behind it drops everything it consumed. So "aaa%zz" is
+/// "aaaz" — the `%` and the first `z` vanish, the second survives — and
+/// "%u0100" loses its `%u` and keeps "0100". A `+` is a SPACE.
 fn globalUnescape(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
     const vm = vmOf(p);
-    const s = try vm.toStringValue(arg(args, 0));
-    var bytes: std.ArrayList(u8) = .empty;
+    if (args.len == 0) return .undefined_value;
+    const s = try vm.toStringThrowing(args[0]);
     const a = vm.arena();
-    var i: usize = 0;
-    while (i < s.len) : (i += 1) {
-        if (s[i] == '%' and i + 2 < s.len) {
-            const hi = std.fmt.charToDigit(@intCast(@min(s[i + 1], 127)), 16) catch {
-                try bytes.append(a, @intCast(@min(s[i], 255)));
-                continue;
-            };
-            const lo = std.fmt.charToDigit(@intCast(@min(s[i + 2], 127)), 16) catch {
-                try bytes.append(a, @intCast(@min(s[i], 255)));
-                continue;
-            };
-            try bytes.append(a, hi * 16 + lo);
-            i += 2;
-        } else if (s[i] < 0x80) {
-            try bytes.append(a, @intCast(s[i]));
+    var bytes: std.ArrayList(u8) = .empty;
+    var remain: u8 = 0;
+    var hex: [2]u8 = undefined;
+    var n_hex: u8 = 0;
+    // The source is UTF-8 BYTES, so a non-ASCII character contributes
+    // its encoding and passes through unchanged.
+    var utf8: std.ArrayList(u8) = .empty;
+    for (s) |unit| {
+        if (unit < 0x80) {
+            try utf8.append(a, @intCast(unit));
         } else {
             var buf: [3]u8 = undefined;
-            const n = std.unicode.utf8Encode(s[i], &buf) catch 0;
-            try bytes.appendSlice(a, buf[0..n]);
+            const n = std.unicode.utf8Encode(unit, &buf) catch 0;
+            try utf8.appendSlice(a, buf[0..n]);
+        }
+    }
+    for (utf8.items) |c| {
+        if (c == '%') {
+            remain = 2;
+            n_hex = 0;
+        } else if (remain > 0 and std.ascii.isHex(c)) {
+            remain -= 1;
+            hex[n_hex] = c;
+            n_hex += 1;
+            if (remain == 0) {
+                const v = std.fmt.parseInt(u8, hex[0..n_hex], 16) catch 0;
+                try bytes.append(a, v);
+                n_hex = 0;
+            }
+        } else if (remain > 0) {
+            remain = 0;
+            n_hex = 0;
+        } else if (c == '+') {
+            try bytes.append(a, ' ');
+        } else {
+            try bytes.append(a, c);
         }
     }
     const decoded = std.unicode.utf8ToUtf16LeAlloc(a, bytes.items) catch blk: {

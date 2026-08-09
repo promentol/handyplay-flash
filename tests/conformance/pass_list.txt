@@ -401,6 +401,8 @@ object_prototypes
 object_string_coerce_swf5
 object_string_coerce_swf6
 on_construct
+parse_float
+parse_int
 path_string
 placeobject_occupied_depth
 point
@@ -560,6 +562,7 @@ typeof_globals
 uncaught_exception
 uncaught_exception_bubbled
 undefined_to_string_swf6
+unescape
 unload_clip_event
 unloadmovie
 unloadmovie_method

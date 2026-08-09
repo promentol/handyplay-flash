@@ -97,6 +97,67 @@ pub fn stringToNumber(s: strings.AvmString, swf_version: u8) f64 {
     return result;
 }
 
+/// ruffle `parse_int_internal` — the global `parseInt`, bugs and all.
+/// An explicit radix outside 2..36 is NaN outright; a `0x` prefix is
+/// stripped WHATEVER the radix (so `parseInt('0x100', 10)` is 100), but
+/// only when it comes before the sign and any spaces; and a signed hex
+/// prefix is NaN unless the radix is high enough for "0x" to be digits.
+/// A leading zero with only octal digits after it auto-detects base 8.
+pub fn parseIntImpl(str: strings.AvmString, radix_in: ?i32) f64 {
+    const nan = std.math.nan(f64);
+    var radix: u32 = 10;
+    var explicit = false;
+    if (radix_in) |r| {
+        if (r < 2 or r > 36) return nan;
+        radix = @intCast(r);
+        explicit = true;
+    }
+
+    var s = str;
+    var ignore_sign = false;
+    const has_sign = s.len > 0 and (s[0] == '+' or s[0] == '-');
+    const off: usize = if (has_sign) 1 else 0;
+    const zero = s.len > off and s[off] == '0';
+    const hex = zero and s.len > off + 1 and (s[off + 1] == 'x' or s[off + 1] == 'X');
+    if (hex) {
+        if (has_sign) {
+            if (!explicit or radix <= 33) return nan;
+            ignore_sign = true;
+        } else {
+            if (!explicit) radix = 16;
+            s = s[2..];
+        }
+    } else if (zero and !explicit and allOctal(s[1..])) {
+        radix = 8;
+    }
+
+    while (s.len > 0 and (s[0] == '\t' or s[0] == '\n' or s[0] == '\r' or s[0] == ' ')) s = s[1..];
+
+    var sign: f64 = 1;
+    if (s.len > 0 and (s[0] == '+' or s[0] == '-')) {
+        if (!ignore_sign and s[0] == '-') sign = -1;
+        s = s[1..];
+    }
+
+    var empty = true;
+    var result: f64 = 0;
+    for (s) |c| {
+        const d = digitValue(c) orelse break;
+        if (d >= radix) break;
+        result = result * @as(f64, @floatFromInt(radix)) + @as(f64, @floatFromInt(d));
+        empty = false;
+    }
+    if (empty) return nan;
+    return std.math.copysign(result, sign);
+}
+
+fn allOctal(s: strings.AvmString) bool {
+    for (s) |c| {
+        if (c < '0' or c > '7') return false;
+    }
+    return true;
+}
+
 /// ruffle `guess_radix`: 16 for `0x`, 8 for a leading `0` with all-octal
 /// digits, else 10. One optional sign is skipped first.
 fn guessRadix(str: strings.AvmString) u8 {
@@ -135,7 +196,7 @@ fn parseIntRadix(str: strings.AvmString, radix: u8) ?f64 {
 /// ruffle `parse_float_impl`. Note it has NO `Infinity` literal — AVM1
 /// `Number("Infinity")` really is NaN. In lenient mode a numeric prefix is
 /// accepted and the tail ignored.
-fn parseFloatImpl(str: strings.AvmString, strict: bool) f64 {
+pub fn parseFloatImpl(str: strings.AvmString, strict: bool) f64 {
     const nan = std.math.nan(f64);
     var s = str;
     while (s.len > 0 and isWs(s[0])) s = s[1..];
