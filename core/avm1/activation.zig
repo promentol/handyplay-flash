@@ -399,6 +399,18 @@ pub const Activation = struct {
                 }
                 cur = self.vm.objects.get(cur).scope_parent;
             }
+            // `_global` is the LAST scope in ruffle's chain, so a dotted
+            // path that fails everywhere else is tried against it — which
+            // is what makes `a.b.c` find `_global.a.b.c` when the
+            // timeline's own `a.b` is a string (corpus
+            // get_variable_in_scope). Our chain ends before it, because a
+            // clip's scope node has no parent.
+            if (try self.resolveTargetPath(root, self.vm.globals, path, true, true)) |obj| {
+                if (try self.hasVariable(obj, var_name)) {
+                    const v = try self.memberGet(.{ .object = obj }, var_name);
+                    return .{ .value = v, .owner = obj };
+                }
+            }
             return null;
         }
 
@@ -412,6 +424,9 @@ pub const Activation = struct {
                     return .{ .value = .{ .object = obj }, .owner = 0 };
                 }
                 cur = self.vm.objects.get(cur).scope_parent;
+            }
+            if (try self.resolveTargetPath(root, self.vm.globals, name, false, false)) |obj| {
+                return .{ .value = .{ .object = obj }, .owner = 0 };
             }
         }
 
@@ -447,6 +462,10 @@ pub const Activation = struct {
                     return;
                 }
                 cur = self.vm.objects.get(cur).scope_parent;
+            }
+            // The write side ends at `_global` too — see the read path.
+            if (try self.resolveTargetPath(root, self.vm.globals, path, true, true)) |obj| {
+                try self.memberSet(.{ .object = obj }, var_name, v);
             }
             return;
         }
