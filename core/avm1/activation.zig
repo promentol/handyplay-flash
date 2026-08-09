@@ -695,36 +695,21 @@ pub const Activation = struct {
                 }
                 return self.vm.getProperty(h, name, target);
             },
-            .string => |s| {
-                if (strings.eqlIgnoreCase(name, S("length"))) {
-                    return .{ .number = @floatFromInt(s.len) };
-                }
-                // Methods via String.prototype on a temp box (M4 full box).
-                if (self.vm.string_proto != 0) {
-                    if (self.vm.objects.getChained(self.vm.string_proto, name, self.vm.case_sensitive)) |m| {
-                        return m;
-                    }
-                }
-                return .undefined_value;
-            },
-            .number => {
-                if (self.vm.number_proto != 0) {
-                    if (self.vm.objects.getChained(self.vm.number_proto, name, self.vm.case_sensitive)) |m| {
-                        return m;
-                    }
-                }
-                return .undefined_value;
-            },
-            .boolean => {
-                if (self.vm.boolean_proto != 0) {
-                    if (self.vm.objects.getChained(self.vm.boolean_proto, name, self.vm.case_sensitive)) |m| {
-                        return m;
-                    }
-                }
-                return .undefined_value;
-            },
+            // A read on a PRIMITIVE boxes it first, `length` included,
+            // and boxing goes through `_global` — so monkey-patching
+            // `_global.String` changes what `"world".length` answers
+            // (corpus coerce_to_object_monkeypatch).
+            .string, .number, .boolean => return self.boxedMemberGet(target, name),
             else => return .undefined_value,
         }
+    }
+
+    fn boxedMemberGet(self: *Activation, target: Value, name: strings.AvmString) !Value {
+        const boxed = try @import("globals/globals.zig").boxPrimitive(self.vm, target);
+        if (boxed != .object) return .undefined_value;
+        // The box is the receiver for a getter, but `this` for a METHOD
+        // call is still substituted by the caller.
+        return self.vm.getProperty(boxed.object, name, boxed);
     }
 
     fn memberSet(self: *Activation, target: Value, name: strings.AvmString, v: Value) !void {

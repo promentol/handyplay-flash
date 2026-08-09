@@ -108,6 +108,7 @@ clip_events
 clone_sprite_edittext
 clone_sprite_edittext_dynamic
 closure_scope
+coerce_to_object_monkeypatch
 coerce_to_primitive_resolve
 color
 color_transform

@@ -340,9 +340,27 @@ fn ctorObject(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return .{ .object = h };
 }
 
-/// A primitive in its wrapper object, with the matching prototype so the
-/// class's own methods are reachable.
-pub fn boxPrimitive(vm: *Vm, v: Value) !Value {
+/// Boxing goes through `_global`, not through the built-in class:
+/// Flash looks up "Boolean", "Number" or "String" by NAME and CONSTRUCTS
+/// it, so replacing `_global.Number` — even with a getter — changes what
+/// `42.toString` finds (corpus coerce_to_object_monkeypatch). A name
+/// that no longer holds a constructor cannot be boxed at all.
+pub fn boxPrimitive(vm: *Vm, v: Value) anyerror!Value {
+    const class_name: strings.AvmString = switch (v) {
+        .boolean => S("Boolean"),
+        .number => S("Number"),
+        .string => S("String"),
+        // undefined and null cannot be boxed at all.
+        else => return .undefined_value,
+    };
+    const cls = try vm.getPropertyStored(vm.globals, class_name, .{ .object = vm.globals });
+    if (cls != .object or !vm.isCallable(cls)) return .undefined_value;
+    return vm.construct(cls, &.{v});
+}
+
+/// The wrapper built directly, without going through `_global`. Kept
+/// for the `Number`/`String`/`Boolean` constructors themselves.
+fn builtinBox(vm: *Vm, v: Value) !Value {
     const h = try vm.objects.create();
     switch (v) {
         .number => |n| {
@@ -501,13 +519,11 @@ fn objIsPrototypeOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Va
 /// object; a primitive is boxed (corpus funky_function_calls).
 fn callThis(vm: *Vm, args: []const Value) !Value {
     const v = arg(args, 0);
-    return switch (v) {
-        .object => v,
-        // A primitive is BOXED and passed through; only undefined and
-        // null fall back to the global object.
-        .number, .string, .boolean => try boxPrimitive(vm, v),
-        else => .{ .object = vm.globals },
-    };
+    if (v == .object) return v;
+    // A primitive is BOXED; undefined, null, and a primitive whose class
+    // has gone missing from `_global` all fall back to the global object.
+    const boxed = try boxPrimitive(vm, v);
+    return if (boxed == .object) boxed else .{ .object = vm.globals };
 }
 
 fn fnCall(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {

@@ -1299,6 +1299,13 @@ pub const Vm = struct {
     // --- function calls ---------------------------------------------------
 
     pub fn callFunction(self: *Vm, callee: Value, this: Value, args: []const Value) anyerror!Value {
+        // Calling a PRIMITIVE boxes it first and then fails on the box:
+        // `"callme"()` runs the String constructor and answers undefined
+        // (corpus coerce_to_object_monkeypatch).
+        if (callee == .number or callee == .string or callee == .boolean) {
+            _ = try @import("globals/globals.zig").boxPrimitive(self, callee);
+            return .undefined_value;
+        }
         if (!self.isCallable(callee)) return .undefined_value;
         // `call_special` belongs to THIS call and no other. A native
         // callee never reaches `callAvm1` to consume it, so clear it here
@@ -1375,13 +1382,21 @@ pub const Vm = struct {
     /// `new` semantics: fresh object with ctor.prototype, ctor invoked
     /// with it as this; object result overrides.
     pub fn construct(self: *Vm, ctor: Value, args: []const Value) anyerror!Value {
+        if (ctor == .number or ctor == .string or ctor == .boolean) {
+            _ = try @import("globals/globals.zig").boxPrimitive(self, ctor);
+            return .undefined_value;
+        }
         if (!self.isCallable(ctor)) return .undefined_value;
         self.in_construct += 1;
         defer self.in_construct -= 1;
         const obj = try self.objects.create();
+        // Whatever `prototype` holds becomes `__proto__`, object or not:
+        // `Number.prototype = true` really does give instances a boolean
+        // prototype (corpus coerce_to_object_monkeypatch). Only an ABSENT
+        // `prototype` falls back to Object.prototype.
         const proto = self.objects.getChained(ctor.object, S("prototype"), self.case_sensitive) orelse
             Value{ .object = self.object_proto };
-        self.objects.get(obj).proto = if (proto == .object) proto else .{ .object = self.object_proto };
+        self.objects.get(obj).proto = proto;
         try self.objects.putWithAttrs(obj, S("__constructor__"), ctor, .{ .dont_enum = true }, self.case_sensitive);
         // Below SWF7 `constructor` is defined on the INSTANCE as well, not
         // just inherited from the prototype (ruffle define_constructor_props).
