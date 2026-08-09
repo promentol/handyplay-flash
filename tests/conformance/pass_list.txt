@@ -27,6 +27,7 @@ as2_super_via_manual_prototype
 as_broadcaster
 as_broadcaster_initialize
 as_broadcaster_undef
+as_set_prop_flags
 as_set_prop_flags_version
 as_set_prop_flags_version_swf5
 as_set_prop_flags_version_swf6
@@ -125,6 +126,7 @@ define_function_case_sensitive
 define_local
 define_local_with_paths
 delete
+delete2
 depth_replacement_audio_unloading
 device_font_spacing
 display_object_properties
@@ -397,6 +399,7 @@ new_object_wrap
 o
 object_constructor
 object_function
+object_properties
 object_prototypes
 object_string_coerce_swf5
 object_string_coerce_swf6

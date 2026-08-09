@@ -1369,11 +1369,27 @@ pub const Activation = struct {
             .delete2 => {
                 // Errata: also pushes a success bool.
                 const name = try self.popString();
-                var cur = self.scope;
                 var deleted = false;
-                while (cur != 0 and !deleted) {
-                    deleted = self.vm.objects.deleteOwn(self.scopeObject(cur), name, self.vm.case_sensitive);
-                    cur = self.vm.objects.get(cur).scope_parent;
+                // A PATH deletes on the object the path names, not on the
+                // scope chain: `delete o.a` removes `a` from `o`. Only a
+                // bare name walks the scopes (corpus delete2).
+                if (self.variableSeparator(name)) |sep| {
+                    const target = try self.getVariable(name[0..sep]);
+                    if (target == .object) {
+                        deleted = self.vm.objects.deleteOwn(
+                            target.object,
+                            name[sep + 1 ..],
+                            self.vm.case_sensitive,
+                        );
+                    } else if (target != .null_value and target != .undefined_value) {
+                        try self.vm.traceLine(S("Parameters of primitive types are no longer coerced into the required type - Object."));
+                    }
+                } else {
+                    var cur = self.scope;
+                    while (cur != 0 and !deleted) {
+                        deleted = self.vm.objects.deleteOwn(self.scopeObject(cur), name, self.vm.case_sensitive);
+                        cur = self.vm.objects.get(cur).scope_parent;
+                    }
                 }
                 try self.push(.{ .boolean = deleted });
             },

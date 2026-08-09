@@ -1661,13 +1661,15 @@ fn globalAsSetPropFlags(p: *anyopaque, this: Value, args: []const Value) anyerro
 
     const applyAttrs = struct {
         fn f(a0: object_mod.Attributes, set: u16, clear: u16) object_mod.Attributes {
+            // CLEAR first, then SET: a bit named in both ends up SET
+            // (corpus as_set_prop_flags calls with set == clear).
             var a = a0;
-            if (set & 1 != 0) a.dont_enum = true;
-            if (set & 2 != 0) a.dont_delete = true;
-            if (set & 4 != 0) a.read_only = true;
             if (clear & 1 != 0) a.dont_enum = false;
             if (clear & 2 != 0) a.dont_delete = false;
             if (clear & 4 != 0) a.read_only = false;
+            if (set & 1 != 0) a.dont_enum = true;
+            if (set & 2 != 0) a.dont_delete = true;
+            if (set & 4 != 0) a.read_only = true;
             // Bits 3..15 are version gates — keep them verbatim.
             a.version_bits = (a.version_bits & ~clear) | (set & 0xFFF8);
             return a;
@@ -1681,7 +1683,10 @@ fn globalAsSetPropFlags(p: *anyopaque, this: Value, args: []const Value) anyerro
 
     const props = arg(args, 1);
     const o = vm.objects.get(h);
-    if (props == .null_value or props == .undefined_value) {
+    // ONLY null means "every property". `undefined` is coerced to the
+    // STRING "undefined" and names one property, which the corpus
+    // checks by putting a property called "undefined" on the object.
+    if (props == .null_value or args.len < 2) {
         var i: usize = 0;
         while (i < o.props.items.len) : (i += 1) apply(o, i, set_bits, clear_bits);
         if (o.proto != .undefined_value) o.proto_attrs = applyAttrs(o.proto_attrs, set_bits, clear_bits);
