@@ -879,3 +879,65 @@ but the table stops where Flash's did, so Ⱥ (cased later by Unicode)
 stays distinct from ⱥ. SWF5 and below decode strings as WINDOWS-1252,
 not Latin-1; the two differ only at 0x80..0x9F, where CP1252 has
 typography and Latin-1 has controls.
+
+---
+
+## Notes from the second sweep (626 → 668)
+
+**Removal waits a tick when something is listening.** A subtree with an
+unload handler is not unlinked when it is removed: it stays in its
+parent's child list at a NEGATED depth (`-depth - 1`), its unload fires
+immediately, and the unlink happens at the start of the next frame. So
+the script that called `removeMovieClip` still sees the clip. The
+action queue drops everything a pending-removal clip queued except its
+own unload, or the extra tick runs an extra enterFrame.
+
+**There are TWO global environments**, one for SWF6 and below and one
+for SWF7 and above, and they are separate all the way down: separate
+`_global`, separate `Object.prototype`, separate `registerClass`
+registry. A loaded movie's clip belongs to ITS OWN — a SWF8 movie in
+`_level2` gets the SWF7-side `MovieClip.prototype` whatever version
+loaded it. `_global` itself is NOT a property of the globals object; the
+name resolves through the display-path machinery, gated to SWF6+, which
+is why a SWF5 movie sees it only through the `preload_global` register.
+
+**A level is its own `_root`.** The walk stops where there is no parent,
+so inside a movie loaded into `_level1` `_root` means `_level1` — for
+the `preload_root` register too.
+
+**An accessor runs with `super` one level down**, exactly like a
+constructor. Without that, a getter reading `super.<its own name>` finds
+itself.
+
+**Most native constructors answer UNDEFINED**, which is what `super()`
+in a subclass evaluates to; `new X()` still yields the instance, because
+`new` ignores the return unless the class declares a separate
+constructor half (Object, Function, BitmapData, Transform).
+
+**A register index past a function's own count reads and WRITES the four
+global registers.** `ScriptLimits` sets the recursion cap, and the count
+includes the frame about to be made.
+
+**`AllEventFlags` is a MASK.** A PlaceObject2 clip-action block starts
+with the union of every record's flags, and Flash masks each record with
+it: a handler for an event the union does not list never fires.
+
+**`ImplementsOp` takes effect once per class** — a second `implements`
+is ignored even when the first named nothing usable — and a display
+object is never an interface.
+
+**AMF0's rules that are not in the format spec**: functions are skipped
+as properties but a function passed as a VALUE is an ordinary object; a
+getter is written as undefined and never called; properties come out in
+reverse enumeration order; an array with only numeric keys is a dense
+strict array and one non-numeric key makes it an ECMA array; the same
+object twice is a reference; and a typed object's class name is the
+LATEST alias its constructor was registered under.
+
+**The five states of a loading clip** (default, loading, error, image,
+unloaded) are all distinguishable, and the corpus compares snapshots of
+each: an error reports -1 for `_framesloaded` and `getBytesTotal` but 0
+for `getBytesLoaded`; an image has one frame and it is the current one;
+unloaded is entered on the NEXT frame and forgets the load entirely. A
+clip a load emptied reports zero frames where a fresh
+`createEmptyMovieClip` reports one.

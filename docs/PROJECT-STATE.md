@@ -1,6 +1,6 @@
 # handyflash — Project State & Handover
 
-**Authoritative snapshot. Last updated: 2026-08-09 (workstream L close, then a long semantics sweep — closures, coercions, SWF4 rules, the ASnative tables and the missing global classes; 626/680).**
+**Authoritative snapshot. Last updated: 2026-08-09 (workstream L close, then a long semantics sweep — closures, coercions, SWF4 rules, the ASnative tables and the missing global classes; 668/680).**
 Read this first if you are picking up the project with no prior context.
 For executing the next milestone, then read `docs/M4-SPEC.md`.
 
@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**626/680**, images **12/26**); F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**668/680**, images **12/26**); F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -483,34 +483,32 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
-**Workstreams A, B, C, D, E and L are CLOSED at 626/680** (images
-12/26), with every bitmap dir and all but three loader dirs passing.
+**Workstreams A, B, C, D, E and L are CLOSED at 668/680** (images
+12/26), with every bitmap dir and every loader dir passing.
 Pick up F (PlaceObject3 blend modes and clipDepth masks) next —
 `Renderer.blendModeFromSwf` already has the mapping F needs, because
 `BitmapData.draw` takes the same numbering. `docs/M4-SPEC.md` §4, §5, §6
 and §7 list, by name and cause, every dir those workstreams could not
 reach; do not re-derive them.
 
-**What the remaining 54 failures actually are** (`grep FAIL` the sweep
-output for the list):
+**The remaining 12 failures, every one diagnosed.** None is a mystery;
+each entry says what it would take.
 
-| cluster | dirs | what it needs |
-|---|---:|---|
-| `amf*` | 6 | AMF / SharedObject serialisation |
-| `localconnection*`, `netconnection*`, `netstream*`, `context_menu*`, `printjob_props_swf7`, `stylesheet*` | 12 | the stub classes in `globals/stubs.zig` growing real behaviour |
-| `looping_child_swf*` | 3 | instantiation ORDER inside a looping child |
-| `global_swf6_7_8`, `global_swf5_6_7_8_9`, `loadmovienum_cross_version_prototype`, `register_class*` | 5 | one prototype set PER SWF VERSION; we keep one |
-| `string_paths_other`, `remove_different_level`, `place_and_lookup` | 3 | `Value::MovieClip` as a re-resolving PATH reference |
-| `external_interface` | 1 | the harness's simulated JS bridge |
-| `form_loader_encoding_3` | 1 | charset detection + a Shift-JIS table |
-| the rest | ~26 | one dir at a time, each its own semantics |
+| dirs | what it needs |
+|---|---|
+| `looping_child_swf5`, `_swf9`, `_swf32` | Ruffle plays a sprite from a TAG-STREAM POSITION, not a frame index. A sprite whose tags end without a final ShowFrame runs those trailing tags once and stops; one with the ShowFrame loops. We index frames, so ours loops either way. The fix is the playback model, not a rule. |
+| `netstream_play_flv`, `netstream_seek_flv` | A NetStream state machine over a real FLV: Play.Start, Buffer.Full, onMetaData, Seek.Notify, and the Buffer.Flush/Play.Stop/Buffer.Empty at the end. Needs FLV parsing and a playhead, plus `Video.attachVideo`. |
+| `movieclip_hittest_shapeflag` | 297 differing lines of shape-exact hit testing against curves and strokes — a `shape_utils` gap, not an AVM1 one. |
+| `hittest_morph_input` | Hovering a morph shape: needs the morph's EDGES decoded (M7), not just the bounds the tag declares. |
+| `external_interface` | The harness's simulated JS bridge: `ExternalInterface.call` has to reach a scripted host and come back. The MARSHALLING half is done. |
+| `form_loader_encoding_3` | `System.useCodepage` makes the form loader charset-DETECT each file; needs a Shift-JIS table. |
+| `string_paths_other` | The one dir still wanting `Value::MovieClip` as a re-resolving PATH reference — a clip pushed on the stack remembers its path and re-resolves it, so a removed clip whose path is refilled reports the NEW occupant. A value-model change for one line of output. |
+| `array_length` | `length` as a WRAPPING i32 counter; ours is a u32. Converting the array model is wide for one dir. |
+| `bitmap_data_thorough/pixelDissolve` | The dissolve's RETURN value (the next seed) is one behind Flash's in 36 places; the pixels it writes are correct everywhere. The Feistel permutation, the block size and the clamp all match ruffle's — the off-by-one is somewhere else. |
 
-**Two things measured and deliberately left**, so nobody re-derives
-them: `array_length` wants `length` to be a WRAPPING i32 counter (ours
-is a u32, and converting the array model is a wide change for one dir);
-and the two `frame_size_translated_*` dirs pass their traces but fail
-their IMAGE comparison because `images.sh` does not replay `input.json`,
-so the shape renders unpressed.
+**Also measured and left**: the two `frame_size_translated_*` dirs pass
+their traces but fail their IMAGE comparison, because `images.sh` does
+not replay `input.json` and the shape renders unpressed.
 
 Eight things to know before you start:
 
