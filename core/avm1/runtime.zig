@@ -637,6 +637,9 @@ pub const Vm = struct {
         // "[object Object]" (corpus clip_constructors).
         const m = self.getProperty(v.object, name, v) catch Value.undefined_value;
         if (!self.isCallable(m)) return .undefined_value;
+        // An implicit coercion call is ruffle's `ExecutionReason::Special`:
+        // it keeps closure semantics even in a SWF5 caller.
+        self.call_special = true;
         return self.callFunction(m, v, &.{}) catch Value.undefined_value;
     }
 
@@ -749,6 +752,7 @@ pub const Vm = struct {
         }
         const m = try self.getProperty(h, S("toString"), v);
         if (self.isCallable(m)) {
+            self.call_special = true;
             const r = try self.callFunction(m, v, &.{});
             if (r == .string) return r.string;
         }
@@ -1180,6 +1184,12 @@ pub const Vm = struct {
 
     pub fn callFunction(self: *Vm, callee: Value, this: Value, args: []const Value) anyerror!Value {
         if (!self.isCallable(callee)) return .undefined_value;
+        // `call_special` belongs to THIS call and no other. A native
+        // callee never reaches `callAvm1` to consume it, so clear it here
+        // or an implicit `toString` leaks its closure exemption onto the
+        // next ordinary call (corpus swf5_to_6_cross_call).
+        const special_here = self.call_special;
+        self.call_special = false;
         // Ruffle's `max_recursion_depth`: going past it is an ERROR, not
         // a quiet stop. The whole action dies, taking every trace after
         // it — which is what Flash does, and the only thing that stops a
@@ -1192,7 +1202,10 @@ pub const Vm = struct {
         const fk = self.objects.get(callee.object).native.function;
         switch (fk) {
             .native => |f| return f(@ptrCast(self), this, args),
-            .avm1 => |f| return self.callAvm1(callee.object, f, this, args),
+            .avm1 => |f| {
+                self.call_special = special_here;
+                return self.callAvm1(callee.object, f, this, args);
+            },
         }
     }
 
@@ -1350,13 +1363,41 @@ pub const Vm = struct {
         // `1`, and `4 / 0` is Infinity rather than `#ERROR#`. Ruffle
         // spells it `base_clip.swf_version().max(5)`.
         const outer_version = self.swf_version;
-        if (self.swf_version < 5) self.swf_version = 5;
-        defer self.swf_version = outer_version;
+        const outer_obj_version = self.objects.swf_version;
+        defer {
+            self.swf_version = outer_version;
+            self.objects.swf_version = outer_obj_version;
+        }
         // Consume the pending super depth: it belongs to THIS frame only.
         const depth = self.super_depth;
         self.super_depth = 0;
-        // Fresh local scope chained to the captured definition scope.
-        const local = try self.newScope(f.scope);
+        // SWF6+ calls are proper CLOSURES: the defining scope, the
+        // defining base clip, the defining version. Below that they are
+        // not — the callee adopts `this`'s clip (or, when `this` is not a
+        // display object, the caller's target), and gets a FRESH scope
+        // over `_global` rooted at that clip. Nothing of the definition
+        // site survives, which is why a SWF5 movie calling a SWF6 movie's
+        // function cannot see that movie's timeline variables
+        // (corpus swf5_to_6_cross_call).
+        const is_closure = activation.Activation.callerSwfVersion(self) >= 6 or special;
+        const this_clip: ObjectHandle = if (this == .object and
+            @import("stage_object.zig").targetOf(self, this.object) != null)
+            this.object
+        else
+            activation.Activation.callerTargetClip(self);
+        const eff_base: ObjectHandle = if (is_closure and f.base_clip != 0)
+            activation.Activation.liveBaseClip(self, f.base_clip, f.base_clip_path)
+        else
+            this_clip;
+        // …and the VERSION comes from the same place: the defining movie
+        // for a closure, the adopted clip's movie otherwise.
+        const eff_version: u8 = if (is_closure)
+            f.swf_version
+        else
+            @import("stage_object.zig").clipSwfVersion(self, eff_base) orelse outer_version;
+        self.swf_version = @max(eff_version, 5);
+        self.objects.swf_version = self.swf_version;
+        const local = try self.newScope(if (is_closure) f.scope else eff_base);
 
         // Local registers (fn2) — r0 unused by preloads; slots r1.. get the
         // preloaded values in canonical order.
@@ -1424,8 +1465,8 @@ pub const Vm = struct {
             // was defined in (corpus function_base_clip_readded). SWF6+
             // calls are closures and keep the defining clip; below that
             // `this` supplies it, which is the same object here.
-            const owner: ObjectHandle = if (self.swf_version >= 6 and f.base_clip != 0)
-                activation.Activation.liveBaseClip(self, f.base_clip, f.base_clip_path)
+            const owner: ObjectHandle = if (eff_base != 0)
+                eff_base
             else if (this == .object)
                 this.object
             else
@@ -1463,10 +1504,9 @@ pub const Vm = struct {
         // where they were defined. SWF5 functions are not — they adopt
         // `this`'s clip, which Activation.init already derived.
         // ruffle function.rs:303-310.
-        if ((self.swf_version >= 6 or special) and f.base_clip != 0) {
-            const live = activation.Activation.liveBaseClip(self, f.base_clip, f.base_clip_path);
-            act.base_clip = live;
-            act.target_clip = live;
+        if (eff_base != 0) {
+            act.base_clip = eff_base;
+            act.target_clip = eff_base;
         }
         // A throw propagates as error.Avm1Thrown, so an outer try/catch
         // in a CALLING function still sees it.

@@ -255,6 +255,26 @@ pub const Activation = struct {
         return found orelse handle;
     }
 
+    /// The SWF version of the frame doing the calling. Ruffle decides
+    /// closure-vs-not from `activation.swf_version()`, not from a global:
+    /// a SWF5 frame calling a SWF6 function gets the SWF5 rule even
+    /// though the VM last ran SWF6 code.
+    pub fn callerSwfVersion(vm: *runtime.Vm) u8 {
+        const p = vm.current_activation orelse return vm.swf_version;
+        const act: *Activation = @ptrCast(@alignCast(p));
+        return act.swf_version;
+    }
+
+    /// The CALLER's target clip, or the root. A SWF5 call is not a
+    /// closure: it adopts `this`'s clip, and when `this` is not a display
+    /// object at all, this is what it falls back to.
+    pub fn callerTargetClip(vm: *runtime.Vm) ObjectHandle {
+        const p = vm.current_activation orelse
+            return if (vm.root_object == .object) vm.root_object.object else 0;
+        const act: *Activation = @ptrCast(@alignCast(p));
+        return act.targetClipOrRoot();
+    }
+
     /// The clip the running script BELONGS to (not the one it is
     /// targeting). `System.security.sandboxType` answers for the base
     /// clip's movie, so a loaded SWF reports its own origin.

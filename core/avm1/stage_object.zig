@@ -163,6 +163,21 @@ pub fn clipOfHandle(vm: *Vm, handle: ObjectHandle) ?*MovieClip {
     };
 }
 
+/// The SWF version of the movie a clip's own timeline came from. A clip
+/// filled by `loadMovie` carries its own `movie`; everything else inherits
+/// from the nearest ancestor that does. Ruffle spells this
+/// `base_clip.swf_version()`, and a function call adopts it when the call
+/// is not a closure.
+pub fn clipSwfVersion(vm: *Vm, handle: ObjectHandle) ?u8 {
+    const mc = clipOfHandle(vm, handle) orelse return null;
+    var cur: ?*const MovieClip = mc;
+    while (cur) |c| : (cur = c.parent) {
+        if (c.movie) |m| if (m.swf_version != 0) return m.swf_version;
+    }
+    if (vm.root_swf_version != 0) return vm.root_swf_version;
+    return null;
+}
+
 // --- the table -------------------------------------------------------------
 
 const Getter = *const fn (vm: *Vm, t: Target) anyerror!Value;

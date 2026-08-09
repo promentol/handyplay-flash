@@ -449,9 +449,12 @@ swf4_bool
 swf4_function_calls
 swf5_encoding
 swf5_global_funcs
+swf5_no_closure
+swf5_to_6_cross_call
 swf5_xml_event_handler_context
 swf6_global_funcs
 swf6_string_as_bool
+swf6_to_5_cross_call
 swf7_case_sensitive
 swf7_global_funcs
 tab_ordering_automatic_basic
