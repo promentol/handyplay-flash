@@ -224,6 +224,7 @@ pub fn install(vm: *Vm) !void {
     try @import("singletons.zig").install(vm);
     try @import("stubs.zig").install(vm);
     try @import("net_connection.zig").install(vm);
+    try @import("local_connection.zig").install(vm);
     try @import("selection.zig").install(vm);
     try @import("text_format.zig").install(vm);
     try @import("text_snapshot.zig").install(vm);

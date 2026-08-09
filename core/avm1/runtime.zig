@@ -197,6 +197,26 @@ pub const FetchRequest = struct {
 /// percentages, and `pan` is not one of them — it is derived, with an
 /// `abs()` in it that makes `setPan(200)` read back as 0 (ruffle
 /// display_object.rs `SoundTransform`).
+pub const LocalConnection = struct {
+    name: strings.AvmString,
+    object: ObjectHandle,
+};
+
+pub const LocalSend = struct {
+    name: strings.AvmString,
+    method: strings.AvmString,
+    /// The arguments, already AMF-encoded. They are decoded at DELIVERY,
+    /// so the receiver gets objects of its own.
+    payload: []const u8,
+    count: u32,
+    /// Who to tell about it — `onStatus` fires on the SENDER.
+    sender: ObjectHandle,
+    /// Whether a listener existed at SEND time. Flash decides then, not
+    /// at delivery: one that appears in between is not used, one that
+    /// leaves in between still errors.
+    had_listener: bool,
+};
+
 pub const SoundTransform = struct {
     volume: i32 = 100,
     left_to_left: i32 = 100,
@@ -507,6 +527,11 @@ pub const Vm = struct {
     /// `Object.registerClass` symbol -> constructor. Small and rarely
     /// written, so a list beats a map; lookup obeys the movie's case rule.
     class_registry: std.ArrayList(ClassEntry) = .empty,
+    /// `LocalConnection.connect` claims a name; `send` finds it here.
+    local_connections: std.ArrayList(LocalConnection) = .empty,
+    /// Messages waiting for the end of the tick — delivery is
+    /// asynchronous, like every other LocalConnection operation.
+    pending_local_sends: std.ArrayList(LocalSend) = .empty,
     /// Non-zero while inside `construct` — native constructors box their
     /// argument only for `new X()`, and coerce for a plain `X()` call
     /// (ruffle globals/{number,string,boolean}.rs split those paths).

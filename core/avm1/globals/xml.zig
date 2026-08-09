@@ -390,6 +390,24 @@ fn hasChildNodes(p: *anyopaque, this: Value, args: []const Value) anyerror!Value
     return .{ .boolean = self.children.items.len > 0 };
 }
 
+/// The XML text of a node, for callers outside this file (AMF).
+pub fn nodeText(vm: *Vm, v: Value) !?AvmString {
+    const self = nodeOf(vm, v) orelse return null;
+    var out: std.ArrayList(u16) = .empty;
+    try writeNode(vm, self, &out);
+    return try out.toOwnedSlice(vm.arena());
+}
+
+/// A fresh `XML` object holding the parse of `text` — the AMF reader's
+/// counterpart to `nodeText`.
+pub fn newXmlDoc(vm: *Vm, text: AvmString) !Value {
+    const h = try vm.objects.create();
+    vm.objects.get(h).proto = .{ .object = vm.xml_proto };
+    const doc = try emptyDoc(vm, h);
+    try parseInto(vm, doc, h, text);
+    return .{ .object = h };
+}
+
 fn nodeToString(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);

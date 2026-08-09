@@ -4,8 +4,10 @@
 //! Only the WRITE half lives here; nothing in the corpus reads AMF back
 //! yet. The rules that are not in the spec, and that the corpus pins:
 //!
-//!   * Functions are SKIPPED entirely — not written as undefined, just
-//!     absent from the object's property list.
+//!   * Functions are SKIPPED entirely as PROPERTIES — not written as
+//!     undefined, just absent from the object's list. As a top-level
+//!     VALUE a function is an ordinary object instead, which is why one
+//!     sent through a LocalConnection arrives as `[object Object]`.
 //!   * A getter is written as `undefined` WITHOUT being called. Flash
 //!     never evaluates accessors while serialising.
 //!   * Properties come out in reverse enumeration order, which is
@@ -142,9 +144,15 @@ pub const Writer = struct {
         switch (vm.objects.get(h).native) {
             // A display object is not data.
             .clip, .display, .removed_display => return self.byte(Marker.UNDEFINED),
-            // A function is skipped by the caller; reached directly it is
-            // undefined.
-            .function => return self.byte(Marker.UNDEFINED),
+            .xml_doc, .xml_node => {
+                const text = (try @import("globals/xml.zig").nodeText(vm, .{ .object = h })) orelse
+                    return self.byte(Marker.UNDEFINED);
+                const bytes = try self.utf8(text);
+                try self.byte(Marker.XML);
+                try self.u32be(@intCast(bytes.len));
+                try self.out.appendSlice(self.a(), bytes);
+                return;
+            },
             .date => |ms| {
                 try self.byte(Marker.DATE);
                 try self.f64be(ms);
@@ -279,3 +287,142 @@ fn className(vm: *Vm, h: ObjectHandle) !?[]const u8 {
     const name = vm.classNameOf(ctor.object) orelse return null;
     return try strings.toUtf8(vm.arena(), name);
 }
+
+// --- reading -----------------------------------------------------------------
+
+/// The other direction, for `LocalConnection.send`: a packet written by
+/// the Writer above, read back into fresh AVM1 values. A typed object
+/// becomes an instance of whatever `Object.registerClass` currently
+/// points that name at, or a plain object when nothing does.
+pub const Reader = struct {
+    vm: *Vm,
+    bytes: []const u8,
+    pos: usize = 0,
+    /// Objects in the order they were read — the reference table.
+    seen: std.ArrayList(ObjectHandle) = .empty,
+    depth: u32 = 0,
+
+    pub fn deinit(self: *Reader) void {
+        self.seen.deinit(self.vm.arena());
+    }
+
+    fn a(self: *Reader) std.mem.Allocator {
+        return self.vm.arena();
+    }
+
+    fn byte(self: *Reader) u8 {
+        if (self.pos >= self.bytes.len) return 0;
+        defer self.pos += 1;
+        return self.bytes[self.pos];
+    }
+
+    fn u16be(self: *Reader) u16 {
+        return (@as(u16, self.byte()) << 8) | self.byte();
+    }
+
+    fn u32be(self: *Reader) u32 {
+        var v: u32 = 0;
+        for (0..4) |_| v = (v << 8) | self.byte();
+        return v;
+    }
+
+    fn f64be(self: *Reader) f64 {
+        var bits: u64 = 0;
+        for (0..8) |_| bits = (bits << 8) | self.byte();
+        return @bitCast(bits);
+    }
+
+    fn stringBody(self: *Reader, len: usize) ![]const u16 {
+        const end = @min(self.pos + len, self.bytes.len);
+        const raw = self.bytes[self.pos..end];
+        self.pos = end;
+        return strings.fromSwf(self.a(), raw, 8);
+    }
+
+    pub fn value(self: *Reader) anyerror!Value {
+        if (self.depth > 128 or self.pos >= self.bytes.len) return .undefined_value;
+        const marker = self.byte();
+        return switch (marker) {
+            Marker.NUMBER => .{ .number = self.f64be() },
+            Marker.BOOLEAN => .{ .boolean = self.byte() != 0 },
+            Marker.STRING => .{ .string = try self.stringBody(self.u16be()) },
+            Marker.LONG_STRING => .{ .string = try self.stringBody(self.u32be()) },
+            Marker.NULL => .null_value,
+            Marker.UNDEFINED => .undefined_value,
+            Marker.REFERENCE => blk: {
+                const i = self.u16be();
+                if (i < self.seen.items.len) break :blk Value{ .object = self.seen.items[i] };
+                break :blk .undefined_value;
+            },
+            Marker.DATE => blk: {
+                const ms = self.f64be();
+                _ = self.u16be(); // timezone, always zero
+                break :blk try self.newDate(ms);
+            },
+            Marker.XML => blk: {
+                const text = try self.stringBody(self.u32be());
+                break :blk try @import("globals/xml.zig").newXmlDoc(self.vm, text);
+            },
+            Marker.OBJECT => self.objectBody(0),
+            Marker.TYPED_OBJECT => blk: {
+                const name = try self.stringBody(self.u16be());
+                break :blk self.objectBody(self.vm.registeredClass(name) orelse 0);
+            },
+            Marker.ECMA_ARRAY => blk: {
+                _ = self.u32be(); // the declared length; the pairs decide
+                const arr = try self.vm.newArray();
+                try self.seen.append(self.a(), arr);
+                try self.fillPairs(arr);
+                break :blk Value{ .object = arr };
+            },
+            Marker.STRICT_ARRAY => blk: {
+                const n = self.u32be();
+                const arr = try self.vm.newArray();
+                try self.seen.append(self.a(), arr);
+                self.depth += 1;
+                defer self.depth -= 1;
+                var i: u32 = 0;
+                while (i < n) : (i += 1) try self.vm.arraySet(arr, i, try self.value());
+                break :blk Value{ .object = arr };
+            },
+            else => .undefined_value,
+        };
+    }
+
+    fn newDate(self: *Reader, ms: f64) !Value {
+        const h = try self.vm.objects.create();
+        self.vm.objects.get(h).proto = .{ .object = self.vm.date_proto };
+        self.vm.objects.get(h).native = .{ .date = ms };
+        return .{ .object = h };
+    }
+
+    fn objectBody(self: *Reader, ctor: ObjectHandle) anyerror!Value {
+        const vm = self.vm;
+        const h = try vm.objects.create();
+        vm.objects.get(h).proto = .{ .object = vm.object_proto };
+        try self.seen.append(self.a(), h);
+        if (ctor != 0) {
+            const proto = vm.objects.getChained(ctor, S("prototype"), vm.case_sensitive) orelse
+                Value{ .object = vm.object_proto };
+            vm.objects.get(h).proto = proto;
+            try vm.objects.putWithAttrs(h, S("__constructor__"), .{ .object = ctor }, .{ .dont_enum = true }, vm.case_sensitive);
+        }
+        try self.fillPairs(h);
+        return .{ .object = h };
+    }
+
+    /// `name value` pairs until the empty name + OBJECT_END sentinel.
+    fn fillPairs(self: *Reader, h: ObjectHandle) anyerror!void {
+        self.depth += 1;
+        defer self.depth -= 1;
+        while (self.pos < self.bytes.len) {
+            const name = try self.stringBody(self.u16be());
+            if (name.len == 0) {
+                _ = self.byte(); // OBJECT_END
+                return;
+            }
+            const v = try self.value();
+            try self.vm.setProperty(h, name, v, .{ .object = h });
+        }
+    }
+};

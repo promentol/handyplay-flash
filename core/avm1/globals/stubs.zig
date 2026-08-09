@@ -56,12 +56,6 @@ const CLASSES = [_]Class{
         .statics = &.{ "get", "names" },
     },
     .{
-        .name = "LocalConnection",
-        // No `isPerUser`: ruffle declares one, Flash does not have it
-        // (corpus localconnection_properties looks and reports NOT FOUND).
-        .proto = &.{ "connect", "send", "close", "domain" },
-    },
-    .{
         .name = "NetStream",
         .proto = &.{
             "publish",         "play",        "receiveAudio", "receiveVideo",

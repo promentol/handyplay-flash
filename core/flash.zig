@@ -17,6 +17,7 @@ pub const avm1 = struct {
     pub const stage_object = @import("avm1/stage_object.zig");
     pub const singletons = @import("avm1/globals/singletons.zig");
     pub const loader = @import("avm1/globals/loader.zig");
+    pub const local_connection = @import("avm1/globals/local_connection.zig");
     pub const sound = @import("avm1/globals/sound.zig");
     pub const file_reference = @import("avm1/globals/file_reference.zig");
     pub const text_binding = @import("avm1/text_binding.zig");
@@ -424,7 +425,9 @@ pub const Player = struct {
     /// loads advances one link per tick rather than running to exhaustion.
     fn finishTick(self: *Player) !bool {
         const sockets = self.socket_poll != null and self.socket_obj != 0;
-        if (self.pending_loads.items.len == 0 and self.pending_dialogs.items.len == 0 and !sockets) {
+        if (self.pending_loads.items.len == 0 and self.pending_dialogs.items.len == 0 and
+            self.vm.pending_local_sends.items.len == 0 and !sockets)
+        {
             return false;
         }
         var ctx = self.makeContext();
@@ -436,6 +439,10 @@ pub const Player = struct {
             self.vm.display_ctx = null;
         }
         self.drainSocket() catch |e| self.reportUncaught(e);
+        // A LocalConnection message is delivered from the executor too,
+        // a tick after `send` — the receiver never runs inside the
+        // sender's frame.
+        avm1.local_connection.deliver(self.vm) catch |e| self.reportUncaught(e);
         try self.drainActions(&ctx);
         // Loads run to EXHAUSTION, like the dialogs below: ruffle's
         // executor keeps polling until its task list is empty, so a load

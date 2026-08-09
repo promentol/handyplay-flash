@@ -334,7 +334,9 @@ loadvariables_method
 loadvariablesnum
 loadvars_tostring
 local_to_global
+localconnection
 localconnection_properties
+localconnection_top_level
 lock_root
 logical_ops_swf4
 logical_ops_swf8
