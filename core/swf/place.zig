@@ -158,10 +158,15 @@ pub fn parsePlace23(
 
     if ((flags & (1 << 7)) != 0) {
         _ = try r.readU16(); // reserved, must be 0
-        _ = readEventFlags(&r, swf_version); // union of all record flags
+        // The union field is NOT informational: Flash MASKS every
+        // record's own flags with it, so a handler for an event the
+        // union does not list never fires. The corpus places three clips
+        // with identical records and three different unions and gets
+        // three different event sets (placeobject_all_event_flags).
+        const all_events = readEventFlags(&r, swf_version);
         var records: std.ArrayList(ClipAction) = .empty;
         while (true) {
-            const events = readEventFlags(&r, swf_version);
+            const events = readEventFlags(&r, swf_version) & all_events;
             if (events == 0) break;
             var len = try r.readU32();
             var key_code: ?u8 = null;

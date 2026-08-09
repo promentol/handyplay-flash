@@ -428,6 +428,7 @@ parse_float
 parse_int
 path_string
 place_and_lookup
+placeobject_all_event_flags
 placeobject_occupied_depth
 point
 primitive_instanceof
