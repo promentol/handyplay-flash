@@ -127,6 +127,12 @@ pub const FetchRequest = struct {
     /// Already form-urlencoded. Non-empty only for `.post`; a `.get`
     /// folds its variables into `url`.
     body: []const u8 = &.{},
+    /// The body's content type. Empty means the default,
+    /// `application/x-www-form-urlencoded`; AMF packets say
+    /// `application/x-amf`, and the fetch LOG prints the two
+    /// differently — text for the former, a hex byte list for anything
+    /// else.
+    mime: []const u8 = &.{},
     target: Target,
 
     pub const Method = enum {
@@ -169,6 +175,10 @@ pub const FetchRequest = struct {
         /// SWF replaces the target clip's entire timeline, library and
         /// version.
         movie: Movie,
+        /// `NetConnection.call`: the request is made and the response is
+        /// DROPPED. Flash Remoting's reply path needs a real server;
+        /// what the corpus checks is the packet that goes out.
+        discard,
     };
 
     pub const Movie = struct {
@@ -1342,6 +1352,12 @@ pub const Vm = struct {
                 if (ctor == 0) {
                     _ = self.class_registry.orderedRemove(i);
                 } else {
+                    // Re-registering replaces the KEY as well as the
+                    // value: below SWF7 "sharedalias" and "SharedAlias"
+                    // are the same entry, and the later spelling is the
+                    // one AMF writes (corpus
+                    // amf_swf6_case_insensitive_typed_objects).
+                    self.class_registry.items[i].name = try self.arena().dupe(u16, name);
                     self.class_registry.items[i].ctor = ctor;
                 }
                 return;
@@ -1350,6 +1366,19 @@ pub const Vm = struct {
         if (ctor == 0) return;
         const key = try self.arena().dupe(u16, name);
         try self.class_registry.append(self.arena(), .{ .name = key, .ctor = ctor });
+    }
+
+    /// The alias a constructor serialises under. When the same
+    /// constructor is registered twice the LATEST registration wins
+    /// (corpus amf_serialize_typed_objects registers one class under
+    /// FirstAlias.Class and then SecondAlias.Class, and gets the second).
+    pub fn classNameOf(self: *Vm, ctor: ObjectHandle) ?strings.AvmString {
+        var i = self.class_registry.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.class_registry.items[i].ctor == ctor) return self.class_registry.items[i].name;
+        }
+        return null;
     }
 
     pub fn registeredClass(self: *Vm, name: strings.AvmString) ?ObjectHandle {
@@ -1456,6 +1485,13 @@ pub const Vm = struct {
         // (ruffle super_object.rs:82-86).
         const ctor = try self.getPropertyStored(base, S("__constructor__"), .{ .object = base });
         if (!self.isCallable(ctor)) return .undefined_value;
+        // `super()` is a CONSTRUCTOR call (ruffle `exec_constructor`), so
+        // a native class initialises `this` IN PLACE rather than making a
+        // fresh instance: `super()` with `__constructor__ = Array`
+        // upgrades a plain object into a real array
+        // (corpus amf_sharedobject_strict_array_serialization).
+        self.in_construct += 1;
+        defer self.in_construct -= 1;
         return self.callWithSuperDepth(ctor, .{ .object = s.this }, args, s.depth +| 1);
     }
 

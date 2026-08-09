@@ -62,10 +62,6 @@ const CLASSES = [_]Class{
         .proto = &.{ "connect", "send", "close", "domain" },
     },
     .{
-        .name = "NetConnection",
-        .proto = &.{ "connect", "close", "call", "addHeader" },
-    },
-    .{
         .name = "NetStream",
         .proto = &.{
             "publish",         "play",        "receiveAudio", "receiveVideo",

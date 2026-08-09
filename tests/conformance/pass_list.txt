@@ -5,6 +5,12 @@ add2
 add_property
 add_swf4
 add_swf5
+amf_serialize_typed_objects
+amf_sharedobject_strict_array_serialization
+amf_strict_array_serialization
+amf_swf6_case_insensitive_typed_objects
+amf_swf6_serialize_typed_objects
+amf_swf8_case_sensitive_typed_objects
 arguments
 array_call_method
 array_concat

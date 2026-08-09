@@ -223,6 +223,7 @@ pub fn install(vm: *Vm) !void {
     try @import("date.zig").install(vm);
     try @import("singletons.zig").install(vm);
     try @import("stubs.zig").install(vm);
+    try @import("net_connection.zig").install(vm);
     try @import("selection.zig").install(vm);
     try @import("text_format.zig").install(vm);
     try @import("text_snapshot.zig").install(vm);
@@ -564,8 +565,15 @@ fn indexGet(vm: *Vm, h: ObjectHandle, index: u32) !Value {
 
 fn ctorArray(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    _ = this;
-    const arr = try vm.newArray();
+    // Called as a CONSTRUCTOR, the array is built IN PLACE on the object
+    // handed in — which is how `super()` against `__constructor__ = Array`
+    // turns a plain object into a real one.
+    const arr = if (vm.in_construct > 0 and this == .object) blk: {
+        const h = this.object;
+        vm.objects.get(h).native = .array;
+        try vm.objects.putWithAttrs(h, S("length"), .{ .number = 0 }, .{ .dont_enum = true, .dont_delete = true }, vm.case_sensitive);
+        break :blk h;
+    } else try vm.newArray();
     // A single NUMBER is a length, whatever it is — including a negative
     // or fractional one, which is stored as given and read back as given.
     // Only a genuine Number counts: `new Array("3")` is a one-element

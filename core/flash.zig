@@ -13,6 +13,7 @@ pub const avm1 = struct {
     pub const object = @import("avm1/object.zig");
     pub const runtime = @import("avm1/runtime.zig");
     pub const activation = @import("avm1/activation.zig");
+    pub const amf = @import("avm1/amf.zig");
     pub const stage_object = @import("avm1/stage_object.zig");
     pub const singletons = @import("avm1/globals/singletons.zig");
     pub const loader = @import("avm1/globals/loader.zig");
@@ -704,6 +705,7 @@ pub const Player = struct {
             .load_vars => |h| try avm1.loader.completeLoadVars(self.vm, h, body),
             .sound => |h| try avm1.sound.completeLoad(self.vm, h, body),
             .movie => |m| try self.completeMovieLoad(m, req.url, body),
+            .discard => {},
         }
     }
 
@@ -927,8 +929,25 @@ pub const Player = struct {
         try self.traceFmt("  URL: {s}", .{req.url});
         try self.traceFmt("  Method: {s}", .{if (req.method == .none) "GET" else req.method.name()});
         if (req.method == .post) {
-            try self.traceFmt("  Mime-Type: application/x-www-form-urlencoded", .{});
-            try self.traceFmt("  Body: {s}", .{req.body});
+            const mime = if (req.mime.len == 0) "application/x-www-form-urlencoded" else req.mime;
+            try self.traceFmt("  Mime-Type: {s}", .{mime});
+            if (req.mime.len == 0) {
+                try self.traceFmt("  Body: {s}", .{req.body});
+            } else {
+                // Rust's `{:02X?}` over a byte slice, which is what
+                // ruffle's test navigator logs for a binary body.
+                var line: std.ArrayList(u8) = .empty;
+                const a = self.vm.arena();
+                try line.append(a, '[');
+                for (req.body, 0..) |b, i| {
+                    if (i != 0) try line.appendSlice(a, ", ");
+                    var hb: [2]u8 = undefined;
+                    _ = std.fmt.bufPrint(&hb, "{X:0>2}", .{b}) catch unreachable;
+                    try line.appendSlice(a, &hb);
+                }
+                try line.append(a, ']');
+                try self.traceFmt("  Body: {s}", .{line.items});
+            }
         }
     }
 
