@@ -705,6 +705,25 @@ pub const Vm = struct {
         return if (r.isPrimitive()) r else v;
     }
 
+    /// `toPrimitiveAdd` with the throw left in flight. Add2 is the one
+    /// operator whose corpus tests catch what `valueOf` throws.
+    pub fn toPrimitiveAddThrowing(self: *Vm, v: Value) anyerror!Value {
+        if (v != .object) return v;
+        const is_date = self.objects.get(v.object).native == .date;
+        const name: strings.AvmString = if (self.swf_version > 5 and is_date)
+            S("toString")
+        else
+            S("valueOf");
+        const m = try self.getProperty(v.object, name, v);
+        // No callable `valueOf` at all is UNDEFINED, not the object —
+        // ruffle's `call_method` on a missing method answers undefined
+        // and `to_primitive` passes that straight out.
+        if (!self.isCallable(m)) return .undefined_value;
+        self.call_special = true;
+        const r = try self.callFunction(m, v, &.{});
+        return if (r.isPrimitive()) r else v;
+    }
+
     /// Like `toNumber`, but a `valueOf` that THROWS unwinds instead of
     /// being swallowed. Ruffle's `coerce_to_f64` always propagates; ours
     /// cannot everywhere without widening every coercion signature, so
@@ -717,7 +736,9 @@ pub const Vm = struct {
             },
             else => {},
         }
-        const m = self.getProperty(v.object, S("valueOf"), v) catch Value.undefined_value;
+        // Reading `valueOf` can throw too — it may be a getter (corpus
+        // coerce_to_primitive_resolve's obj3).
+        const m = try self.getProperty(v.object, S("valueOf"), v);
         if (!self.isCallable(m)) return value_mod.toNumberPrimitive(v, self.swf_version);
         self.call_special = true;
         const p = try self.callFunction(m, v, &.{});
@@ -1481,10 +1502,12 @@ pub const Vm = struct {
             if (next_reg < registers.len) registers[next_reg] = args_val;
             next_reg += 1;
         }
-        if (!(preload and fl.suppress_arguments)) {
-            if (wants_arguments) {
-                try self.objects.putWithAttrs(local, S("arguments"), args_val, .{ .dont_enum = true, .dont_delete = true }, self.case_sensitive);
-            }
+        // PRELOADED means "in a register INSTEAD of a variable" — the
+        // name is then undefined inside the body. Setting both flags is
+        // equivalent to preload alone for `arguments`, unlike `this`
+        // (corpus function_suppress_and_preload).
+        if (wants_arguments and !(preload and fl.preload_arguments)) {
+            try self.objects.putWithAttrs(local, S("arguments"), args_val, .{ .dont_enum = true, .dont_delete = true }, self.case_sensitive);
         }
         // `super` exists only when there is a `this` to view through, and
         // is a REGISTER when preloaded, otherwise a local VARIABLE

@@ -1340,15 +1340,19 @@ pub const Activation = struct {
 
             // --- ES3 ops --------------------------------------------------
             .add2 => {
-                const b = try self.vm.toPrimitiveAdd(self.pop());
-                const a = try self.vm.toPrimitiveAdd(self.pop());
+                const b = try self.vm.toPrimitiveAddThrowing(self.pop());
+                const a = try self.vm.toPrimitiveAddThrowing(self.pop());
                 if (a == .string or b == .string) {
-                    const sa = try self.vm.toStringValue(a);
-                    const sb = try self.vm.toStringValue(b);
+                    const sa = try self.vm.toStringThrowing(a);
+                    const sb = try self.vm.toStringThrowing(b);
                     try self.push(.{ .string = try strings.concat(self.vm.arena(), sa, sb) });
                 } else {
-                    const na = value_mod.toNumberPrimitive(a, self.swf_version);
-                    const nb = value_mod.toNumberPrimitive(b, self.swf_version);
+                    // `to_primitive` may hand back an OBJECT — a `valueOf`
+                    // that returns one — and the numeric coercion then
+                    // calls `valueOf` a SECOND time. The corpus counts the
+                    // calls (add2's objValue3).
+                    const na = try self.vm.toNumberThrowing(a);
+                    const nb = try self.vm.toNumberThrowing(b);
                     try self.push(.{ .number = na + nb });
                 }
             },
@@ -1623,11 +1627,18 @@ pub const Activation = struct {
                 // undefined otherwise coerces to "" (ruffle
                 // activation.rs action_trace).
                 const v = self.pop();
-                const s = if (v == .undefined_value)
-                    S("undefined")
-                else
-                    try self.vm.toStringValue(v);
-                try self.vm.traceLine(s);
+                if (v == .undefined_value) {
+                    try self.vm.traceLine(S("undefined"));
+                } else {
+                    // A `toString` that throws still gets a LINE — the
+                    // fallback text — and then the throw carries on
+                    // (corpus coerce_to_primitive_resolve).
+                    const s = self.vm.toStringThrowing(v) catch |e| {
+                        try self.vm.traceLine(S("[type Object]"));
+                        return e;
+                    };
+                    try self.vm.traceLine(s);
+                }
             },
             .target_path => {
                 // The DOT path (`_level0.mc.child`) — NOT `_target`'s

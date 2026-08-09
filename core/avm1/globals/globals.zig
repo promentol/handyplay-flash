@@ -493,16 +493,28 @@ fn objIsPrototypeOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Va
 
 // --- Function ----------------------------------------------------------------
 
+/// An UNDEFINED or NULL `this` argument is replaced by the global
+/// object; a primitive is boxed (corpus funky_function_calls).
+fn callThis(vm: *Vm, args: []const Value) !Value {
+    const v = arg(args, 0);
+    return switch (v) {
+        .object => v,
+        // A primitive is BOXED and passed through; only undefined and
+        // null fall back to the global object.
+        .number, .string, .boolean => try boxPrimitive(vm, v),
+        else => .{ .object = vm.globals },
+    };
+}
+
 fn fnCall(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    const call_this = arg(args, 0);
     const rest = if (args.len > 1) args[1..] else args[0..0];
-    return vm.callFunction(this, call_this, rest);
+    return vm.callFunction(this, try callThis(vm, args), rest);
 }
 
 fn fnApply(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    const call_this = arg(args, 0);
+    const call_this = try callThis(vm, args);
     var call_args: []Value = &.{};
     const a1 = arg(args, 1);
     if (a1 == .object) {
