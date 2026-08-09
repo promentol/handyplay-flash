@@ -296,6 +296,7 @@ greaterthan_swf8
 has_own_property
 hittest_lockroot
 hittest_winding_rule
+infinite_recursion_function
 infinite_recursion_function_in_setter
 infinite_recursion_virtual_property
 init_array_invalid

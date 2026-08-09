@@ -320,6 +320,7 @@ pub const Player = struct {
         self.renderer.jpeg_tables = self.movie.jpeg_tables;
         self.vm.renderer = @ptrCast(&self.renderer);
         self.vm.root_swf_version = self.movie.swf_version;
+        self.vm.max_call_depth = self.movie.max_recursion_depth;
         self.vm.movie_url = avm1.strings.fromSwf(self.vm.arena(), opts.url, 8) catch &.{};
         self.vm.epoch_ms = opts.epoch_ms;
         const inv_tw = 1.0 / @as(f64, swf.reader.TWIPS_PER_PX);

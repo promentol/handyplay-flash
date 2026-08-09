@@ -57,6 +57,9 @@ pub const Movie = struct {
     /// FileAttributes' UseNetwork bit. The only thing separating
     /// `System.security.sandboxType`'s two local values.
     use_network_sandbox: bool = false,
+    /// `ScriptLimits`: how deep AVM1 calls may nest before the whole
+    /// action is killed. 256 when the tag is absent.
+    max_recursion_depth: u16 = 256,
     /// `ImportAssets`/`ImportAssets2`: other SWFs this one borrows
     /// characters from. Loading them is the PLAYER's job — the parser
     /// only records what was asked for.
@@ -212,6 +215,14 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
                     .version = if (tag.code == .define_morph_shape) 1 else 2,
                     .body = tag.body,
                 } });
+            },
+            .script_limits => {
+                // The movie's own recursion cap. Flash counts FUNCTION
+                // frames against it, so a limit of 5 lets four nested
+                // calls run and kills the fifth — taking the whole
+                // action with it (corpus infinite_recursion_function).
+                var r = rdr.Reader.init(tag.body);
+                movie.max_recursion_depth = try r.readU16();
             },
             .define_video_stream => {
                 var r = rdr.Reader.init(tag.body);

@@ -1540,7 +1540,10 @@ pub const Vm = struct {
         // getter that deletes and re-adds its own property on every call
         // (corpus virtual_property_recursion_scope, whose output simply
         // ends mid-script).
-        if (self.call_depth >= self.max_call_depth) return error.Avm1StackOverflow;
+        // The count INCLUDES the frame about to be made, so a limit of
+        // five lets four nested calls run (corpus
+        // infinite_recursion_function, whose ScriptLimits tag says 5).
+        if (self.call_depth + 1 >= self.max_call_depth) return error.Avm1StackOverflow;
         self.call_depth += 1;
         defer self.call_depth -= 1;
         const fk = self.objects.get(callee.object).native.function;
