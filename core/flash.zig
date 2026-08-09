@@ -1308,6 +1308,10 @@ pub const Player = struct {
         // file — corpus mcl_events_swf_version detects its own version
         // through the ASSetPropFlags gate bits and prints it.
         if (movie.swf_version != 0) {
+            // …and so does the ENVIRONMENT: a SWF6 movie loaded into a
+            // SWF8 one gets the SWF6 `_global` and prototypes, which are
+            // a different set of objects (corpus global_swf6_7_8).
+            self.vm.useVersion(movie.swf_version);
             self.vm.swf_version = movie.swf_version;
             // The object table keeps its own copy for the property
             // version gate, which is the half `ASSetPropFlags` observes.

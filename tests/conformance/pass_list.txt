@@ -262,6 +262,8 @@ geturl_opcode_target_normalize
 geturl_target_normalize
 global_array
 global_is_bare
+global_swf5_6_7_8_9
+global_swf6_7_8
 globals_swf6
 globals_swf7
 globals_swf8
@@ -432,7 +434,9 @@ prototype_properties
 rectangle
 recursive_prototypes
 register_and_init_order
+register_class
 register_class_return_value
+register_class_swf6
 register_globals_across_frames
 remove_different_level
 remove_movie_clip

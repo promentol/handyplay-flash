@@ -219,6 +219,55 @@ pub const NetHeader = struct {
     payload: []const u8,
 };
 
+/// Everything that belongs to ONE global environment. Flash keeps two —
+/// one for SWF6 and below, one for SWF7 and above — and a movie sees
+/// the one matching its own version. They are separate all the way
+/// down: separate `_global`, separate `Object.prototype`, separate
+/// `registerClass` registry. That is why `g6.Object.prototype` is not
+/// `g7.Object.prototype`, and why an object made by a SWF6 movie is not
+/// `instanceof` the SWF7 movie's `Object` (corpus global_swf6_7_8).
+pub const Env = struct {
+    globals: ObjectHandle = 0,
+    object_proto: ObjectHandle = 0,
+    function_proto: ObjectHandle = 0,
+    array_proto: ObjectHandle = 0,
+    string_proto: ObjectHandle = 0,
+    number_proto: ObjectHandle = 0,
+    boolean_proto: ObjectHandle = 0,
+    movieclip_proto: ObjectHandle = 0,
+    button_proto: ObjectHandle = 0,
+    textfield_proto: ObjectHandle = 0,
+    point_proto: ObjectHandle = 0,
+    rectangle_proto: ObjectHandle = 0,
+    matrix_proto: ObjectHandle = 0,
+    colortransform_proto: ObjectHandle = 0,
+    transform_proto: ObjectHandle = 0,
+    date_proto: ObjectHandle = 0,
+    key_object: ObjectHandle = 0,
+    bc_add_listener: ObjectHandle = 0,
+    bc_remove_listener: ObjectHandle = 0,
+    bc_broadcast_message: ObjectHandle = 0,
+    mouse_object: ObjectHandle = 0,
+    stage_object_handle: ObjectHandle = 0,
+    selection_object: ObjectHandle = 0,
+    textformat_proto: ObjectHandle = 0,
+    stylesheet_proto: ObjectHandle = 0,
+    bitmapdata_proto: ObjectHandle = 0,
+    colormatrix_proto: ObjectHandle = 0,
+    xmlnode_proto: ObjectHandle = 0,
+    xmlnode_ctor: ObjectHandle = 0,
+    xml_proto: ObjectHandle = 0,
+    loadvars_proto: ObjectHandle = 0,
+    sound_proto: ObjectHandle = 0,
+    flash_net: ObjectHandle = 0,
+    filereference_proto: ObjectHandle = 0,
+    filter_protos: [10]ObjectHandle = @splat(0),
+    textsnapshot_proto: ObjectHandle = 0,
+    /// `Object.registerClass` is per-environment too — ruffle keeps one
+    /// constructor registry per case-sensitivity.
+    class_registry: std.ArrayList(ClassEntry) = .empty,
+};
+
 pub const LocalConnection = struct {
     name: strings.AvmString,
     object: ObjectHandle,
@@ -549,6 +598,12 @@ pub const Vm = struct {
     /// `Object.registerClass` symbol -> constructor. Small and rarely
     /// written, so a list beats a map; lookup obeys the movie's case rule.
     class_registry: std.ArrayList(ClassEntry) = .empty,
+    /// The environment for SWF6-and-below and the one for SWF7-and-above.
+    /// `useVersion` swaps the active one into the flat fields above.
+    env_lo: Env = .{},
+    env_hi: Env = .{},
+    /// Which of the two is currently loaded.
+    env_hi_active: bool = false,
     /// `LocalConnection.connect` claims a name; `send` finds it here.
     local_connections: std.ArrayList(LocalConnection) = .empty,
     /// Messages waiting for the end of the tick — delivery is
@@ -579,13 +634,70 @@ pub const Vm = struct {
             .case_sensitive = swf_version >= 7,
             .rng = std.Random.DefaultPrng.init(0x5EED),
         };
-        try @import("globals/globals.zig").install(self);
+        // BOTH environments are built up front, each with its own
+        // version rules — the low one at SWF6, the high one at SWF7.
+        // Whichever matches the movie is left active.
+        const want_hi = swf_version >= 7;
+        try self.buildEnv(false);
+        self.env_lo = self.envSave();
+        try self.buildEnv(true);
+        self.env_hi = self.envSave();
+        self.env_hi_active = true;
+        self.useVersion(swf_version);
+        self.swf_version = swf_version;
+        self.objects.swf_version = swf_version;
+        self.case_sensitive = want_hi;
+
         self.root_scope = try self.newObject();
         self.root_object = .{ .object = self.root_scope };
-        // _root / _level0 resolve to the root scope in pure-VM mode.
-        try self.objects.put(self.globals, S("_root"), self.root_object, self.case_sensitive);
-        try self.objects.put(self.globals, S("_level0"), self.root_object, self.case_sensitive);
+        // _root / _level0 resolve to the root scope in pure-VM mode, in
+        // BOTH environments — a loaded movie of the other version still
+        // has to find them.
+        for ([_]ObjectHandle{ self.env_lo.globals, self.env_hi.globals }) |g| {
+            try self.objects.put(g, S("_root"), self.root_object, self.case_sensitive);
+            try self.objects.put(g, S("_level0"), self.root_object, self.case_sensitive);
+        }
         return self;
+    }
+
+    /// Install a complete set of globals under the version rules of one
+    /// environment, leaving it in the flat fields.
+    fn buildEnv(self: *Vm, hi: bool) Error!void {
+        self.* .swf_version = if (hi) 7 else 6;
+        self.objects.swf_version = self.swf_version;
+        self.case_sensitive = hi;
+        self.envLoad(.{});
+        try @import("globals/globals.zig").install(self);
+    }
+
+    fn envSave(self: *Vm) Env {
+        var e: Env = .{};
+        inline for (@typeInfo(Env).@"struct".fields) |f| {
+            @field(e, f.name) = @field(self, f.name);
+        }
+        return e;
+    }
+
+    fn envLoad(self: *Vm, e: Env) void {
+        inline for (@typeInfo(Env).@"struct".fields) |f| {
+            @field(self, f.name) = @field(e, f.name);
+        }
+    }
+
+    /// Point the VM at the environment a movie of this version sees.
+    /// Cheap enough to call on every version change: it copies a struct
+    /// of handles.
+    pub fn useVersion(self: *Vm, version: u8) void {
+        const hi = version >= 7;
+        if (hi == self.env_hi_active) return;
+        if (self.env_hi_active) {
+            self.env_hi = self.envSave();
+            self.envLoad(self.env_lo);
+        } else {
+            self.env_lo = self.envSave();
+            self.envLoad(self.env_hi);
+        }
+        self.env_hi_active = hi;
     }
 
     pub fn destroy(self: *Vm) void {
@@ -1589,6 +1701,7 @@ pub const Vm = struct {
         defer {
             self.swf_version = outer_version;
             self.objects.swf_version = outer_obj_version;
+            self.useVersion(outer_version);
         }
         // Consume the pending super depth: it belongs to THIS frame only.
         const depth = self.super_depth;
@@ -1619,6 +1732,7 @@ pub const Vm = struct {
             @import("stage_object.zig").clipSwfVersion(self, eff_base) orelse outer_version;
         self.swf_version = @max(eff_version, 5);
         self.objects.swf_version = self.swf_version;
+        self.useVersion(self.swf_version);
         const local = try self.newScope(if (is_closure) f.scope else eff_base);
 
         // Local registers (fn2) — r0 unused by preloads; slots r1.. get the

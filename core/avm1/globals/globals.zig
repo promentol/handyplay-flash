@@ -245,7 +245,12 @@ pub fn install(vm: *Vm) !void {
     // SWF4 zero — both sides coerce to 0 (corpus equals_swf4).
     try decl.property(vm, vm.globals, "Infinity", globalInfinity, null, attrs);
     try decl.property(vm, vm.globals, "NaN", globalNan, null, attrs);
-    try vm.objects.putWithAttrs(vm.globals, S("_global"), .{ .object = vm.globals }, attrs, cs);
+    // NOT a property of `_global`: the name resolves through the display
+    // path machinery, which is gated to SWF6+. A real property would let
+    // a SWF5 movie see it — and one can, but only through the
+    // `preload_global` REGISTER, which no gate applies to (corpus
+    // global_swf5_6_7_8_9 traces `_global` as undefined at the top level
+    // of a SWF5 movie and as an object inside one of its functions).
     // Flash's own globals.as uses `o` as a scratch alias while building the
     // table and, at the end, sets it to null instead of deleting it. So in
     // EVERY movie `o` exists and is null (ruffle globals.rs, corpus `o`).
