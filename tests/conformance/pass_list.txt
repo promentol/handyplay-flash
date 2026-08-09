@@ -233,6 +233,7 @@ focusrect_property_swf7
 focusrect_swf5
 focusrect_swf6
 form_loader_encoding_1
+form_loader_encoding_2
 frame_size_translated_negative
 frame_size_translated_positive
 function_base_clip

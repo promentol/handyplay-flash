@@ -14,8 +14,32 @@ pub fn fromSwf(a: std.mem.Allocator, bytes: []const u8, swf_version: u8) ![]cons
     if (swf_version >= 6) {
         return decodeUtf8(a, bytes) catch latin1(a, bytes);
     }
-    return latin1(a, bytes);
+    return ansi(a, bytes);
 }
+
+/// WINDOWS-1252, which is what Flash means by "ANSI" for SWF5 and below
+/// (ruffle `SwfStr::encoding_for_version`). It is Latin-1 EXCEPT for
+/// 0x80..0x9F, where Latin-1 has C1 control codes and CP1252 has
+/// typography — the euro sign, curly quotes, the dashes. Decoding those
+/// as controls loses them on the way to the screen, which the form
+/// loader's mojibake test notices (corpus form_loader_encoding_2).
+pub fn ansi(a: std.mem.Allocator, bytes: []const u8) ![]const u16 {
+    const out = try a.alloc(u16, bytes.len);
+    for (bytes, out) |b, *w| {
+        w.* = if (b >= 0x80 and b <= 0x9F) CP1252_HIGH[b - 0x80] else b;
+    }
+    return out;
+}
+
+/// The 32 codepoints CP1252 puts where Latin-1 has C1 controls. The five
+/// holes (0x81, 0x8D, 0x8F, 0x90, 0x9D) are undefined in CP1252 and stay
+/// as their own byte value.
+const CP1252_HIGH = [32]u16{
+    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+    0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+    0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+};
 
 /// UTF-8, but ACCEPTING the surrogate encodings a strict decoder rejects.
 /// Flash's compilers emit CESU-8 — a character above the BMP written as
