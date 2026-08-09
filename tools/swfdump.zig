@@ -127,6 +127,23 @@ fn dumpTag(
             });
             for (s.styles.fills) |f| try out.print(" fill:{s}", .{fillName(f)});
         },
+        .define_morph_shape, .define_morph_shape2 => {
+            const v: u8 = if (tag.code == .define_morph_shape) 1 else 2;
+            if (swf.morph.parse(a, tag.body, swf_version, v)) |m| {
+                try out.print(
+                    " id={d} start=({d},{d},{d},{d}) end=({d},{d},{d},{d}) fills={d} lines={d} records={d}/{d}",
+                    .{
+                        m.id,                     m.start_bounds.xmin, m.start_bounds.ymin,
+                        m.start_bounds.xmax,      m.start_bounds.ymax, m.end_bounds.xmin,
+                        m.end_bounds.ymin,        m.end_bounds.xmax,   m.end_bounds.ymax,
+                        m.start_styles.fills.len, m.start_styles.lines.len,
+                        m.start_records.len,      m.end_records.len,
+                    },
+                );
+            } else |err| {
+                try out.print(" UNDECODABLE ({s})", .{@errorName(err)});
+            }
+        },
         .place_object => {
             const po = try swf.place.parsePlace1(tag.body);
             try out.print(" id={d} depth={d}", .{ po.action.place, po.depth });

@@ -97,9 +97,13 @@ pub const DisplayObject = struct {
     /// Lazily-created AVM1 object (0 = none). Clips keep theirs on the
     /// MovieClip; buttons and text fields keep theirs here.
     avm_object: u32 = 0,
-    /// `setMask` link. Stored now so scripts can read it back; the
-    /// renderer starts honouring it with clipDepth masks in M7.
+    /// `setMask` link — the object that masks THIS one. Stored now so
+    /// scripts can read it back; the renderer starts honouring it with
+    /// clipDepth masks in M7. Hit testing honours it already.
     mask: ?*DisplayObject = null,
+    /// The other end of the same link: the object THIS one masks. A mask
+    /// is hit even while invisible, and is never hit as itself.
+    maskee: ?*DisplayObject = null,
     /// Off the display list but possibly still script-referenced. Clips
     /// carry the same flag on their MovieClip; buttons and text fields
     /// need it here or a removed one keeps reading as a live object.

@@ -16,6 +16,7 @@
 const std = @import("std");
 const swf_shape = @import("../swf/shape.zig");
 const rdr = @import("../swf/reader.zig");
+const morph_mod = @import("../swf/morph.zig");
 
 pub const Error = std.mem.Allocator.Error;
 
@@ -342,9 +343,139 @@ fn strokeMinimumWidth(m: rdr.Matrix) f64 {
     return 20.0 * @max(sx, sy);
 }
 
+/// Where a hit test's records come from. A parsed shape hands them over
+/// as they are; a MORPH has no records of its own at a given ratio, so it
+/// interpolates each one as the walk reaches it — no frame is built and
+/// nothing is allocated, which is what lets the hit test stay pure.
+pub const Walker = union(enum) {
+    slice: struct { recs: []const swf_shape.ShapeRecord, i: usize = 0 },
+    morph: MorphWalk,
+
+    pub fn next(self: *Walker) ?swf_shape.ShapeRecord {
+        switch (self.*) {
+            .slice => |*s| {
+                if (s.i >= s.recs.len) return null;
+                defer s.i += 1;
+                return s.recs[s.i];
+            },
+            .morph => |*m| return m.next(),
+        }
+    }
+
+    /// The width of line style `index` (1-based), interpolated for a
+    /// morph. `lines` is the currently ACTIVE array, which a NewStyles
+    /// record can replace mid-shape.
+    pub fn lineWidth(self: *const Walker, lines: []const swf_shape.LineStyle, index: u32) ?u16 {
+        if (index == 0 or index > lines.len) return null;
+        return switch (self.*) {
+            .slice => lines[index - 1].width,
+            .morph => |m| blk: {
+                if (index > m.shape.end_styles.lines.len) break :blk lines[index - 1].width;
+                break :blk morph_mod.lerpWidth(
+                    m.shape.start_styles.lines[index - 1].width,
+                    m.shape.end_styles.lines[index - 1].width,
+                    m.a,
+                    m.b,
+                );
+            },
+        };
+    }
+};
+
+/// The pairwise walk over a morph's two edge lists. A StyleChangeRecord
+/// can appear on one side without the other, so each side keeps its own
+/// pen and only the side that produced a record advances.
+pub const MorphWalk = struct {
+    shape: *const morph_mod.MorphShape,
+    a: f32,
+    b: f32,
+    si: usize = 0,
+    ei: usize = 0,
+    start_pen: [2]i32 = .{ 0, 0 },
+    end_pen: [2]i32 = .{ 0, 0 },
+
+    pub fn next(self: *MorphWalk) ?swf_shape.ShapeRecord {
+        if (self.si >= self.shape.start_records.len) return null;
+        if (self.ei >= self.shape.end_records.len) return null;
+        const s = self.shape.start_records[self.si];
+        const e = self.shape.end_records[self.ei];
+        const s_change = s == .style_change;
+        const e_change = e == .style_change;
+        if (s_change and e_change) {
+            var change = s.style_change;
+            if (change.move_to != null or e.style_change.move_to != null) {
+                if (change.move_to) |mv| self.start_pen = .{ mv.x, mv.y };
+                if (e.style_change.move_to) |mv| self.end_pen = .{ mv.x, mv.y };
+                change.move_to = .{
+                    .x = morph_mod.lerpTwips(self.start_pen[0], self.end_pen[0], self.a, self.b),
+                    .y = morph_mod.lerpTwips(self.start_pen[1], self.end_pen[1], self.a, self.b),
+                };
+            }
+            self.si += 1;
+            self.ei += 1;
+            return .{ .style_change = change };
+        }
+        // A style change on ONE side only: the styles come from the start
+        // side, the pen from whichever side moved.
+        if (s_change) {
+            var change = s.style_change;
+            if (change.move_to) |mv| {
+                self.start_pen = .{ mv.x, mv.y };
+                change.move_to = .{
+                    .x = morph_mod.lerpTwips(self.start_pen[0], self.end_pen[0], self.a, self.b),
+                    .y = morph_mod.lerpTwips(self.start_pen[1], self.end_pen[1], self.a, self.b),
+                };
+            }
+            self.si += 1;
+            return .{ .style_change = change };
+        }
+        if (e_change) {
+            var change = e.style_change;
+            if (change.move_to) |mv| {
+                self.end_pen = .{ mv.x, mv.y };
+                change.move_to = .{
+                    .x = morph_mod.lerpTwips(self.start_pen[0], self.end_pen[0], self.a, self.b),
+                    .y = morph_mod.lerpTwips(self.start_pen[1], self.end_pen[1], self.a, self.b),
+                };
+            }
+            self.ei += 1;
+            return .{ .style_change = change };
+        }
+        const out = morph_mod.lerpEdge(self.start_pen, self.end_pen, s, e, self.a, self.b);
+        morph_mod.advance(&self.start_pen[0], &self.start_pen[1], s);
+        morph_mod.advance(&self.end_pen[0], &self.end_pen[1], e);
+        self.si += 1;
+        self.ei += 1;
+        return out;
+    }
+};
+
+/// A morph shape at `ratio`, hit-tested against its interpolated outline.
+pub fn morphHitTest(
+    m: *const morph_mod.MorphShape,
+    ratio: u16,
+    p: Point2,
+    local_matrix: rdr.Matrix,
+) bool {
+    const w = morph_mod.weights(ratio);
+    var walker: Walker = .{ .morph = .{ .shape = m, .a = w[0], .b = w[1] } };
+    return walkHitTest(&walker, m.start_styles.lines, .even_odd, p, local_matrix);
+}
+
 pub fn shapeHitTest(shape: *const swf_shape.Shape, p: Point2, local_matrix: rdr.Matrix) bool {
     const rule: Winding = if (shape.uses_fill_winding_rule) .non_zero else .even_odd;
-    var line_styles = shape.styles.lines;
+    var walker: Walker = .{ .slice = .{ .recs = shape.records } };
+    return walkHitTest(&walker, shape.styles.lines, rule, p, local_matrix);
+}
+
+fn walkHitTest(
+    walker: *Walker,
+    initial_lines: []const swf_shape.LineStyle,
+    rule: Winding,
+    p: Point2,
+    local_matrix: rdr.Matrix,
+) bool {
+    var line_styles = initial_lines;
     var winding: i32 = 0;
     var x: i32 = 0;
     var y: i32 = 0;
@@ -353,7 +484,7 @@ pub fn shapeHitTest(shape: *const swf_shape.Shape, p: Point2, local_matrix: rdr.
     var stroke: ?[2]f64 = null;
     const min_width = strokeMinimumWidth(local_matrix);
 
-    for (shape.records) |rec| switch (rec) {
+    while (walker.next()) |rec| switch (rec) {
         .style_change => |change| {
             // NewStyles starts a new layer: test what we have, then reset.
             if (change.new_styles) |styles| {
@@ -368,8 +499,8 @@ pub fn shapeHitTest(shape: *const swf_shape.Shape, p: Point2, local_matrix: rdr.
             if (change.fill_style_0) |i| has_fill0 = i > 0;
             if (change.fill_style_1) |i| has_fill1 = i > 0;
             if (change.line_style) |i| {
-                stroke = if (i > 0 and i <= line_styles.len)
-                    strokeHalfWidth(line_styles[i - 1].width, min_width)
+                stroke = if (walker.lineWidth(line_styles, i)) |w|
+                    strokeHalfWidth(w, min_width)
                 else
                     null;
             }

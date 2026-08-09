@@ -20,6 +20,7 @@ const font_text = @import("font_text.zig");
 const button = @import("button.zig");
 const bitmap_tags = @import("bitmap_tags.zig");
 const sound_tags = @import("sound_tags.zig");
+const morph = @import("morph.zig");
 const place = @import("place.zig");
 const library = @import("../display/library.zig");
 
@@ -218,10 +219,20 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
                     edge_bounds = try r.readRectangle();
                     _ = try r.readRectangle(); // end edge bounds
                 }
+                // The edge lists decode here, once. A body we cannot
+                // make sense of is not fatal — the two declared boxes
+                // still place the tween, they just cannot shape it.
+                const decoded: ?*const morph.MorphShape = blk: {
+                    const parsed = morph.parse(a, tag.body, movie.swf_version, ver) catch break :blk null;
+                    const slot = try a.create(morph.MorphShape);
+                    slot.* = parsed;
+                    break :blk slot;
+                };
                 try movie.lib.put(a, id, .{ .morph_shape = .{
                     .id = id,
                     .version = ver,
                     .body = tag.body,
+                    .data = decoded,
                     .start_bounds = start_bounds,
                     .end_bounds = end_bounds,
                     .edge_bounds = edge_bounds,

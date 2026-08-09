@@ -66,10 +66,32 @@ fn morphEngineBounds(lib: ?*const library.Library, id: u16, ratio: u16) ?Rectang
     };
 }
 
+fn morphData(lib: ?*const library.Library, id: u16) ?*const swf.morph.MorphShape {
+    const l = lib orelse return null;
+    const ch = l.getConstPtr(id) orelse return null;
+    return switch (ch.*) {
+        .morph_shape => |m| m.data,
+        else => null,
+    };
+}
+
 fn lerpTwips(a: i32, b: i32, t: f64) i32 {
     const av: f64 = @floatFromInt(a);
     const bv: f64 = @floatFromInt(b);
     return @intFromFloat(@round(av + (bv - av) * t));
+}
+
+/// A masker is tested from ITS OWN place in the tree, not the masked
+/// object's — the two need not be siblings.
+fn maskParentToGlobal(obj: *const DisplayObject) Matrix {
+    var m: Matrix = .identity;
+    var parent = obj.parent;
+    while (parent) |p| {
+        const placement = p.placement orelse break;
+        m = placement.matrix.mul(m);
+        parent = p.parent;
+    }
+    return m;
 }
 
 /// `boundsWithTransform` in the ENGINE flavour, children included.
@@ -200,14 +222,24 @@ pub fn hitTestBoundsIn(
     return contains(box, point[0], point[1]);
 }
 
+/// Which objects a hit test is allowed to see (ruffle `HitTestOptions`).
+/// The defaults are `AVM_HIT_TEST`, what `MovieClip.hitTest(x, y, true)`
+/// asks for: masks are honoured, and an INVISIBLE clip is still hit —
+/// only the mouse skips those, which is `MOUSE_PICK`.
+pub const HitOptions = struct {
+    /// An object used as a mask is not hit itself, and a masked object is
+    /// hit only where its mask covers it.
+    skip_mask: bool = true,
+    skip_invisible: bool = false,
+};
+
+pub const MOUSE_PICK: HitOptions = .{ .skip_mask = true, .skip_invisible = true };
+
 /// Shape-exact hit test: the point must land on actual drawn geometry, not
-/// merely inside the bounding box. Invisible objects never hit — Flash's
-/// AVM_HIT_TEST options skip them (ruffle `HitTestOptions::AVM_HIT_TEST`
-/// sets SKIP_INVISIBLE).
+/// merely inside the bounding box.
 ///
-/// Characters we cannot rasterise yet (buttons, bitmaps, morph shapes)
-/// fall back to their bounding box, which is `null` for those kinds today
-/// and so reports a miss — the same answer the renderer gives.
+/// Characters we cannot rasterise yet (bitmaps, morph shapes) fall back
+/// to their bounding box.
 /// `lib` is needed only to resolve a static text's FONT; pass null and
 /// text falls back to its box.
 pub fn hitTestShape(
@@ -216,20 +248,57 @@ pub fn hitTestShape(
     parent_to_global: Matrix,
     lib: ?*const library.Library,
 ) bool {
-    if (!obj.visible) return false;
+    return hitTestShapeOpts(obj, point, parent_to_global, lib, .{});
+}
+
+pub fn hitTestShapeOpts(
+    obj: *const DisplayObject,
+    point: [2]i32,
+    parent_to_global: Matrix,
+    lib: ?*const library.Library,
+    opts: HitOptions,
+) bool {
+    // A mask is hit even while invisible — being a mask is what it is
+    // FOR, so the flag says nothing about it (ruffle movie_clip.rs:2677).
+    if (opts.skip_invisible and !obj.visible and obj.maskee == null) return false;
+    // …and it is never hit AS ITSELF.
+    if (opts.skip_mask and obj.maskee != null) return false;
+    // A masked object exists only where its mask is. The mask lives
+    // somewhere else in the tree, so it is tested from its own root.
+    if (opts.skip_mask) {
+        if (obj.mask) |m| {
+            if (!hitTestShapeOpts(m, point, maskParentToGlobal(m), lib, .{
+                .skip_mask = false,
+                .skip_invisible = true,
+            })) return false;
+        }
+    }
     const to_global = parent_to_global.mul(obj.matrix);
     const inv = to_global.invert() orelse return false;
     const local = inv.transformPoint(point[0], point[1]);
     switch (obj.kind) {
         // A video with no decoded frame has nothing to hit.
         .video => return false,
-        .shape => |s| return shape_utils.shapeHitTest(s, .{ .x = local[0], .y = local[1] }, to_global),
+        .shape => |s| return shape_utils.shapeHitTest(s, .{ .x = local[0], .y = local[1] }, inv),
         .clip => |mc| {
             if (mc.drawing) |*d| {
-                if (d.hitTest(.{ .x = local[0], .y = local[1] }, to_global)) return true;
+                if (d.hitTest(.{ .x = local[0], .y = local[1] }, inv)) return true;
             }
+            // A CLIPPING LAYER masks the depths below it, up to its
+            // `clip_depth`: miss the layer and everything it covers is
+            // skipped, hit it and they are all back in play. The layer
+            // itself is never the answer (ruffle movie_clip.rs:2699).
+            var clip_depth: i32 = 0;
             for (mc.children.items) |child| {
-                if (hitTestShape(child, point, to_global, lib)) return true;
+                if (child.clip_depth != 0) {
+                    clip_depth = if (hitTestShapeOpts(child, point, to_global, lib, .{
+                        .skip_mask = true,
+                        .skip_invisible = true,
+                    })) 0 else child.clip_depth;
+                    continue;
+                }
+                if (child.depth < clip_depth) continue;
+                if (hitTestShapeOpts(child, point, to_global, lib, opts)) return true;
             }
             return false;
         },
@@ -242,7 +311,7 @@ pub fn hitTestShape(
             else
                 b.container.children.items;
             for (list) |child| {
-                if (hitTestShape(child, point, to_global, lib)) return true;
+                if (hitTestShapeOpts(child, point, to_global, lib, opts)) return true;
             }
             return false;
         },
@@ -251,9 +320,18 @@ pub fn hitTestShape(
         // is behind (ruffle text.rs:191-257). Without a library to
         // resolve the font, the box has to stand in.
         .text => |txt| {
+            // The gate is the box in STAGE space — the axis-aligned one
+            // around the rotated text, which is looser than the rotated
+            // box itself and is what ruffle tests (`world_bounds`).
             const box = selfBounds(obj) orelse return false;
-            if (!contains(box, local[0], local[1])) return false;
+            if (!contains(to_global.transformRect(box), point[0], point[1])) return false;
             const l = lib orelse return true;
+            // "Advanced text rendering" — a CSMTextSettings tag with the
+            // flashtype bit — stops the glyph walk before it starts: the
+            // whole box is hit, gaps and all (ruffle text.rs:200).
+            if (l.csm.get(txt.id)) |c| {
+                if (c.use_advanced_rendering) return true;
+            }
             // The tag's own matrix wraps the run, so the point comes back
             // out of it before the per-glyph walk.
             const inv_text = txt.matrix.invert() orelse return false;
@@ -263,17 +341,23 @@ pub fn hitTestShape(
                 const gi = g.matrix.invert() orelse continue;
                 const gp = gi.transformPoint(p[0], p[1]);
                 const gs = swf.font_text.glyphShape(g.glyph);
-                if (shape_utils.shapeHitTest(&gs, .{ .x = gp[0], .y = gp[1] }, to_global)) return true;
+                if (shape_utils.shapeHitTest(&gs, .{ .x = gp[0], .y = gp[1] }, inv)) return true;
             }
             return false;
         },
+        // A MORPH is gated on its interpolated box and then tested
+        // against the tween's own outline, interpolated edge by edge as
+        // the walk reaches it (ruffle morph_shape.rs:144).
+        .morph_shape => |id| {
+            const box = engineSelfBounds(obj, lib) orelse return false;
+            if (!contains(box, local[0], local[1])) return false;
+            const m = morphData(lib, id) orelse return true;
+            return shape_utils.morphHitTest(m, obj.ratio, .{ .x = local[0], .y = local[1] }, inv);
+        },
         // A field's box IS its geometry — Flash hit-tests the rectangle,
         // not the glyphs. A bitmap is the same: its box, not its opaque
-        // pixels. A morph is hit through its INTERPOLATED box: ruffle
-        // gates on that box and then tests the tween's edges, which stay
-        // undecoded until M7, so the box is as fine as this gets
-        // (corpus hittest_morph_input).
-        .edit_text, .bitmap, .attached_bitmap, .morph_shape => {
+        // pixels.
+        .edit_text, .bitmap, .attached_bitmap => {
             const box = engineSelfBounds(obj, lib) orelse return false;
             return contains(box, local[0], local[1]);
         },

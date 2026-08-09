@@ -400,6 +400,7 @@ movieclip_get_instance_at_depth
 movieclip_getbounds
 movieclip_gettextsnapshot
 movieclip_hittest
+movieclip_hittest_shapeflag
 movieclip_in_removed_button
 movieclip_init_object
 movieclip_invalid_get_bounds_1

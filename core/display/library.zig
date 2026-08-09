@@ -54,6 +54,9 @@ pub const Character = union(enum) {
         id: u16,
         version: u8,
         body: []const u8,
+        /// The decoded pair of shapes, when the body made sense. Null
+        /// leaves every consumer on the declared boxes.
+        data: ?*const swf.morph.MorphShape = null,
         start_bounds: swf.reader.Rectangle = .{},
         /// The END shape's bounds. Scripts never see them, but the
         /// PLAYER interpolates between the two to know where a

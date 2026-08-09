@@ -404,12 +404,18 @@ fn setMask(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     if (args.len == 0) return .undefined_value;
     const v = args[0];
     if (v == .undefined_value or v == .null_value) {
+        if (t.obj.mask) |old| old.maskee = null;
         t.obj.mask = null;
         return .{ .boolean = true };
     }
     const m = try activation.targetFromNative(vm, 0, v) orelse
         return .{ .boolean = false };
+    if (t.obj.mask) |old| old.maskee = null;
     t.obj.mask = m.obj;
+    // Both ends of the link, as ruffle keeps them: a mask has to know it
+    // is one, because that is what exempts it from the visibility rule
+    // and from being hit itself.
+    m.obj.maskee = t.obj;
     return .{ .boolean = true };
 }
 

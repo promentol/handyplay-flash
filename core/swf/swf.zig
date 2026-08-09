@@ -11,10 +11,10 @@ pub const filters = @import("filters.zig");
 pub const button = @import("button.zig");
 pub const bitmap_tags = @import("bitmap_tags.zig");
 pub const sound_tags = @import("sound_tags.zig");
+pub const morph = @import("morph.zig");
 pub const place = @import("place.zig");
 pub const movie = @import("movie.zig");
 
-// M7: morph.zig (DefineMorphShape decoding; raw bodies captured by movie).
 
 test {
     @import("std").testing.refAllDecls(@This());
