@@ -237,8 +237,11 @@ pub fn install(vm: *Vm) !void {
         try vm.objects.putWithAttrs(error_proto, S("message"), .{ .string = S("Error") }, .{}, cs);
         _ = try decl.class(vm, "Error", ctorError, error_proto, attrs);
     }
-    try vm.objects.putWithAttrs(vm.globals, S("Infinity"), .{ .number = std.math.inf(f64) }, attrs, cs);
-    try vm.objects.putWithAttrs(vm.globals, S("NaN"), .{ .number = std.math.nan(f64) }, attrs, cs);
+    // Both are ACCESSORS because SWF4 has neither: `NaN` and `Infinity`
+    // read as undefined there, which is why `x == NaN` is true for a
+    // SWF4 zero — both sides coerce to 0 (corpus equals_swf4).
+    try decl.property(vm, vm.globals, "Infinity", globalInfinity, null, attrs);
+    try decl.property(vm, vm.globals, "NaN", globalNan, null, attrs);
     try vm.objects.putWithAttrs(vm.globals, S("_global"), .{ .object = vm.globals }, attrs, cs);
     // Flash's own globals.as uses `o` as a scratch alias while building the
     // table and, at the end, sets it to null instead of deleting it. So in
@@ -1559,6 +1562,20 @@ pub fn mathMethod(p: *anyopaque, this: Value, args: []const Value, index: u16) a
 }
 
 // --- global functions --------------------------------------------------------
+
+fn globalInfinity(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    _ = args;
+    if (vmOf(p).swf_version <= 4) return .undefined_value;
+    return .{ .number = std.math.inf(f64) };
+}
+
+fn globalNan(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    _ = args;
+    if (vmOf(p).swf_version <= 4) return .undefined_value;
+    return .{ .number = std.math.nan(f64) };
+}
 
 fn globalIsNan(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;

@@ -1,4 +1,5 @@
 access_unnamed_shape
+action_to_integer
 add
 add2
 add_property
@@ -184,6 +185,7 @@ equals
 equals2_swf5
 equals2_swf6
 equals2_swf7
+equals_swf4
 equals_swf4_alt
 equals_swf5
 error
@@ -296,6 +298,7 @@ lessthan
 lessthan2_swf5
 lessthan2_swf6
 lessthan2_swf7
+lessthan_swf4
 lessthan_swf4_alt
 lessthan_swf5
 load_cancel_via_removemovieclip
@@ -314,6 +317,8 @@ loadvariablesnum
 loadvars_tostring
 local_to_global
 lock_root
+logical_ops_swf4
+logical_ops_swf8
 looping
 looping_real_1_declared_1
 looping_real_1_declared_2
@@ -468,6 +473,8 @@ string_paths_variable_scopes
 string_relational_compare
 stylesheet_transform
 super_edge_cases
+swf4_actions_bool
+swf4_actions_coercion_order
 swf4_bool
 swf4_function_calls
 swf5_encoding

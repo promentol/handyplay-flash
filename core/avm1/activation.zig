@@ -161,8 +161,12 @@ pub const Activation = struct {
     }
 
     fn boolResult(self: *Activation, b: bool) Value {
-        // SWF4 pushes 1/0 numbers for logical results; SWF5+ booleans.
-        if (self.swf_version < 5) return .{ .number = if (b) 1 else 0 };
+        // A BOOLEAN even in SWF4, where the type has no literal: ruffle
+        // marks every one of these "diverges from spec: returns a boolean
+        // even in SWF 4". It only shows through `typeof` and `===`,
+        // because a SWF4 boolean stringifies as "1"/"0" anyway (corpus
+        // swf4_actions_bool).
+        _ = self;
         return .{ .boolean = b };
     }
 
@@ -587,8 +591,12 @@ pub const Activation = struct {
             }
             cur = self.vm.objects.get(cur).scope_parent;
         }
-        const g = self.vm.objects.getChained(self.vm.globals, name, cs) orelse return null;
-        return .{ .value = g, .owner = 0 };
+        // Through `getProperty`, so an ACCESSOR on `_global` runs — `NaN`
+        // and `Infinity` are accessors because SWF4 has neither.
+        const gh = self.vm.globals;
+        if (self.vm.objects.findOwn(gh, name, cs) == null and
+            !self.vm.objects.hasChained(gh, name, cs)) return null;
+        return .{ .value = try self.vm.getProperty(gh, name, .{ .object = gh }), .owner = 0 };
     }
 
     /// Vm.scopeSet's counterpart to `scopeLookup`: a bare `_x = 10` in
@@ -1173,15 +1181,23 @@ pub const Activation = struct {
                 const b = try self.vm.toNumber(rhs);
                 try self.push(self.boolResult(a < b));
             },
+            // Both read their operands as BOOLEANS, not numbers: an
+            // object is true without its `valueOf` ever running, and NaN
+            // is false rather than "not zero" (corpus logical_ops_swf8,
+            // swf4_actions_coercion_order).
             .and_op => {
-                const b = try self.popNumber();
-                const a = try self.popNumber();
-                try self.push(self.boolResult(a != 0 and b != 0));
+                const b = self.pop();
+                const a = self.pop();
+                const ba = value_mod.toBoolean(a, self.swf_version);
+                const bb = value_mod.toBoolean(b, self.swf_version);
+                try self.push(self.boolResult(ba and bb));
             },
             .or_op => {
-                const b = try self.popNumber();
-                const a = try self.popNumber();
-                try self.push(self.boolResult(a != 0 or b != 0));
+                const b = self.pop();
+                const a = self.pop();
+                const ba = value_mod.toBoolean(a, self.swf_version);
+                const bb = value_mod.toBoolean(b, self.swf_version);
+                try self.push(self.boolResult(ba or bb));
             },
             .not => {
                 if (self.swf_version < 5) {
@@ -1193,8 +1209,10 @@ pub const Activation = struct {
                 }
             },
             .to_integer => {
+                // ECMA ToInt32, which WRAPS and turns NaN into 0 — not a
+                // plain truncation (corpus action_to_integer).
                 const n = try self.popNumber();
-                try self.push(.{ .number = @trunc(n) });
+                try self.push(.{ .number = @floatFromInt(value_mod.toInt32(n)) });
             },
             .random_number => {
                 const max = try self.popNumber();
@@ -1725,16 +1743,11 @@ pub const Activation = struct {
                 // the target resolves, and the constraint rectangle is
                 // popped y_max, x_max, y_min, x_min.
                 const target = self.pop();
-                const lock_center = (try self.popNumber()) == 1;
-                const constrain = (try self.popNumber()) == 1;
-                var rect: ?[4]f64 = null;
-                if (constrain) {
-                    const y_max = try self.popNumber();
-                    const x_max = try self.popNumber();
-                    const y_min = try self.popNumber();
-                    const x_min = try self.popNumber();
-                    rect = .{ x_min, y_min, x_max, y_max };
-                }
+                // The TARGET is resolved (and so coerced to a string)
+                // BEFORE the numbers are popped — the corpus watches the
+                // order of the valueOf/toString calls
+                // (swf4_actions_coercion_order).
+                //
                 // `allow_empty = true` here, unlike hitTest/getBounds: a
                 // bare `startDrag()` drags the current target clip.
                 const t = if (stage.targetOfValue(self.vm, target)) |dt|
@@ -1746,6 +1759,16 @@ pub const Activation = struct {
                     const h = try self.resolveTargetPath(self.rootHandle(), start, s, true, false);
                     break :blk if (h) |hh| stage.targetOf(self.vm, hh) else null;
                 };
+                const lock_center = (try self.popNumber()) == 1;
+                const constrain = (try self.popNumber()) == 1;
+                var rect: ?[4]f64 = null;
+                if (constrain) {
+                    const y_max = try self.popNumber();
+                    const x_max = try self.popNumber();
+                    const y_min = try self.popNumber();
+                    const x_min = try self.popNumber();
+                    rect = .{ x_min, y_min, x_max, y_max };
+                }
                 if (t) |dt| stage.startDrag(self.vm, dt, lock_center, rect);
             },
             .end_drag => stage.stopDrag(self.vm),
