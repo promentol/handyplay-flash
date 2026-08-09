@@ -1311,7 +1311,7 @@ fn trGetPixelBounds(p: *anyopaque, this: Value, args: []const Value) anyerror!Va
     _ = args;
     const vm = vmOf(p);
     const t = transformTarget(vm, this) orelse return .undefined_value;
-    const box = stage.worldBounds(t) orelse return newRectangle(vm, 0, 0, 0, 0);
+    const box = stage.worldBounds(vm, t) orelse return newRectangle(vm, 0, 0, 0, 0);
     return newRectangle(
         vm,
         pixelsFromTwips(box.xmin),

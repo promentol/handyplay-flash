@@ -388,7 +388,7 @@ fn hitTest(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
         // Like getBounds, the single-argument form accepts a path string.
         const other = try activation.targetFromNative(vm, this.object, args[0]) orelse
             return .{ .boolean = false };
-        return .{ .boolean = stage.hitTestObject(t, other) };
+        return .{ .boolean = stage.hitTestObject(vm, t, other) };
     }
     return .{ .boolean = false };
 }

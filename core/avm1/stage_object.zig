@@ -998,6 +998,13 @@ fn rootClip(vm: *Vm) ?*MovieClip {
     return clipOfHandle(vm, vm.root_object.object);
 }
 
+/// The running movie's library, for the bounds walk — a morph shape
+/// reads its declared box out of it.
+fn libOf(vm: *Vm) ?*const @import("../display/library.zig").Library {
+    const ctx = displayCtx(vm) orelse return null;
+    return &ctx.movie.lib;
+}
+
 pub fn nameEql(vm: *Vm, a: []const u16, b: []const u16) bool {
     return if (vm.case_sensitive) strings.eql(a, b) else strings.eqlIgnoreCase(a, b);
 }
@@ -1826,7 +1833,7 @@ fn latchInvalidBounds(vm: *Vm) void {
 pub fn boundsObject(vm: *Vm, t: Target, target: ?Target) !Value {
     latchInvalidBounds(vm);
     const same_space = if (target) |o| o.obj == t.obj else true;
-    var box: swf.reader.Rectangle = bounds_mod.ownBounds(t.obj) orelse INVALID_RECT;
+    var box: swf.reader.Rectangle = bounds_mod.ownBoundsIn(t.obj, libOf(vm)) orelse INVALID_RECT;
     if (!same_space) {
         const to_global = localToGlobalMatrix(t);
         const to_target = globalToLocalMatrix(target.?) orelse swf.reader.Matrix.identity;
@@ -1876,13 +1883,14 @@ pub fn hitTestPoint(vm: *Vm, t: Target, x_px: f64, y_px: f64, shape_flag: bool) 
             if (displayCtx(vm)) |c| &c.movie.lib else null;
         return bounds_mod.hitTestShape(t.obj, .{ gx, gy }, parent_to_global, l);
     }
-    return bounds_mod.hitTestBounds(t.obj, .{ gx, gy }, parent_to_global);
+    return bounds_mod.hitTestBoundsIn(t.obj, .{ gx, gy }, parent_to_global, libOf(vm));
 }
 
 /// `hitTest(otherClip)` — bounding boxes overlapping in stage space.
-pub fn hitTestObject(a: Target, b: Target) bool {
-    const ba = bounds_mod.boundsWithTransform(a.obj, localToGlobalMatrix(a)) orelse return false;
-    const bb = bounds_mod.boundsWithTransform(b.obj, localToGlobalMatrix(b)) orelse return false;
+pub fn hitTestObject(vm: *Vm, a: Target, b: Target) bool {
+    const lib = libOf(vm);
+    const ba = bounds_mod.boundsWithTransformIn(a.obj, localToGlobalMatrix(a), lib) orelse return false;
+    const bb = bounds_mod.boundsWithTransformIn(b.obj, localToGlobalMatrix(b), lib) orelse return false;
     return bounds_mod.intersects(ba, bb);
 }
 
@@ -1901,8 +1909,8 @@ pub fn concatenatedColorTransform(t: Target) swf.reader.ColorTransform {
 }
 
 /// Bounds in STAGE space, children included.
-pub fn worldBounds(t: Target) ?swf.reader.Rectangle {
-    return bounds_mod.boundsWithTransform(t.obj, localToGlobalMatrix(t));
+pub fn worldBounds(vm: *Vm, t: Target) ?swf.reader.Rectangle {
+    return bounds_mod.boundsWithTransformIn(t.obj, localToGlobalMatrix(t), libOf(vm));
 }
 
 /// The object's PARENT space → stage space (its own matrix excluded).

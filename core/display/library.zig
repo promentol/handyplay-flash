@@ -46,8 +46,17 @@ pub const Control = union(enum) {
 
 pub const Character = union(enum) {
     shape: swf.shape.Shape,
-    /// Raw DefineMorphShape body (decoded in M7).
-    morph_shape: struct { id: u16, version: u8, body: []const u8 },
+    /// Raw DefineMorphShape body (the edges are decoded in M7) plus the
+    /// two bounding boxes the tag declares up front. Scripts read the
+    /// START shape's bounds — `getBounds` and `hitTestObject` on a morph
+    /// answer from it even mid-tween (corpus hittest_morph).
+    morph_shape: struct {
+        id: u16,
+        version: u8,
+        body: []const u8,
+        start_bounds: swf.reader.Rectangle = .{},
+        edge_bounds: swf.reader.Rectangle = .{},
+    },
     font: swf.font_text.Font,
     text: swf.font_text.Text,
     edit_text: swf.font_text.EditText,

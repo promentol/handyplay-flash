@@ -23,7 +23,23 @@ const Matrix = swf.reader.Matrix;
 
 /// Inherent bounds of the character itself, children EXCLUDED, untransformed.
 /// Containers have none of their own.
+fn morphBounds(lib: ?*const library.Library, id: u16) ?Rectangle {
+    const l = lib orelse return null;
+    const ch = l.getConstPtr(id) orelse return null;
+    return switch (ch.*) {
+        .morph_shape => |m| m.start_bounds,
+        else => null,
+    };
+}
+
 pub fn selfBounds(obj: *const DisplayObject) ?Rectangle {
+    return selfBoundsIn(obj, null);
+}
+
+/// `selfBounds`, with the library available — a MORPH shape needs it to
+/// reach the bounds its tag declared.
+pub fn selfBoundsIn(obj: *const DisplayObject, lib: ?*const library.Library) ?Rectangle {
+    if (obj.kind == .morph_shape) return morphBounds(lib, obj.kind.morph_shape);
     return switch (obj.kind) {
         .shape => |s| s.bounds,
         .text => |t| t.bounds,
@@ -57,9 +73,17 @@ fn pixelBox(w: u32, h: u32) ?Rectangle {
 
 /// Bounds of `obj` including its children, everything pushed through `m`.
 pub fn boundsWithTransform(obj: *const DisplayObject, m: Matrix) ?Rectangle {
-    var acc: ?Rectangle = if (selfBounds(obj)) |b| m.transformRect(b) else null;
+    return boundsWithTransformIn(obj, m, null);
+}
+
+pub fn boundsWithTransformIn(
+    obj: *const DisplayObject,
+    m: Matrix,
+    lib: ?*const library.Library,
+) ?Rectangle {
+    var acc: ?Rectangle = if (selfBoundsIn(obj, lib)) |b| m.transformRect(b) else null;
     for (childrenOf(obj)) |child| {
-        const child_box = boundsWithTransform(child, m.mul(child.matrix)) orelse continue;
+        const child_box = boundsWithTransformIn(child, m.mul(child.matrix), lib) orelse continue;
         acc = if (acc) |a| unionRect(a, child_box) else child_box;
     }
     return acc;
@@ -73,6 +97,10 @@ pub fn localBounds(obj: *const DisplayObject) ?Rectangle {
 /// In the object's OWN space — setting `_width` / `_height` scales this.
 pub fn ownBounds(obj: *const DisplayObject) ?Rectangle {
     return boundsWithTransform(obj, .identity);
+}
+
+pub fn ownBoundsIn(obj: *const DisplayObject, lib: ?*const library.Library) ?Rectangle {
+    return boundsWithTransformIn(obj, .identity, lib);
 }
 
 /// The children a container contributes to bounds and hit tests. A
@@ -109,7 +137,16 @@ pub fn intersects(a: Rectangle, b: Rectangle) bool {
 /// `parent_to_global` is the matrix taking the object's PARENT space to
 /// stage space, so the object's own matrix is applied here.
 pub fn hitTestBounds(obj: *const DisplayObject, point: [2]i32, parent_to_global: Matrix) bool {
-    const box = boundsWithTransform(obj, parent_to_global.mul(obj.matrix)) orelse return false;
+    return hitTestBoundsIn(obj, point, parent_to_global, null);
+}
+
+pub fn hitTestBoundsIn(
+    obj: *const DisplayObject,
+    point: [2]i32,
+    parent_to_global: Matrix,
+    lib: ?*const library.Library,
+) bool {
+    const box = boundsWithTransformIn(obj, parent_to_global.mul(obj.matrix), lib) orelse return false;
     return contains(box, point[0], point[1]);
 }
 
@@ -184,7 +221,7 @@ pub fn hitTestShape(
         // not the glyphs. A bitmap is the same: its box, not its opaque
         // pixels. Morph shapes land in M7.
         .edit_text, .bitmap, .attached_bitmap, .morph_shape => {
-            const box = selfBounds(obj) orelse return false;
+            const box = selfBoundsIn(obj, lib) orelse return false;
             return contains(box, local[0], local[1]);
         },
     }
