@@ -6,9 +6,12 @@ bitmap_data_pixeldissolve_image
 bitmapdata_applyfilter_colormatrix
 color
 display_object_properties
+frame_size_translated_negative
+frame_size_translated_positive
 mask_reapply
 mask_with_drawing
 mcl_target_gif87a
 mcl_target_gif89a
 mcl_target_jpg
 mcl_target_png
+movieclip_methods_with_loaded_image

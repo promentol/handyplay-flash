@@ -59,6 +59,22 @@ pub const Color = packed struct(u32) {
         };
     }
 
+    /// Premultiply the way the RENDERER does, with a truncating divide.
+    /// `toPremultiplied` rounds because that is what a `BitmapData` does
+    /// with its own pixels; a TEXTURE — a decoded file on its way to the
+    /// screen — is one unit darker on most translucent pixels, and an
+    /// image comparison sees the difference (corpus
+    /// movieclip_methods_with_loaded_image).
+    pub fn toPremultipliedTruncating(self: Color) Color {
+        const a: u32 = self.a;
+        return .{
+            .r = @intCast(@as(u32, self.r) * a / 255),
+            .g = @intCast(@as(u32, self.g) * a / 255),
+            .b = @intCast(@as(u32, self.b) * a / 255),
+            .a = self.a,
+        };
+    }
+
     pub fn toUnmultiplied(self: Color) Color {
         const f = PREMUL_FACTOR[self.a];
         return .{

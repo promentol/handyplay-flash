@@ -910,12 +910,14 @@ pub const Player = struct {
         const bd = try self.gpa.create(bitmap.data.BitmapData);
         errdefer self.gpa.destroy(bd);
         bd.* = try bitmap.data.BitmapData.init(self.gpa, img.width, img.height, true, 0);
-        // A file's alpha is STRAIGHT; BitmapData stores it premultiplied.
+        // A file's alpha is STRAIGHT; the buffer stores it premultiplied
+        // — TRUNCATING, because this one is a texture on its way to the
+        // screen rather than a script's own pixel buffer.
         for (bd.data, 0..) |*px, i| {
             const s = img.rgba[i * 4 ..][0..4];
             px.* = bitmap.pixels.Color.fromArgb(
                 (@as(u32, s[3]) << 24) | (@as(u32, s[0]) << 16) | (@as(u32, s[1]) << 8) | s[2],
-            ).toPremultiplied(true);
+            ).toPremultipliedTruncating();
         }
         const obj = try mc.instantiateAttachedBitmap(ctx, 1, bd, false);
         try mc.finishInstantiate(ctx, obj, false);

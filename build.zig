@@ -38,6 +38,16 @@ pub fn build(b: *std.Build) void {
     });
     flash_mod.addImport("simdra", simdra_mod);
 
+    // Recorded-input replay, shared by the two harness frontends: the
+    // trace runner scores text, the SDL frontend's headless mode scores
+    // pixels, and both have to feed the same `input.json`.
+    const replay_mod = b.createModule(.{
+        .root_source_file = b.path("tools/input_replay.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "flash", .module = flash_mod }},
+    });
+
     // --- tools -------------------------------------------------------------
     const Tool = struct { name: []const u8, src: []const u8 };
     const tools = [_]Tool{
@@ -51,7 +61,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(t.src),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "flash", .module = flash_mod }},
+            .imports = &.{
+                .{ .name = "flash", .module = flash_mod },
+                .{ .name = "input_replay", .module = replay_mod },
+            },
         });
         const exe = b.addExecutable(.{ .name = t.name, .root_module = mod });
         b.installArtifact(exe);
@@ -71,7 +84,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
-            .imports = &.{.{ .name = "flash", .module = flash_mod }},
+            .imports = &.{
+                .{ .name = "flash", .module = flash_mod },
+                .{ .name = "input_replay", .module = replay_mod },
+            },
         });
         sdl_mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
         sdl_mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });

@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const flash = @import("flash");
+const replay = @import("input_replay");
 
 const c = @cImport({
     @cDefine("SDL_MAIN_HANDLED", "");
@@ -105,6 +106,7 @@ pub fn main(init: std.process.Init) !u8 {
     var headless_frames: ?u32 = null;
     var out_path: []const u8 = "out.png";
     var device_font_path: ?[]const u8 = null;
+    var input_path: ?[]const u8 = null;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -116,6 +118,10 @@ pub fn main(init: std.process.Init) !u8 {
             i += 1;
             if (i >= args.len) return usage(err_out);
             device_font_path = args[i];
+        } else if (std.mem.eql(u8, arg, "--input")) {
+            i += 1;
+            if (i >= args.len) return usage(err_out);
+            input_path = args[i];
         } else if (std.mem.eql(u8, arg, "--out")) {
             i += 1;
             if (i >= args.len) return usage(err_out);
@@ -169,9 +175,26 @@ pub fn main(init: std.process.Init) !u8 {
     try err_out.flush();
 
     if (headless_frames) |n| {
+        // A recorded input script, one batch per tick — the same cadence
+        // the trace runner uses, because the corpus records one script
+        // for both scores.
+        var parsed: ?std.json.Parsed(std.json.Value) = null;
+        defer if (parsed) |*pv| pv.deinit();
+        var events: []const std.json.Value = &.{};
+        if (input_path) |ip| {
+            if (std.Io.Dir.cwd().readFileAlloc(io, ip, gpa, .limited(4 << 20)) catch null) |text| {
+                defer gpa.free(text);
+                parsed = std.json.parseFromSlice(std.json.Value, gpa, text, .{}) catch null;
+                if (parsed) |pv| {
+                    if (pv.value == .array) events = pv.value.array.items;
+                }
+            }
+        }
+        var cursor: usize = replay.feedUntilWait(player, events, 0);
         var f: u32 = 0;
         while (f < n) : (f += 1) {
             _ = try player.tick(1000.0 / player.fps());
+            cursor = replay.feedUntilWait(player, events, cursor);
         }
         const png = try player.canvas.surface.encodePng();
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = png });
@@ -184,7 +207,7 @@ pub fn main(init: std.process.Init) !u8 {
 }
 
 fn usage(out: *std.Io.Writer) !u8 {
-    try out.writeAll("usage: handyflash-sdl <file.swf> [--headless-frames N] [--out out.png]\n");
+    try out.writeAll("usage: handyflash-sdl <file.swf> [--headless-frames N] [--input input.json] [--out out.png]\n");
     try out.flush();
     return 2;
 }

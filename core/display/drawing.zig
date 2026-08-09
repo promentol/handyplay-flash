@@ -263,8 +263,7 @@ pub const Drawing = struct {
         var l = self.line orelse return;
         self.line = null;
         if (l.commands.items.len > 1) {
-            const first = l.commands.items[0];
-            const closed = pointEql(endPoint(first), endPoint(l.commands.items[l.commands.items.len - 1]));
+            const closed = pathIsClosed(l.commands.items);
             try self.paths.append(self.gpa, .{ .stroke = .{
                 .style = l.style,
                 .is_closed = closed,
@@ -329,6 +328,13 @@ pub const Drawing = struct {
         return false;
     }
 };
+
+/// Does this subpath come back to where it started? A stroke that does
+/// is a LOOP, and the renderer joins its ends instead of capping them.
+pub fn pathIsClosed(commands: []const DrawCommand) bool {
+    if (commands.len < 2) return false;
+    return pointEql(endPoint(commands[0]), endPoint(commands[commands.len - 1]));
+}
 
 fn pointEql(a: Point, b: Point) bool {
     return a.x == b.x and a.y == b.y;

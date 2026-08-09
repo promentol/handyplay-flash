@@ -235,7 +235,7 @@ pub const Renderer = struct {
                     im.rgba[i * 4 + 2],
                     im.rgba[i * 4 + 3],
                 );
-                break :blk if (im.premultiplied) c else c.toPremultiplied(true);
+                break :blk if (im.premultiplied) c else c.toPremultipliedTruncating();
             },
         };
     }
@@ -527,6 +527,9 @@ pub const Renderer = struct {
                 continue;
             }
             if (!child.visible) continue;
+            // A clip someone else is masked BY is not drawn on its own —
+            // being a mask is all it does.
+            if (child.maskee != null) continue;
             const t = parent_t.concat(child.matrix);
             const cx = concatCxform(parent_cx, child.color_transform);
             // `setMask` says the same thing from the other side, and the
@@ -977,11 +980,35 @@ pub const Renderer = struct {
             ctx.fill(.nonzero);
         }
         if (et.border) {
-            boxPath(ctx, x0, y0, x1, y1);
             setSolid(ctx, et.border_color, false);
-            // A hairline: one DEVICE pixel however the field is scaled.
+            // A hairline: one DEVICE pixel however the field is scaled,
+            // and drawn INSIDE the box rather than astride its edge —
+            // Flash's border covers the field's own first and last pixel
+            // column, not half a pixel of the background behind it
+            // (corpus frame_size_translated_positive). Inset by half a
+            // pixel in DEVICE space, which is where the width is
+            // measured: each edge covers the pixel that STARTS at its
+            // coordinate, so a 20x10 field paints 21x11 pixels. A rotated
+            // field has no such grid and keeps the plain stroke.
             ctx.setLineWidth(1);
-            ctx.stroke();
+            const axis_aligned = t.b == 0 and t.c == 0;
+            if (axis_aligned) {
+                const p0 = t.apply(x0, y0);
+                const p1 = t.apply(x1, y1);
+                ctx.setTransform(1, 0, 0, 1, 0, 0);
+                boxPath(
+                    ctx,
+                    @min(p0[0], p1[0]) + 0.5,
+                    @min(p0[1], p1[1]) + 0.5,
+                    @max(p0[0], p1[0]) + 0.5,
+                    @max(p0[1], p1[1]) + 0.5,
+                );
+                ctx.stroke();
+                ctx.setTransform(t.a, t.b, t.c, t.d, t.tx, t.ty);
+            } else {
+                boxPath(ctx, x0, y0, x1, y1);
+                ctx.stroke();
+            }
         }
     }
 
@@ -1002,7 +1029,13 @@ pub const Renderer = struct {
             n += 1;
         };
         if (d.line) |l| if (l.commands.items.len > 1) {
-            open[n] = .{ .stroke = .{ .style = l.style, .is_closed = false, .commands = l.commands.items } };
+            open[n] = .{ .stroke = .{
+                .style = l.style,
+                // Still pending, but a loop is a loop — a square drawn
+                // and never `endFill`ed still joins at its corner.
+                .is_closed = drawing.pathIsClosed(l.commands.items),
+                .commands = l.commands.items,
+            } };
             n += 1;
         };
         try self.drawPaths(ctx, open[0..n], t, cx);
