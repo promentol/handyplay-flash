@@ -407,6 +407,7 @@ movieclip_line_gradient_style
 movieclip_lockroot
 movieclip_methods_with_loaded_image
 movieclip_name_from_timeline
+movieclip_onconstruct
 movieclip_prototype_extension
 movieclip_setmask
 movieclip_state_values

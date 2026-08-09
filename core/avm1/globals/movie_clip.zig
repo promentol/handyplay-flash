@@ -644,7 +644,19 @@ fn createEmptyMovieClip(p: *anyopaque, this: Value, args: []const Value) anyerro
     // Character 0 means "no character": an empty, frameless timeline.
     const obj = try stage.createAt(vm, clip, 0, depth, name, null, .undefined_value) orelse
         return .undefined_value;
-    return newClipValue(vm, obj);
+    const v = try newClipValue(vm, obj);
+    // `onConstruct` fires HERE, synchronously, before the call returns —
+    // it is the one creation path ruffle dispatches it from. An
+    // exception out of it is reported and swallowed, not propagated
+    // (corpus movieclip_onconstruct).
+    if (v == .object) {
+        const f = try vm.getProperty(v.object, S("onConstruct"), v);
+        if (vm.isCallable(f)) {
+            vm.call_special = true;
+            _ = vm.callFunction(f, v, &.{}) catch |e| vm.reportUncaught(e);
+        }
+    }
+    return v;
 }
 
 /// `createTextField(name, depth, x, y, width, height)`. The four

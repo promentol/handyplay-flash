@@ -784,6 +784,16 @@ pub const Vm = struct {
     }
 
     /// Mark a class constructor as one whose return value `new` uses.
+    /// Print "Warning: Uncaught exception, …" for a throw that reached
+    /// a boundary that does not propagate.
+    pub fn reportUncaught(self: *Vm, e: anyerror) void {
+        if (e != error.Avm1Thrown) return;
+        const msg = self.toStringValue(self.pending_throw) catch S("[type Object]");
+        const line = strings.concat(self.arena(), S("Warning: Uncaught exception, "), msg) catch return;
+        self.traceLine(line) catch {};
+        self.pending_throw = .undefined_value;
+    }
+
     pub fn markCtorPropagates(self: *Vm, ctor: ObjectHandle) void {
         if (ctor != 0) self.objects.get(ctor).ctor_propagates = true;
     }
