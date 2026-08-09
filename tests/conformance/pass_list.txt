@@ -284,6 +284,7 @@ infinite_recursion_virtual_property
 init_array_invalid
 init_object_invalid
 init_object_order
+instanceof_coercions
 is_finite
 is_finite_swf6
 is_prototype_of

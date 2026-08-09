@@ -1514,7 +1514,7 @@ pub const Activation = struct {
             .instance_of => {
                 const ctor = self.pop();
                 const obj = self.pop();
-                try self.push(.{ .boolean = self.instanceOf(obj, ctor) });
+                try self.push(.{ .boolean = try self.valueInstanceOf(obj, ctor) });
             },
             .implements_op => {
                 // Pops the constructor, a count, then that many interface
@@ -1547,7 +1547,14 @@ pub const Activation = struct {
             .cast_op => {
                 const obj = self.pop();
                 const ctor = self.pop();
-                try self.push(if (self.instanceOf(obj, ctor)) obj else .null_value);
+                // "For some reason, FP does this useless extra coercion"
+                // — a primitive left operand is BOXED and the box thrown
+                // away, so a monkey-patched String constructor runs
+                // (corpus instanceof_coercions).
+                if (obj != .object) {
+                    _ = try @import("globals/globals.zig").boxPrimitive(self.vm, obj);
+                }
+                try self.push(if (try self.valueInstanceOf(obj, ctor)) obj else .null_value);
             },
             .extends_op => {
                 const superclass = self.pop();
@@ -1946,23 +1953,61 @@ pub const Activation = struct {
     /// AS2 added interfaces, so this cannot just walk the prototype chain:
     /// every step of the chain carries its own interface tree, which must
     /// be searched too (ruffle object.rs is_instance_of:325-352).
+    /// `obj instanceof class`. A primitive `obj` is false WITHOUT
+    /// coercing anything; otherwise the CLASS is coerced to an object
+    /// (boxing a primitive class, which the corpus hears) and so is its
+    /// prototype.
+    fn valueInstanceOf(self: *Activation, obj: Value, class: Value) !bool {
+        if (obj != .object) return false;
+        // A clip that has been REMOVED is no longer an instance of
+        // anything — its reference is dead before the class is even
+        // looked at (but after it is coerced).
+        const n = self.vm.objects.get(obj.object).native;
+        const is_display = n == .clip or n == .display or n == .removed_display;
+        const dead = is_display and stage.targetOf(self.vm, obj.object) == null;
+        const boxing = @import("globals/globals.zig");
+        const cls = if (class == .object) class else try boxing.boxPrimitive(self.vm, class);
+        if (cls != .object) return false;
+        // A dead clip as the CLASS resolves to nothing either — ruffle
+        // coerces it through the same path-reference machinery.
+        const cls_n = self.vm.objects.get(cls.object).native;
+        if ((cls_n == .clip or cls_n == .display or cls_n == .removed_display) and
+            stage.targetOf(self.vm, cls.object) == null) return false;
+        // The RAW own slot: ruffle's `Object::prototype` "ignores
+        // getters, __proto__, and SWF version attributes", so an
+        // inherited `prototype` does not count and a version-gated one
+        // still does.
+        const o = self.vm.objects.get(cls.object);
+        const idx = o.find(S("prototype"), self.vm.case_sensitive) orelse return false;
+        const proto_v = o.props.items[idx].value;
+        const proto = if (proto_v == .object) proto_v else try boxing.boxPrimitive(self.vm, proto_v);
+        if (proto != .object or dead) return false;
+        // The interface-aware chain walk lives in `instanceOf`; reuse it
+        // by handing it the already-coerced pair.
+        return self.instanceOfProto(obj.object, proto.object);
+    }
+
     fn instanceOf(self: *Activation, obj: Value, ctor: Value) bool {
         if (obj != .object or ctor != .object) return false;
         const proto = self.vm.objects.getChained(ctor.object, S("prototype"), self.vm.case_sensitive) orelse return false;
         if (proto != .object) return false;
+        return self.instanceOfProto(obj.object, proto.object);
+    }
+
+    fn instanceOfProto(self: *Activation, obj_h: ObjectHandle, proto_h: ObjectHandle) bool {
         var stack: std.ArrayList(ObjectHandle) = .empty;
         defer stack.deinit(self.vm.arena());
-        var cur = self.vm.objects.get(obj.object).proto;
+        var cur = self.vm.protoValue(obj_h);
         var depth: u32 = 0;
         while (cur == .object and depth < 256) : (depth += 1) {
             stack.append(self.vm.arena(), cur.object) catch return false;
             while (stack.pop()) |iface| {
-                if (iface == proto.object) return true;
+                if (iface == proto_h) return true;
                 for (self.vm.objects.get(iface).interfaces) |i| {
                     stack.append(self.vm.arena(), i) catch return false;
                 }
             }
-            cur = self.vm.objects.get(cur.object).proto;
+            cur = self.vm.protoValue(cur.object);
         }
         return false;
     }
