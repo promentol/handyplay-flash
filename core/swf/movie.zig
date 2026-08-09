@@ -57,6 +57,10 @@ pub const Movie = struct {
     /// FileAttributes' UseNetwork bit. The only thing separating
     /// `System.security.sandboxType`'s two local values.
     use_network_sandbox: bool = false,
+    /// `ImportAssets`/`ImportAssets2`: other SWFs this one borrows
+    /// characters from. Loading them is the PLAYER's job — the parser
+    /// only records what was asked for.
+    imports: []const Import = &.{},
 
     pub fn allocator(self: *const Movie) std.mem.Allocator {
         return self.arena_state.allocator();
@@ -75,6 +79,16 @@ pub const Movie = struct {
         }
         return null;
     }
+};
+
+/// One `ImportAssets` tag: a URL and the (id, name) pairs to take from
+/// it. The ids are OURS — the exporting movie names the same characters
+/// differently.
+pub const Import = struct {
+    url: []const u8,
+    assets: []const Asset,
+
+    pub const Asset = struct { id: u16, name: []const u8 };
 };
 
 /// Load a movie from raw file bytes (FWS/CWS container included).
@@ -138,6 +152,28 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
             }),
             .remove_object => try controls.append(a, .{ .remove = try place.parseRemove(tag.body, 1) }),
             .remove_object2 => try controls.append(a, .{ .remove = try place.parseRemove(tag.body, 2) }),
+            .import_assets, .import_assets2 => {
+                var r = rdr.Reader.init(tag.body);
+                const url = try r.readString();
+                // ImportAssets2 has two reserved bytes after the URL.
+                if (tag.code == .import_assets2) {
+                    _ = try r.readU8();
+                    _ = try r.readU8();
+                }
+                const count = try r.readU16();
+                var assets: std.ArrayList(Import.Asset) = .empty;
+                var k: u16 = 0;
+                while (k < count) : (k += 1) {
+                    const id = try r.readU16();
+                    const name = try r.readString();
+                    try assets.append(a, .{ .id = id, .name = name });
+                }
+                var list: std.ArrayList(Import) = .empty;
+                try list.appendSlice(a, movie.imports);
+                try list.append(a, .{ .url = url, .assets = try assets.toOwnedSlice(a) });
+                movie.imports = try list.toOwnedSlice(a);
+                try controls.append(a, .{ .import = @intCast(movie.imports.len - 1) });
+            },
             .do_action => try controls.append(a, .{ .do_action = tag.body }),
             .do_init_action => {
                 var r = rdr.Reader.init(tag.body);

@@ -139,6 +139,7 @@ device_font_spacing
 display_object_properties
 divide_swf4
 do_init_action
+do_init_action_child
 drag_drop
 drag_over_from_outside
 drag_over_without_startdrag

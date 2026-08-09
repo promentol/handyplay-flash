@@ -37,6 +37,11 @@ pub const Control = union(enum) {
     start_sound: swf.sound_tags.StartSound,
     /// Raw frame-synced audio block (M6).
     sound_stream_block: []const u8,
+    /// `ImportAssets`/`ImportAssets2` — an index into `Movie.imports`.
+    /// It is a CONTROL and not just a movie-level list because the
+    /// imported movie's init actions run in TAG ORDER against this
+    /// movie's own (corpus do_init_action_child).
+    import: u32,
 };
 
 pub const Character = union(enum) {

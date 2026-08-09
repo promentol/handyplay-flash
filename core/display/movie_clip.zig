@@ -618,7 +618,9 @@ pub const MovieClip = struct {
             // whose PlaceObject tag appears EARLIER in the same frame —
             // corpus register_and_init_order and on_construct both depend
             // on it. `Player.runInitActions` does the pass.
-            .init_action => {},
+            // …and neither does an IMPORT, for the same reason: it is
+            // part of the preload pass.
+            .init_action, .import => {},
             .start_sound, .sound_stream_block => {}, // M6
         };
     }

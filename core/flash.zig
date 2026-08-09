@@ -1235,7 +1235,56 @@ pub const Player = struct {
         const outer = ctx.movie;
         ctx.movie = movie;
         defer ctx.movie = outer;
+        // In TAG ORDER, because an import's init actions interleave with
+        // this movie's own. An import copies the exporting movie's
+        // characters in under OUR ids and then runs ALL of its init
+        // actions — not just the ones behind an imported symbol — with
+        // the IMPORTING clip as `this` (corpus do_init_action_child).
         for (movie.frames) |frame| {
+            for (frame.controls) |control| {
+                switch (control) {
+                    .init_action => |ia| self.runBytecode(clip_obj, ia.code),
+                    .import => |i| {
+                        if (i < movie.imports.len) {
+                            try self.runImport(ctx, mc, movie, movie.imports[i]);
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+    }
+
+    fn runImport(
+        self: *Player,
+        ctx: *display.movie_clip.Context,
+        mc: *MovieClipT,
+        importer: *const swf.movie.Movie,
+        imp: swf.movie.Import,
+    ) !void {
+        const url = try avm1.strings.toUtf8(self.vm.arena(), try self.absoluteUrl(imp.url));
+        var st: FetchStatus = .dns_error;
+        const bytes = (if (self.load_file) |f| f(self.load_user, url, &st) else null) orelse return;
+        if (!isSwf(bytes)) return;
+        const m = try self.gpa.create(swf.movie.Movie);
+        m.* = swf.movie.load(self.gpa, bytes) catch {
+            self.gpa.destroy(m);
+            return;
+        };
+        try self.loaded_movies.append(self.gpa, m);
+        // Each requested name is looked up in the source's exports and
+        // filed under the id the IMPORTER uses for it.
+        const lib = @constCast(&importer.lib);
+        for (imp.assets) |asset| {
+            const src_id = m.lib.exports.get(asset.name) orelse continue;
+            const ch = m.lib.get(src_id) orelse continue;
+            try lib.put(importer.allocator(), asset.id, ch);
+        }
+        const clip_obj = try self.clipObject(mc);
+        const outer = ctx.movie;
+        ctx.movie = m;
+        defer ctx.movie = outer;
+        for (m.frames) |frame| {
             for (frame.controls) |control| {
                 if (control != .init_action) continue;
                 self.runBytecode(clip_obj, control.init_action.code);
