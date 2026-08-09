@@ -260,6 +260,8 @@ pub const MovieClip = struct {
     /// Off the display list but possibly still referenced by AVM1 (ruffle
     /// avm1_removed): property reads must yield undefined, not garbage.
     removed: bool = false,
+    /// A load (or an unload) replaced this timeline with nothing.
+    emptied_by_load: bool = false,
     /// Script drawing-API geometry, created on the first draw call. Most
     /// clips never draw, so this stays null and costs a pointer.
     drawing: ?drawing_mod.Drawing = null,
@@ -303,6 +305,11 @@ pub const MovieClip = struct {
         url: []const u16,
         bytes: u32,
         version: u8,
+        /// The fetch FAILED. The clip keeps the url it tried, but every
+        /// size and version question answers -1 rather than 0 — a
+        /// failed load is distinguishable from an unloaded clip
+        /// (corpus movieclip_state_values).
+        failed: bool = false,
     };
 
     /// The nearest enclosing runtime load, if any. `_url`,
@@ -344,6 +351,7 @@ pub const MovieClip = struct {
     /// (movie_clip.rs MovieClipShared::empty), so `_totalframes` and
     /// `_framesloaded` read 1 while `_currentframe` stays 0.
     pub fn totalFrames(self: *const MovieClip) u16 {
+        if (self.emptied_by_load) return 0;
         return @intCast(@max(self.frames.len, 1));
     }
 
@@ -844,6 +852,11 @@ pub const MovieClip = struct {
     /// starts playing again.
     pub fn replaceWithMovie(self: *MovieClip, movie: ?*const swf.movie.Movie) void {
         self.movie = movie;
+        // A clip a LOAD emptied is not the same as a clip that was
+        // always empty: it reports zero frames where a fresh
+        // `createEmptyMovieClip` reports one (corpus
+        // movieclip_state_values).
+        self.emptied_by_load = movie == null;
         self.frames = if (movie) |m| m.frames else &.{};
         self.current_frame = 0;
         self.playing = true;

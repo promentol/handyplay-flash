@@ -496,7 +496,14 @@ fn getTotalFrames(vm: *Vm, t: Target) !Value {
 }
 
 fn getFramesLoaded(vm: *Vm, t: Target) !Value {
-    // Local playback: everything is always loaded.
+    // A load that FAILED reports -1, not 0 — the clip is not empty, it
+    // is broken (corpus movieclip_state_values).
+    if (t.clip) |c| {
+        if (c.loadInfoOf()) |l| {
+            if (l.failed) return .{ .number = -1 };
+        }
+    }
+    // Local playback: everything else is always loaded.
     return getTotalFrames(vm, t);
 }
 
@@ -1759,7 +1766,7 @@ pub fn focusPath(vm: *Vm) !Value {
 pub fn bytesTotal(vm: *Vm, clip: *MovieClip) f64 {
     // A runtime load answers with the FILE it brought — for an image
     // that is the only size there is.
-    if (clip.loadInfoOf()) |l| return @floatFromInt(l.bytes);
+    if (clip.loadInfoOf()) |l| return if (l.failed) -1 else @floatFromInt(l.bytes);
     if (clip.parent == null) {
         const ctx = displayCtx(vm) orelse return 0;
         return @floatFromInt(ctx.root_movie.file_length);
@@ -1769,6 +1776,11 @@ pub fn bytesTotal(vm: *Vm, clip: *MovieClip) f64 {
 
 /// Every movie is local and fully present, so loaded == total.
 pub fn bytesLoaded(vm: *Vm, clip: *MovieClip) f64 {
+    // A FAILED load has loaded nothing, which is 0 — only the TOTAL
+    // reports the -1 that says "there is no movie here".
+    if (clip.loadInfoOf()) |l| {
+        if (l.failed) return 0;
+    }
     return bytesTotal(vm, clip);
 }
 

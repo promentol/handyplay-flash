@@ -406,6 +406,7 @@ movieclip_methods_with_loaded_image
 movieclip_name_from_timeline
 movieclip_prototype_extension
 movieclip_setmask
+movieclip_state_values
 moviecliploader_flashvars
 mutable_this
 named_shapes

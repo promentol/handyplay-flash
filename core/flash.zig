@@ -131,6 +131,8 @@ pub const Player = struct {
     levels: std.ArrayList(*display.display_object.DisplayObject) = .empty,
     /// Loads whose `onLoadInit` is still owed — see `fireLoadInits`.
     pending_init: std.ArrayList(avm1.runtime.FetchRequest.Movie) = .empty,
+    /// Clips whose `unloadMovie` lands at the start of the next frame.
+    pending_unloads: std.ArrayList(*MovieClipT) = .empty,
     /// Ruffle's `clip_exec_list`, NEWEST FIRST. Every clip is prepended
     /// when it joins a timeline, which is why a child takes its frame
     /// before the parent that placed it and why a level loaded later runs
@@ -744,7 +746,12 @@ pub const Player = struct {
             self.vm.objects.clearDeletable(target.clip);
             mc.replaceWithMovie(null);
             // A FAILED load still sets `_url` to what was attempted.
-            mc.loaded = .{ .url = try self.absoluteUrl(url), .bytes = 0, .version = 0 };
+            mc.loaded = .{
+                .url = try self.absoluteUrl(url),
+                .bytes = 0,
+                .version = 0,
+                .failed = true,
+            };
             try avm1.loader.movieLoadEvents(self.vm, target, null);
             return;
         };
@@ -765,10 +772,16 @@ pub const Player = struct {
         mc.replaceWithMovie(loaded);
         // An image becomes the clip's only child, at depth 1. Unrecognised
         // bytes leave the clip empty but still count as loaded.
-        const img_len: usize = if (loaded == null and try self.attachLoadedImage(ctx, mc, bytes))
-            bytes.len
-        else
-            0;
+        const is_image = loaded == null and try self.attachLoadedImage(ctx, mc, bytes);
+        const img_len: usize = if (is_image) bytes.len else 0;
+        // An image gives the clip a frame — and that frame is CURRENT,
+        // because Flash wraps the bitmap in a one-frame movie and plays
+        // it. Only an empty or unreadable result leaves the clip with
+        // no frames at all.
+        if (is_image) {
+            mc.emptied_by_load = false;
+            mc.current_frame = 1;
+        }
         // What the clip now reports for `_url`, `getBytesTotal` and
         // `getSWFVersion`. An image has no SWF version at all, and 0 is
         // what script reads back as -1.
@@ -776,6 +789,11 @@ pub const Player = struct {
             .url = try self.absoluteUrl(url),
             .bytes = if (loaded) |m| m.compressed_len else @intCast(bytes.len),
             .version = if (loaded) |m| m.swf_version else 0,
+            // Bytes that are neither a SWF nor an image leave the clip in
+            // the ERROR state, even though the LOAD itself succeeded and
+            // reports success events (corpus movieclip_state_values
+            // loads a text file).
+            .failed = loaded == null and !is_image,
         };
         // The clip's script object now belongs to the LOADED movie's
         // environment: a SWF8 movie in `_level2` gets the SWF7+ side's
@@ -937,12 +955,30 @@ pub const Player = struct {
 
     /// `unloadMovie` / a `loadMovie` with an empty URL. Immediate, unlike
     /// a load: the timeline is gone before the calling script continues.
+    /// `unloadMovie` takes effect on the NEXT frame: the script that
+    /// called it still sees the old state, and only the following tick
+    /// reports the unloaded one (corpus movieclip_state_values, whose
+    /// header spells the rule out).
     fn hostUnloadMovie(ctx: *anyopaque, clip: u32) void {
         const self: *Player = @ptrCast(@alignCast(ctx));
-        const c = self.cur_ctx orelse return;
         const mc = avm1.stage_object.clipOfHandle(self.vm, clip) orelse return;
+        self.pending_unloads.append(self.gpa, mc) catch return;
+    }
+
+    fn runPendingUnloads(self: *Player, c: *display.movie_clip.Context) void {
+        const batch = self.pending_unloads.toOwnedSlice(self.gpa) catch return;
+        defer self.gpa.free(batch);
+        for (batch) |mc| self.unloadNow(c, mc);
+    }
+
+    fn unloadNow(self: *Player, c: *display.movie_clip.Context, mc: *MovieClipT) void {
+        _ = self;
         mc.unloadContents(c) catch return;
         mc.replaceWithMovie(null);
+        // The load is FORGOTTEN, not zeroed: an unloaded clip answers
+        // `_url` and `getSWFVersion` from the movie it sits in again.
+        mc.loaded = null;
+
     }
 
     /// `log_fetch`: ruffle's test navigator logs each request through the
@@ -1058,6 +1094,7 @@ pub const Player = struct {
         // Everything queued for removal LAST tick goes now, before any
         // script runs — ruffle's `Avm1::remove_pending` at the head of
         // `run_frame`.
+        self.runPendingUnloads(&ctx);
         try self.root.removePending(&ctx);
         for (self.levels.items) |lv| {
             if (lv.kind == .clip) try lv.kind.clip.removePending(&ctx);
