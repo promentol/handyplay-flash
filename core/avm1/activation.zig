@@ -55,6 +55,9 @@ pub const Activation = struct {
     /// The function object this frame is running, or 0 for timeline code
     /// — `arguments.caller` is the CALLER's callee.
     callee: ObjectHandle = 0,
+    /// Was this frame entered as a CONSTRUCTOR call? `ASnative(2, 0)`
+    /// reports it.
+    is_constructor: bool = false,
 
     pub fn init(vm: *Vm, code: []const u8, this: Value, scope: ObjectHandle, pool: u32) Activation {
         const base: ObjectHandle = if (this == .object) this.object else 0;
@@ -276,6 +279,16 @@ pub const Activation = struct {
         const act: *Activation = @ptrCast(@alignCast(p));
         if (act.callee == 0) return .null_value;
         return .{ .object = act.callee };
+    }
+
+    /// Was the innermost BYTECODE frame entered as a constructor call?
+    /// Native frames are transparent — they have no activation — so a
+    /// `valueOf` called from inside a constructor still answers yes
+    /// (corpus asnew).
+    pub fn inConstructorCall(vm: *runtime.Vm) bool {
+        const p = vm.current_activation orelse return false;
+        const act: *Activation = @ptrCast(@alignCast(p));
+        return act.is_constructor;
     }
 
     /// The CALLER's `this`. A function that PRELOADS `this` into a

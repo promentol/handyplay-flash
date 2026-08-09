@@ -584,6 +584,11 @@ pub const Vm = struct {
     /// fire for a focused object whose highlight is active — ruffle
     /// `should_fire_event_handlers`, Flash issue #2120.
     focus_highlight: bool = false,
+    /// One-shot: the next AVM1 call is a CONSTRUCTOR call. Ruffle carries
+    /// it as `ExecutionReason::ConstructorCall` on the activation, and
+    /// `ASnative(2, 0)` reports it — seeing THROUGH native frames, since
+    /// those have no activation of their own (corpus asnew).
+    ctor_call: bool = false,
     /// One-shot: the next AVM1 call is an ENGINE-initiated event, not a
     /// script call (ruffle's `ExecutionReason::Special`). Such a call
     /// keeps the function's DEFINING base clip even below SWF6, where an
@@ -1503,6 +1508,8 @@ pub const Vm = struct {
         // next ordinary call (corpus swf5_to_6_cross_call).
         const special_here = self.call_special;
         self.call_special = false;
+        const ctor_here = self.ctor_call;
+        self.ctor_call = false;
         // Ruffle's `max_recursion_depth`: going past it is an ERROR, not
         // a quiet stop. The whole action dies, taking every trace after
         // it — which is what Flash does, and the only thing that stops a
@@ -1518,6 +1525,7 @@ pub const Vm = struct {
             .table_native => |t| return t.f(@ptrCast(self), this, args, t.index),
             .avm1 => |f| {
                 self.call_special = special_here;
+                self.ctor_call = ctor_here;
                 return self.callAvm1(callee.object, f, this, args);
             },
         }
@@ -1585,6 +1593,7 @@ pub const Vm = struct {
         }
         self.in_construct += 1;
         defer self.in_construct -= 1;
+        self.ctor_call = true;
         _ = try self.callWithSuperDepth(c, .{ .object = obj }, &.{}, 1);
     }
 
@@ -1618,6 +1627,7 @@ pub const Vm = struct {
         // SUPERCLASS's __constructor__. Starting at 0 would find the
         // instance's own and call the same constructor again
         // (ruffle construct_on_existing passes 1).
+        self.ctor_call = true;
         const r = try self.callWithSuperDepth(ctor, this, args, 1);
         // Ruffle propagates the return value ONLY for native constructors
         // (function.rs:709 "Propagate the return value only for native
@@ -1678,6 +1688,7 @@ pub const Vm = struct {
         // (corpus amf_sharedobject_strict_array_serialization).
         self.in_construct += 1;
         defer self.in_construct -= 1;
+        self.ctor_call = true;
         return self.callWithSuperDepth(ctor, .{ .object = s.this }, args, s.depth +| 1);
     }
 
@@ -1711,6 +1722,8 @@ pub const Vm = struct {
         const activation = @import("activation.zig");
         const special = self.call_special;
         self.call_special = false;
+        const is_ctor_call = self.ctor_call;
+        self.ctor_call = false;
         // Inside a function body the effective version is AT LEAST 5,
         // even in a SWF4 movie: `DefineFunction` is a SWF5 construct, and
         // its body gets SWF5 semantics — `1 == 1` is `true` rather than
@@ -1879,6 +1892,7 @@ pub const Vm = struct {
         var act = activation.Activation.init(self, f.body, local_this, local, f.constant_pool);
         act.local_registers = registers;
         act.callee = callee;
+        act.is_constructor = is_ctor_call;
         // SWF6+ functions are CLOSURES: they carry the base clip from
         // where they were defined. SWF5 functions are not — they adopt
         // `this`'s clip, which Activation.init already derived.

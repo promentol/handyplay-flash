@@ -1768,6 +1768,7 @@ fn globalAsSetPropFlags(p: *anyopaque, this: Value, args: []const Value) anyerro
 /// live function that answers undefined (or, for Math, NaN).
 fn nativeCategory(cat: u32) ?object_mod.TableNativeFn {
     return switch (cat) {
+        2 => asNewMethod,
         4 => asSetNativeMethod,
         100 => globalMethod,
         103 => @import("date.zig").dateMethod,
@@ -1796,6 +1797,15 @@ fn globalAsNative(p: *anyopaque, this: Value, args: []const Value) anyerror!Valu
 /// NaN and infinities become 0.
 fn toU32(vm: *Vm, v: Value) anyerror!u32 {
     return @bitCast(value_mod.toInt32(try vm.toNumberThrowing(v)));
+}
+
+/// ASnative category 2: the undocumented `ASnew`, which reports whether
+/// the enclosing BYTECODE frame was entered as a constructor.
+fn asNewMethod(p: *anyopaque, this: Value, args: []const Value, index: u16) anyerror!Value {
+    _ = this;
+    _ = args;
+    if (index != 0) return .undefined_value;
+    return .{ .boolean = @import("../activation.zig").Activation.inConstructorCall(vmOf(p)) };
 }
 
 /// ASnative category 100: the five loose functions on `_global`.
