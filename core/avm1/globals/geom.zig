@@ -789,6 +789,28 @@ pub fn newMatrix(vm: *Vm, m: Matrix) !Value {
 /// side and twips inside.
 /// A `flash.geom.Matrix` object's six numbers. `tx`/`ty` are PIXELS on
 /// the script side and twips inside, so they convert here.
+/// The matrix a GRADIENT is given. Flash accepts two shapes here: an
+/// ordinary matrix, or the shorthand `{matrixType:"box", x, y, w, h, r}`
+/// — the same numbers `createGradientBox` would have baked into one
+/// (ruffle globals/matrix.rs `gradient_object_to_matrix`).
+pub fn gradientMatrixOf(vm: *Vm, h: ObjectHandle) !Matrix {
+    const kind = try vm.toStringValue(try vm.getProperty(h, S("matrixType"), .{ .object = h }));
+    if (!strings.eql(kind, S("box"))) return matrixOf(vm, h);
+    const w = try getNum(vm, h, "w");
+    const box_h = try getNum(vm, h, "h");
+    const rot: f32 = @floatCast(try getNum(vm, h, "r"));
+    const sx: f32 = @floatCast(w / 1638.4);
+    const sy: f32 = @floatCast(box_h / 1638.4);
+    return .{
+        .a = @cos(rot) * sx,
+        .b = @sin(rot) * sy,
+        .c = -@sin(rot) * sx,
+        .d = @cos(rot) * sy,
+        .tx = twipsFromPixels((try getNum(vm, h, "x")) + w / 2.0),
+        .ty = twipsFromPixels((try getNum(vm, h, "y")) + box_h / 2.0),
+    };
+}
+
 pub fn matrixOf(vm: *Vm, h: ObjectHandle) !Matrix {
     return .{
         .a = @floatCast(try getNum(vm, h, "a")),

@@ -1055,20 +1055,105 @@ fn buildGradient(
         .reflect => .reflect,
         .repeat => .repeat,
     });
-    for (g.records) |stop| {
-        var buf: [40]u8 = undefined;
-        const css = std.fmt.bufPrint(&buf, "rgba({d},{d},{d},{d:.4})", .{
-            stop.color & 0xFF,
-            (stop.color >> 8) & 0xFF,
-            (stop.color >> 16) & 0xFF,
-            @as(f64, @floatFromInt((stop.color >> 24) & 0xFF)) / 255.0,
-        }) catch unreachable;
-        grad.addColorStop(@as(f64, @floatFromInt(stop.ratio)) / 255.0, css) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => {}, // Syntax/IndexSize can't occur for generated stops
-        };
+    for (g.records, 0..) |stop, i| {
+        const own = if (g.interpolation == .linear_rgb)
+            lerpLinearRgb(stop.color, stop.color, 0)
+        else
+            stop.color;
+        try addStop(&grad, @as(f64, @floatFromInt(stop.ratio)) / 255.0, own);
+        if (i + 1 >= g.records.len) continue;
+        const next = g.records[i + 1];
+        // Flash interpolates a gradient in STRAIGHT alpha; simdra does it
+        // in premultiplied, which is HTML5's rule and the right one for a
+        // canvas — a transparent stop must not bleed its colour across the
+        // edge. The two agree wherever the alpha is constant, and differ
+        // sharply where it is not: a transparent RED fading into an opaque
+        // BLUE goes through purple in Flash and through nothing at all in
+        // premultiplied space. Sampling the span in straight alpha and
+        // handing the samples over as stops gets Flash's curve back
+        // without changing what simdra means (corpus
+        // movieclip_begin_gradient_fill).
+        const alpha_ramp = (stop.color >> 24) != (next.color >> 24);
+        const linear = g.interpolation == .linear_rgb;
+        if (!alpha_ramp and !linear) continue;
+        if (next.ratio <= stop.ratio) continue;
+        var k: u32 = 1;
+        while (k < ALPHA_RAMP_SAMPLES) : (k += 1) {
+            const frac = @as(f64, @floatFromInt(k)) / ALPHA_RAMP_SAMPLES;
+            const pos = (@as(f64, @floatFromInt(stop.ratio)) * (1 - frac) +
+                @as(f64, @floatFromInt(next.ratio)) * frac) / 255.0;
+            const mixed = if (linear)
+                lerpLinearRgb(stop.color, next.color, frac)
+            else
+                lerpStraight(stop.color, next.color, frac);
+            try addStop(&grad, pos, mixed);
+        }
     }
     return grad;
+}
+
+/// How finely an alpha ramp is resampled. The residual premultiplied
+/// error inside one step is under a unit of colour at this density.
+const ALPHA_RAMP_SAMPLES = 32;
+
+fn lerpStraight(lo: swf.reader.Color, hi: swf.reader.Color, t: f64) swf.reader.Color {
+    var out: u32 = 0;
+    inline for (0..4) |ch| {
+        const shift: u5 = @intCast(ch * 8);
+        const a: f64 = @floatFromInt((lo >> shift) & 0xFF);
+        const b: f64 = @floatFromInt((hi >> shift) & 0xFF);
+        const v: u32 = @intFromFloat(@round(std.math.clamp(a * (1 - t) + b * t, 0, 255)));
+        out |= v << shift;
+    }
+    return out;
+}
+
+/// `interpolationMethod = "linearRGB"`, exactly as the reference
+/// renderer does it — and the round trip is LOSSY on purpose, which is
+/// why it is visible on flat colours and not just on ramps. Each stop
+/// channel becomes a linear-light BYTE (`srgb_to_linear(c) * 255`,
+/// truncated), those bytes are what get interpolated, and the result is
+/// read back as linear light on the way to an sRGB screen. A green of 20
+/// survives that as 13.
+fn lerpLinearRgb(lo: swf.reader.Color, hi: swf.reader.Color, t: f64) swf.reader.Color {
+    var out: u32 = 0;
+    inline for (0..3) |ch| {
+        const shift: u5 = @intCast(ch * 8);
+        const a = srgbToLinear(@as(f64, @floatFromInt((lo >> shift) & 0xFF)) / 255.0) * 255.0;
+        const b = srgbToLinear(@as(f64, @floatFromInt((hi >> shift) & 0xFF)) / 255.0) * 255.0;
+        const mixed = @trunc(std.math.clamp(a * (1 - t) + b * t, 0, 255));
+        const back = linearToSrgb(mixed / 255.0) * 255.0;
+        out |= @as(u32, @intFromFloat(@round(std.math.clamp(back, 0, 255)))) << shift;
+    }
+    // Alpha never goes through the colour space.
+    const la: f64 = @floatFromInt((lo >> 24) & 0xFF);
+    const ha: f64 = @floatFromInt((hi >> 24) & 0xFF);
+    out |= @as(u32, @intFromFloat(@round(std.math.clamp(la * (1 - t) + ha * t, 0, 255)))) << 24;
+    return out;
+}
+
+fn srgbToLinear(c: f64) f64 {
+    if (c <= 0.04045) return c / 12.92;
+    return std.math.pow(f64, (c + 0.055) / 1.055, 2.4);
+}
+
+fn linearToSrgb(c: f64) f64 {
+    if (c <= 0.0031308) return c * 12.92;
+    return 1.055 * std.math.pow(f64, c, 1.0 / 2.4) - 0.055;
+}
+
+fn addStop(grad: *simdra.SmGradient, pos: f64, color: swf.reader.Color) Error!void {
+    var buf: [40]u8 = undefined;
+    const css = std.fmt.bufPrint(&buf, "rgba({d},{d},{d},{d:.4})", .{
+        color & 0xFF,
+        (color >> 8) & 0xFF,
+        (color >> 16) & 0xFF,
+        @as(f64, @floatFromInt((color >> 24) & 0xFF)) / 255.0,
+    }) catch unreachable;
+    grad.addColorStop(pos, css) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {}, // Syntax/IndexSize can't occur for generated stops
+    };
 }
 
 // --- Tests -----------------------------------------------------------------

@@ -46,6 +46,8 @@ pub fn install(vm: *Vm) !void {
     try method(vm, proto, "swapDepths", swapDepths, hidden);
     try method(vm, proto, "beginFill", beginFill, ver(hidden, decl.V6));
     try method(vm, proto, "beginBitmapFill", beginBitmapFill, ver(hidden, decl.V8));
+    try method(vm, proto, "beginGradientFill", beginGradientFill, ver(hidden, decl.V6));
+    try method(vm, proto, "lineGradientStyle", lineGradientStyle, ver(hidden, decl.V8));
     try method(vm, proto, "endFill", endFill, ver(hidden, decl.V6));
     try method(vm, proto, "lineStyle", lineStyle, ver(hidden, decl.V6));
     try method(vm, proto, "moveTo", moveTo, ver(hidden, decl.V6));
@@ -855,6 +857,130 @@ fn lineStyle(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     if (args.len > 7) style.miter_limit = @floatCast(try vm.toNumber(args[7]));
     try d.setLineStyle(style);
     return .undefined_value;
+}
+
+/// `beginGradientFill(type, colors, alphas, ratios, matrix, spread,
+/// interpolation, focalPoint)`. Five arguments are required and NINE is
+/// too many — Flash silently draws nothing rather than complaining, and
+/// so does every other malformed call here (corpus
+/// movieclip_begin_gradient_fill).
+fn beginGradientFill(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const d = drawingFor(vm, this) orelse return .undefined_value;
+    if (args.len == 0 or args[0] == .undefined_value) {
+        try d.setFillStyle(null);
+        return .undefined_value;
+    }
+    // SWF7 and below have no spread or interpolation arguments at all.
+    if (args.len > 8 or (args.len > 5 and vm.swf_version < 8)) return .undefined_value;
+    const style = try gradientStyle(vm, args) orelse return .undefined_value;
+    try d.setFillStyle(style);
+    return .undefined_value;
+}
+
+/// The same arguments, painting the STROKE instead. It has no
+/// "undefined clears it" case: without a line style already set there is
+/// nothing to paint.
+fn lineGradientStyle(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const d = drawingFor(vm, this) orelse return .undefined_value;
+    if (args.len > 8) return .undefined_value;
+    const style = try gradientStyle(vm, args) orelse return .undefined_value;
+    try d.setLineFillStyle(style);
+    return .undefined_value;
+}
+
+/// Shared by the two: null for anything malformed, which the callers
+/// turn into "draw nothing" rather than an error.
+fn gradientStyle(vm: *Vm, args: []const Value) !?swf.shape.FillStyle {
+    if (args.len < 5) return null;
+    const kind = try vm.toStringValue(args[0]);
+    const radial = strings.eql(kind, S("radial"));
+    if (!radial and !strings.eql(kind, S("linear"))) return null;
+    if (args[1] != .object or args[2] != .object or args[3] != .object) return null;
+    const records = try gradientRecords(vm, args[1].object, args[2].object, args[3].object) orelse
+        return null;
+    const matrix = if (args[4] == .object)
+        try geom.gradientMatrixOf(vm, args[4].object)
+    else
+        swf.reader.Matrix{};
+    const gradient: swf.shape.Gradient = .{
+        .matrix = matrix,
+        .spread = spreadOf(if (args.len > 5) try vm.toStringValue(args[5]) else S("")),
+        .interpolation = interpolationOf(if (args.len > 6) try vm.toStringValue(args[6]) else S("")),
+        .records = records,
+    };
+    const focal = if (args.len > 7) try vm.toNumber(args[7]) else 0;
+    if (!radial) return .{ .linear_gradient = gradient };
+    if (focal == 0) return .{ .radial_gradient = gradient };
+    return .{ .focal_gradient = .{ .gradient = gradient, .focal_point = fixed8(focal) } };
+}
+
+/// The three arrays are read in parallel and must be the same length.
+/// An alpha is a PERCENTAGE clamped to 0..100; a ratio outside
+/// (-1, 256) rejects the whole call, and one inside is truncated toward
+/// zero with the ends saturating.
+fn gradientRecords(
+    vm: *Vm,
+    colors: ObjectHandle,
+    alphas: ObjectHandle,
+    ratios: ObjectHandle,
+) !?[]swf.shape.GradientRecord {
+    const n = vm.arrayLength(colors);
+    if (vm.arrayLength(alphas) != n or vm.arrayLength(ratios) != n) return null;
+    const out = try vm.arena().alloc(swf.shape.GradientRecord, n);
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        const rgb: u32 = @bitCast(value_mod.toInt32(try vm.toNumber(try elementAt(vm, colors, i))));
+        const alpha = std.math.clamp(try vm.toNumber(try elementAt(vm, alphas, i)), 0, 100);
+        const ratio = try vm.toNumber(try elementAt(vm, ratios, i));
+        // NaN passes: it fails BOTH comparisons, and lands as zero.
+        if (ratio <= -1.0 or ratio >= 256.0) return null;
+        out[i] = .{
+            .ratio = saturatingU8(ratio),
+            .color = rgbaFrom(rgb, alpha),
+        };
+    }
+    return out;
+}
+
+fn elementAt(vm: *Vm, h: ObjectHandle, i: u32) !Value {
+    var buf: [12]u8 = undefined;
+    const name = try strings.fromSwf(
+        vm.arena(),
+        std.fmt.bufPrint(&buf, "{d}", .{i}) catch "0",
+        8,
+    );
+    return vm.getProperty(h, name, .{ .object = h });
+}
+
+/// Rust's `as u8` on a float: NaN is zero and the ends saturate.
+fn saturatingU8(v: f64) u8 {
+    if (std.math.isNan(v) or v <= 0) return 0;
+    if (v >= 255) return 255;
+    return @intFromFloat(@trunc(v));
+}
+
+/// 8.8 fixed point, saturating — which is why a focal point of -1000
+/// comes back as -128 rather than wrapping.
+fn fixed8(v: f64) f32 {
+    // NaN is ZERO, not a saturated end — a focal point of "???" coerces
+    // to NaN and Flash draws an ordinary radial (corpus
+    // movieclip_begin_gradient_fill's `"???"` row).
+    if (std.math.isNan(v)) return 0;
+    const scaled = std.math.clamp(v * 256.0, -32768.0, 32767.0);
+    return @floatCast(@trunc(scaled) / 256.0);
+}
+
+fn spreadOf(s: strings.AvmString) swf.shape.GradientSpread {
+    if (strings.eql(s, S("reflect"))) return .reflect;
+    if (strings.eql(s, S("repeat"))) return .repeat;
+    return .pad;
+}
+
+fn interpolationOf(s: strings.AvmString) swf.shape.GradientInterpolation {
+    if (strings.eql(s, S("linearRGB"))) return .linear_rgb;
+    return .srgb;
 }
 
 fn capOf(s: strings.AvmString) swf.shape.LineCap {

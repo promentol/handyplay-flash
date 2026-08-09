@@ -161,6 +161,17 @@ pub const Drawing = struct {
         }
     }
 
+    /// `lineGradientStyle`: keep the current line's WIDTH and caps and
+    /// swap what it is painted with. Nothing at all happens when there is
+    /// no line style yet — a gradient needs a stroke to live on (ruffle
+    /// drawing.rs `set_line_fill_style`).
+    pub fn setLineFillStyle(self: *Drawing, fill: FillStyle) Error!void {
+        const current = self.line orelse return;
+        var style = current.style.*;
+        style.fill = fill;
+        try self.setLineStyle(style);
+    }
+
     pub fn draw(self: *Drawing, cmd: DrawCommand) Error!void {
         // A MoveTo ends the current subpath: the open fill is closed back to
         // where THAT subpath began, and the new position becomes the close
