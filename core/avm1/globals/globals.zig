@@ -226,6 +226,7 @@ pub fn install(vm: *Vm) !void {
     try @import("date.zig").install(vm);
     try @import("singletons.zig").install(vm);
     try @import("stubs.zig").install(vm);
+    try @import("net_stream.zig").install(vm);
     try @import("net_connection.zig").install(vm);
     try @import("local_connection.zig").install(vm);
     try @import("context_menu.zig").install(vm);

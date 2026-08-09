@@ -154,6 +154,9 @@ pub const NativeInfo = union(enum) {
     /// A `TextFormat`'s value struct, owned by the VM arena. Opaque here
     /// so the object model keeps no dependency on the text module.
     text_format: *anyopaque,
+    /// A `NetStream`'s playback state, owned by the VM arena. Opaque
+    /// for the same reason as the others.
+    net_stream: *anyopaque,
     /// A `BitmapData`'s pixel buffer, owned by the VM arena. Opaque so
     /// the object model keeps no dependency on the bitmap module.
     bitmap_data: *anyopaque,

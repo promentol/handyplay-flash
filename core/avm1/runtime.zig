@@ -189,6 +189,10 @@ pub const FetchRequest = struct {
         /// object's own `parse` and then `onLoad` hears whether it
         /// worked.
         stylesheet: ObjectHandle,
+        /// `NetStream.play`: the bytes are an FLV to be played, not a
+        /// document to be handed over — the stream consumes them over
+        /// the ticks that follow.
+        net_stream: ObjectHandle,
         /// `NetConnection.call`: the reply is an AMF packet whose
         /// messages name a responder method — `/1/onResult` calls
         /// `onResult` on the responder of call 1.
@@ -505,6 +509,9 @@ pub const Vm = struct {
     /// What `addCallback` registered, for the host to call back INTO.
     /// A name registered twice keeps the newer function.
     external_callbacks: std.ArrayList(ExternalCallback) = .empty,
+    /// Every `NetStream` ever constructed — ruffle's StreamManager, minus
+    /// the activation bookkeeping.
+    net_streams: std.ArrayList(*@import("globals/net_stream.zig").Stream) = .empty,
     /// `FileAttributes.UseNetwork` — the only thing that separates the two
     /// local sandboxes.
     use_network_sandbox: bool = false,

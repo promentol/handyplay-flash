@@ -429,7 +429,9 @@ native_subclasses
 nested_textfields_in_buttons
 netconnection_close
 netconnection_send_remote
+netstream_play_flv
 netstream_play_flv_screen
+netstream_seek_flv
 new_method_wrap
 new_object_enumerate
 new_object_wrap

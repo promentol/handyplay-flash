@@ -21,6 +21,7 @@ pub const avm1 = struct {
     pub const style_sheet = @import("avm1/globals/style_sheet.zig");
     pub const local_connection = @import("avm1/globals/local_connection.zig");
     pub const net_connection = @import("avm1/globals/net_connection.zig");
+    pub const net_stream = @import("avm1/globals/net_stream.zig");
     pub const sound = @import("avm1/globals/sound.zig");
     pub const file_reference = @import("avm1/globals/file_reference.zig");
     pub const text_binding = @import("avm1/text_binding.zig");
@@ -436,8 +437,31 @@ pub const Player = struct {
             self.acc_ms = self.frame_ms;
         }
         const loaded = try self.finishTick();
+        // Streams run LAST, after the frame, the timers and the loads —
+        // ruffle's `StreamManager::tick` sits at the tail of its own tick
+        // for the same reason: a stream that just got its bytes should
+        // play them on this tick, not the next.
+        try self.tickStreams(elapsed_ms);
         if (frames > 0 or loaded) try self.renderNow();
         return frames;
+    }
+
+    /// One tick of every `NetStream`. They need a display context like
+    /// any other script entry point, since a status handler can touch the
+    /// stage.
+    fn tickStreams(self: *Player, dt_ms: f64) !void {
+        if (self.vm.net_streams.items.len == 0) return;
+        var ctx = self.makeContext();
+        defer ctx.deinit(self.gpa);
+        self.cur_ctx = &ctx;
+        self.vm.display_ctx = @ptrCast(&ctx);
+        defer {
+            self.cur_ctx = null;
+            self.vm.display_ctx = null;
+        }
+        avm1.net_stream.tickAll(self.vm, dt_ms) catch |e| self.reportUncaught(e);
+        try self.drainActions(&ctx);
+        self.retireDead(&ctx);
     }
 
     /// Ruffle's `executor.run()`: everything asynchronous that came due
@@ -741,6 +765,7 @@ pub const Player = struct {
             .sound => |h| try avm1.sound.completeLoad(self.vm, h, body),
             .movie => |m| try self.completeMovieLoad(m, req.url, body),
             .net_connection => |h| try avm1.net_connection.completeCall(self.vm, h, body),
+            .net_stream => |h| try avm1.net_stream.completeLoad(self.vm, h, body),
             .stylesheet => |h| try avm1.style_sheet.completeLoad(self.vm, h, body),
         }
     }

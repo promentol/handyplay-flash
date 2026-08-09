@@ -1,7 +1,7 @@
 //! The classes that exist mainly so that scripts can ASK about them.
 //!
 //! Every AVM1 player exposes Camera, Microphone, LocalConnection,
-//! NetConnection, NetStream, PrintJob, SharedObject, Video,
+//! NetConnection, PrintJob, SharedObject, Video,
 //! ContextMenu, ContextMenuItem and the Accessibility namespace, and a
 //! movie that feature-detects (`if (SharedObject)`) or enumerates
 //! `_global` sees all of them — corpus globals_swf6/7/8 trace the type
@@ -58,15 +58,6 @@ const CLASSES = [_]Class{
         .name = "Microphone",
         .proto = &.{ "setSilenceLevel", "setRate", "setGain", "setUseEchoSuppression", "setCodec", "setFramesPerPacket", "setEncodeQuality" },
         .statics = &.{ "get", "names" },
-    },
-    .{
-        .name = "NetStream",
-        .proto = &.{
-            "publish",         "play",        "receiveAudio", "receiveVideo",
-            "pause",           "seek",        "onPeerConnect", "close",
-            "attachAudio",     "attachVideo", "send",          "setBufferTime",
-            "getInfo",         "checkPolicyFile",
-        },
     },
     .{
         .name = "PrintJob",
