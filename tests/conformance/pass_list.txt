@@ -240,6 +240,7 @@ goto_label
 goto_methods
 goto_rewind1
 goto_rewind2
+goto_rewind3
 greaterthan_swf5
 greaterthan_swf8
 has_own_property

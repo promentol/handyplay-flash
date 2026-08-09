@@ -360,7 +360,7 @@ pub const MovieClip = struct {
                 // so the second lap silently loses clips.
                 try self.runGoto(ctx, next);
             } else if (next != self.current_frame or self.current_frame == 0) {
-                try self.executeFrame(ctx, @max(next, 1), true);
+                try self.executeFrame(ctx, @max(next, 1), true, .{});
                 self.current_frame = @max(next, 1);
             }
         }
@@ -556,7 +556,25 @@ pub const MovieClip = struct {
         return self.current_frame; // single frame: implicit stop
     }
 
-    fn executeFrame(self: *MovieClip, ctx: *Context, frame_num: u16, run_actions: bool) Error!void {
+    /// What a GOTO replay needs to know beyond the frame number. Ruffle
+    /// aggregates the whole replayed range into one command per depth
+    /// before applying anything; we replay tag by tag, and `Replay` is
+    /// the one place that difference shows.
+    pub const Replay = struct {
+        /// The frame the replay ends on; 0 when not replaying.
+        until: u16 = 0,
+        /// Did the replay REWIND? Only then can a child already sitting at
+        /// a depth be a survivor rather than a leftover.
+        rewound: bool = false,
+    };
+
+    fn executeFrame(
+        self: *MovieClip,
+        ctx: *Context,
+        frame_num: u16,
+        run_actions: bool,
+        replay: Replay,
+    ) Error!void {
         // Every character this frame places comes from THIS clip's movie.
         // Swapping the context here rather than at each lookup covers the
         // whole subtree the placements build, including nested sprites.
@@ -565,9 +583,13 @@ pub const MovieClip = struct {
         defer ctx.movie = outer_movie;
         if (frame_num == 0 or frame_num > self.frames.len) return;
         const frame = self.frames[frame_num - 1];
-        for (frame.controls) |control| switch (control) {
+        for (frame.controls, 0..) |control, ci| switch (control) {
             .place => |po| try self.placeObject(ctx, po, frame_num),
-            .remove => |ro| try self.removeAtDepth(ctx, ro.depth),
+            .remove => |ro| {
+                if (!self.survivorStaysPut(ro.depth, frame_num, ci + 1, replay)) {
+                    try self.removeAtDepth(ctx, ro.depth);
+                }
+            },
             .set_background_color => |c| ctx.background_color = c,
             .do_action => |bytecode| if (run_actions) {
                 try ctx.queue(ctx.gpa, .{ .clip = self, .what = .{ .code = bytecode } });
@@ -633,7 +655,8 @@ pub const MovieClip = struct {
         defer ctx.movie = outer_movie;
         ctx.replaying += 1;
         defer ctx.replaying -= 1;
-        if (target < self.current_frame) {
+        const rewound = target < self.current_frame;
+        if (rewound) {
             var i: usize = 0;
             while (i < self.children.items.len) {
                 const child = self.children.items[i];
@@ -657,9 +680,75 @@ pub const MovieClip = struct {
             // Intermediate frames replay display state only; the
             // DESTINATION frame also runs its script (Flash: goto
             // executes the target frame's actions).
-            try self.executeFrame(ctx, f, f == target);
+            try self.executeFrame(ctx, f, f == target, .{ .until = clamped, .rewound = rewound });
         }
         self.current_frame = clamped;
+    }
+
+    /// Will a frame in `from..=until` place something at `depth` again?
+    /// Only asked during a goto replay; `until == 0` means "not replaying"
+    /// and the answer is always no.
+    /// Is this `Remove` one that a REWIND should collapse away?
+    ///
+    /// Only during a rewind, and only when the child already at that depth
+    /// is the very one the replay is about to put back — same character.
+    /// Ruffle never sees the remove at all: it reduces the range to one
+    /// command per depth first, and then reuses the surviving child. Tag
+    /// by tag we would destroy and re-create it, and the replacement
+    /// re-runs its first frame (corpus goto_rewind3, whose sprite traces
+    /// once in Flash and twice without this).
+    ///
+    /// A FORWARD goto never collapses: nothing survived, so the leftover
+    /// at that depth is a different object that really must go.
+    fn survivorStaysPut(
+        self: *const MovieClip,
+        depth: i32,
+        frame_num: u16,
+        after: usize,
+        replay: Replay,
+    ) bool {
+        if (!replay.rewound or replay.until == 0 or frame_num > replay.until) return false;
+        const sitting = self.childAtDepthConst(depth) orelse return false;
+        const refill = self.refilledLater(depth, frame_num, after, replay.until) orelse return false;
+        return refill == sitting.character_id;
+    }
+
+    /// The character a later tag in the replayed range puts at `depth`,
+    /// scanning the rest of THIS frame first — a Remove immediately
+    /// followed by a Place at the same depth is the commonest shape and
+    /// both live in one frame.
+    fn refilledLater(
+        self: *const MovieClip,
+        depth: i32,
+        frame_num: u16,
+        after: usize,
+        until: u16,
+    ) ?u16 {
+        var f = frame_num;
+        var skip = after;
+        while (f <= until and f <= self.frames.len) : (f += 1) {
+            const controls = self.frames[f - 1].controls;
+            const start = if (f == frame_num) @min(skip, controls.len) else 0;
+            skip = 0;
+            for (controls[start..]) |control| {
+                if (control != .place) continue;
+                const po = control.place;
+                if (po.depth != depth) continue;
+                return switch (po.action) {
+                    .place => |id| id,
+                    .replace => |id| id,
+                    .modify => null,
+                };
+            }
+        }
+        return null;
+    }
+
+    fn childAtDepthConst(self: *const MovieClip, depth: i32) ?*const DisplayObject {
+        for (self.children.items) |child| {
+            if (child.depth == depth) return child;
+        }
+        return null;
     }
 
     /// Script depths start here — `AVM_DEPTH_BIAS`, duplicated from
