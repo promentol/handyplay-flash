@@ -1939,11 +1939,13 @@ fn objAddProperty(p: *anyopaque, this: Value, args: []const Value) anyerror!Valu
         // ENUMERABLE (ruffle passes `Attribute::empty()`): a `for..in`
         // that reaches the object — or anything with it on its prototype
         // chain — lists the virtual property alongside the plain ones.
+        vm.objects.next_prop_gen +%= 1;
         try o.props.append(vm.arena(), .{
             .key = key,
             .value = .undefined_value,
             .getter = getter.object,
             .setter = setter_h,
+            .gen = vm.objects.next_prop_gen,
         });
     }
     return .{ .boolean = true };

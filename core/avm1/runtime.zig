@@ -885,7 +885,16 @@ pub const Vm = struct {
 
     const PROPERTY_RECURSION_LIMIT = 65;
 
-    fn propertyKey(h: ObjectHandle, name: strings.AvmString) u64 {
+    /// The identity the recursion budget is counted against. It is the
+    /// PROPERTY, not the name: ruffle keys on `Property::id`, so deleting
+    /// a property and adding it back makes a brand-new budget. A name
+    /// with no property behind it (a watcher on an absent member) folds
+    /// into a per-name key instead, which is what keeps a getter, its
+    /// setter and their watcher sharing one budget.
+    fn propertyKey(self: *Vm, h: ObjectHandle, name: strings.AvmString) u64 {
+        if (self.objects.findOwn(h, name, self.case_sensitive)) |p| {
+            if (p.gen != 0) return (@as(u64, p.gen) << 32) | 0xFFFF_FFFF;
+        }
         var hash: u32 = 2166136261;
         for (name) |c| {
             hash ^= c;
@@ -900,7 +909,7 @@ pub const Vm = struct {
     /// same property share one budget, which is what the two
     /// `watch_recursion` tests measure.
     fn enterPropertyCall(self: *Vm, h: ObjectHandle, name: strings.AvmString) ?void {
-        const key = propertyKey(h, name);
+        const key = self.propertyKey(h, name);
         var same: usize = 0;
         for (self.property_call_stack.items) |k| {
             if (k == key) same += 1;
@@ -1123,10 +1132,13 @@ pub const Vm = struct {
 
     pub fn callFunction(self: *Vm, callee: Value, this: Value, args: []const Value) anyerror!Value {
         if (!self.isCallable(callee)) return .undefined_value;
-        if (self.call_depth >= self.max_call_depth) {
-            self.halted = true;
-            return .undefined_value;
-        }
+        // Ruffle's `max_recursion_depth`: going past it is an ERROR, not
+        // a quiet stop. The whole action dies, taking every trace after
+        // it — which is what Flash does, and the only thing that stops a
+        // getter that deletes and re-adds its own property on every call
+        // (corpus virtual_property_recursion_scope, whose output simply
+        // ends mid-script).
+        if (self.call_depth >= self.max_call_depth) return error.Avm1StackOverflow;
         self.call_depth += 1;
         defer self.call_depth -= 1;
         const fk = self.objects.get(callee.object).native.function;

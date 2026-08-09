@@ -115,12 +115,14 @@ pub fn putAccessor(
         return;
     }
     const key = try vm.arena().dupe(u16, name);
+    vm.objects.next_prop_gen +%= 1;
     try o.props.append(vm.arena(), .{
         .key = key,
         .value = .undefined_value,
         .attrs = attrs,
         .getter = getter,
         .setter = setter,
+        .gen = vm.objects.next_prop_gen,
     });
 }
 

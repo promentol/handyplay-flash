@@ -57,6 +57,13 @@ pub const Property = struct {
     /// property silently ignores writes, like ES3/Flash).
     getter: ObjectHandle = 0,
     setter: ObjectHandle = 0,
+    /// A serial number handed out when the property is CREATED. Ruffle's
+    /// `Property::id` (property.rs `NEXT_PROPERTY_ID`), and it exists for
+    /// exactly one purpose: the per-property recursion limit counts
+    /// activations of the SAME property, so a getter that deletes and
+    /// re-adds its own property escapes that limit and hits the call-depth
+    /// one instead (corpus virtual_property_recursion_scope).
+    gen: u32 = 0,
 };
 
 /// An `Object.prototype.watch` registration. Kept in a list of its own, not
@@ -193,6 +200,9 @@ pub const ScriptObject = struct {
 
 /// The handle-indexed object table. Handle 0 is reserved/invalid.
 pub const Objects = struct {
+    /// Serial for `Property.gen`. Never reused, so a deleted-and-recreated
+    /// property is a DIFFERENT property to the recursion limit.
+    next_prop_gen: u32 = 1,
     arena: std.mem.Allocator,
     slots: std.ArrayList(ScriptObject) = .empty,
     /// Needed here because reads must honour the ASSetPropFlags version
@@ -349,7 +359,8 @@ pub const Objects = struct {
             return;
         }
         const key = try self.arena.dupe(u16, name);
-        try o.props.append(self.arena, .{ .key = key, .value = v });
+        self.next_prop_gen +%= 1;
+        try o.props.append(self.arena, .{ .key = key, .value = v, .gen = self.next_prop_gen });
     }
 
     pub fn putWithAttrs(
@@ -362,11 +373,17 @@ pub const Objects = struct {
     ) !void {
         const o = self.get(h);
         if (o.find(name, cs)) |i| {
-            o.props.items[i] = .{ .key = o.props.items[i].key, .value = v, .attrs = attrs };
+            o.props.items[i] = .{
+                .key = o.props.items[i].key,
+                .value = v,
+                .attrs = attrs,
+                .gen = o.props.items[i].gen,
+            };
             return;
         }
         const key = try self.arena.dupe(u16, name);
-        try o.props.append(self.arena, .{ .key = key, .value = v, .attrs = attrs });
+        self.next_prop_gen +%= 1;
+        try o.props.append(self.arena, .{ .key = key, .value = v, .attrs = attrs, .gen = self.next_prop_gen });
     }
 
     /// delete — false when absent or DontDelete.
