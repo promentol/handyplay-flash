@@ -1186,7 +1186,11 @@ pub const Vm = struct {
             const getter = loc.prop.getter;
             if (self.enterPropertyCall(loc.owner, name)) |_| {
                 defer self.leavePropertyCall();
-                return self.callFunction(.{ .object = getter }, recv, &.{});
+                // An accessor runs with `super` one level down, exactly
+                // like a constructor: without that, a getter that reads
+                // `super.<same name>` finds ITSELF and runs twice
+                // (corpus as2_super_and_this_v6).
+                return self.callWithSuperDepth(.{ .object = getter }, recv, &.{}, 1);
             }
             // Over the per-property limit Flash falls back to LOCAL
             // resolution — the shadow data slot every write leaves behind
@@ -1356,7 +1360,7 @@ pub const Vm = struct {
                     if (setter != 0) {
                         if (self.enterPropertyCall(loc.owner, name)) |_| {
                             defer self.leavePropertyCall();
-                            _ = try self.callFunction(.{ .object = setter }, this, &.{v});
+                            _ = try self.callWithSuperDepth(.{ .object = setter }, this, &.{v}, 1);
                         }
                     }
                     return;

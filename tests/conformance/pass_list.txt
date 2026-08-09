@@ -29,6 +29,8 @@ array_unshift
 as1_constructor_v6
 as1_constructor_v7
 as2_oop
+as2_super_and_this_v6
+as2_super_and_this_v8
 as2_super_via_manual_prototype
 as_broadcaster
 as_broadcaster_initialize
