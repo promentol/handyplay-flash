@@ -41,6 +41,10 @@ pub const DisplayObject = struct {
     /// Instance name as UCS-2, OWNED by this object (script can overwrite
     /// it via `_name`, so it cannot stay a slice into the movie buffer).
     name: ?[]const u16 = null,
+    /// The name this object had when a script first RENAMED it, owned
+    /// here. A clip REFERENCE remembers the path it was captured with,
+    /// and a later `_name` write is not part of it — see `dotPathOf`.
+    origin_name: ?[]const u16 = null,
     /// Morph ratio (0-65535).
     ratio: u16 = 0,
     /// Text fields watching a variable ON THIS OBJECT. The list lives on
@@ -171,6 +175,7 @@ pub const DisplayObject = struct {
 
     pub fn deinit(self: *DisplayObject, gpa: std.mem.Allocator) void {
         if (self.name) |n| gpa.free(n);
+        if (self.origin_name) |n| gpa.free(n);
         for (self.text_bindings.items) |b| gpa.free(b.name);
         self.text_bindings.deinit(gpa);
         if (self.owns_kind) switch (self.kind) {
@@ -191,9 +196,13 @@ pub const DisplayObject = struct {
         self.* = undefined;
     }
 
+    /// A SCRIPT rename. The name it had first is kept: that is the one
+    /// the paths already handed out were built from.
     pub fn setName(self: *DisplayObject, gpa: std.mem.Allocator, n: ?[]const u16) !void {
         const copy = if (n) |s| try gpa.dupe(u16, s) else null;
-        if (self.name) |old| gpa.free(old);
+        if (self.origin_name == null) {
+            self.origin_name = self.name;
+        } else if (self.name) |old| gpa.free(old);
         self.name = copy;
     }
 

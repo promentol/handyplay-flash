@@ -587,13 +587,62 @@ fn dotPathOfClip(vm: *Vm, clip: *MovieClip) std.mem.Allocator.Error![]const u16 
 /// `dotPath` for callers that only hold the opaque `NativeInfo.clip`
 /// pointer — runtime.zig must not name display types.
 ///
-/// A clip that has been REMOVED has no path: it reports the empty string
-/// from the moment `removeMovieClip` runs, not from the end of the tick
-/// when its object is finally cut loose (corpus string_paths_basic).
+/// A clip that has been REMOVED loses the fast path: from the moment
+/// `removeMovieClip` runs — not the end of the tick, when its object is
+/// finally cut loose — the reference falls back to WALKING ITS RECORDED
+/// PATH down from the level, and answers the empty string when the walk
+/// fails (corpus string_paths_basic).
+///
+/// The recorded path is the one the reference was captured with, so a
+/// `_name` written afterwards is not part of it. Put a new clip at that
+/// path and the dead reference speaks again, under the ORIGINAL name:
+/// remove and re-create `clipInstance2` and the reference that renamed
+/// itself to `foo` reports `_level0.clipInstance2` (ruffle
+/// object_reference.rs `resolve_reference`, corpus string_paths_other).
 pub fn dotPathOf(vm: *Vm, clip: *anyopaque) std.mem.Allocator.Error![]const u16 {
     const mc: *MovieClip = @ptrCast(@alignCast(clip));
-    if (mc.placement) |pl| if (pl.path_lost) return S("");
+    if (mc.placement) |pl| if (pl.path_lost) return deadClipPath(vm, mc);
     return dotPathOfClip(vm, mc);
+}
+
+/// The name a path was BUILT from: the one before the first script rename.
+fn originName(obj: *DisplayObject) []const u16 {
+    return obj.origin_name orelse obj.name orelse S("");
+}
+
+fn deadClipPath(vm: *Vm, mc: *MovieClip) std.mem.Allocator.Error![]const u16 {
+    // Segments from the dead clip up to its level, deepest first.
+    var segs: std.ArrayList([]const u16) = .empty;
+    var cur: *MovieClip = mc;
+    while (cur.parent) |parent| {
+        try segs.append(vm.arena(), originName(cur.placement orelse return S("")));
+        cur = parent;
+    }
+    var container: ?*MovieClip = levelClip(vm, cur.level_id) orelse return S("");
+    var path = levelName(vm, cur.level_id);
+    var i = segs.items.len;
+    while (i > 0) {
+        i -= 1;
+        const c = container orelse return S("");
+        const child = childByName(c, segs.items[i], vm.case_sensitive) orelse return S("");
+        container = if (child.kind == .clip) child.kind.clip else null;
+        path = try strings.concat(vm.arena(), try strings.concat(vm.arena(), path, S(".")), segs.items[i]);
+    }
+    return path;
+}
+
+fn levelClip(vm: *Vm, id: i32) ?*MovieClip {
+    const handle: ObjectHandle = if (id == 0) (switch (vm.root_object) {
+        .object => |h| h,
+        else => return null,
+    }) else blk: {
+        for (vm.levels.items) |lv| {
+            if (lv.id == id) break :blk lv.obj;
+        }
+        return null;
+    };
+    if (handle == 0) return null;
+    return (targetOf(vm, handle) orelse return null).clip;
 }
 
 /// Same, for the non-clip scriptable kinds (buttons, text fields) whose

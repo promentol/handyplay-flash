@@ -523,6 +523,7 @@ string_paths_eval
 string_paths_eval2
 string_paths_hidden
 string_paths_keyevents
+string_paths_other
 string_paths_timer
 string_paths_unload
 string_paths_variable_alias
