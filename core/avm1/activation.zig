@@ -52,6 +52,9 @@ pub const Activation = struct {
     timeline_scope: ObjectHandle = 0,
     constant_pool: u32,
     swf_version: u8,
+    /// The function object this frame is running, or 0 for timeline code
+    /// — `arguments.caller` is the CALLER's callee.
+    callee: ObjectHandle = 0,
 
     pub fn init(vm: *Vm, code: []const u8, this: Value, scope: ObjectHandle, pool: u32) Activation {
         const base: ObjectHandle = if (this == .object) this.object else 0;
@@ -257,6 +260,16 @@ pub const Activation = struct {
         const root = act.rootHandle();
         const found = act.resolveTargetPath(root, root, path, true, false) catch return handle;
         return found orelse handle;
+    }
+
+    /// The function object the CALLER is running, as a value: an
+    /// `arguments` object reports it as `caller`, and NULL — not
+    /// undefined — when the caller is timeline code (corpus arguments).
+    pub fn callerCallee(vm: *runtime.Vm) Value {
+        const p = vm.current_activation orelse return .null_value;
+        const act: *Activation = @ptrCast(@alignCast(p));
+        if (act.callee == 0) return .null_value;
+        return .{ .object = act.callee };
     }
 
     /// The CALLER's `this`. A function that PRELOADS `this` into a

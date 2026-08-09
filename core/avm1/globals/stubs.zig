@@ -57,7 +57,9 @@ const CLASSES = [_]Class{
     },
     .{
         .name = "LocalConnection",
-        .proto = &.{ "connect", "send", "close", "domain", "isPerUser" },
+        // No `isPerUser`: ruffle declares one, Flash does not have it
+        // (corpus localconnection_properties looks and reports NOT FOUND).
+        .proto = &.{ "connect", "send", "close", "domain" },
     },
     .{
         .name = "NetConnection",

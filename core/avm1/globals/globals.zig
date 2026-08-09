@@ -352,7 +352,7 @@ pub fn boxPrimitive(vm: *Vm, v: Value) !Value {
         .string => |str| {
             vm.objects.get(h).proto = .{ .object = vm.string_proto };
             vm.objects.get(h).native = .{ .boxed_string = str };
-            try vm.objects.putWithAttrs(h, S("length"), .{ .number = @floatFromInt(str.len) }, .{ .dont_enum = true, .dont_delete = true, .read_only = true }, vm.case_sensitive);
+            try vm.objects.putWithAttrs(h, S("length"), .{ .number = @floatFromInt(str.len) }, .{ .dont_enum = true, .dont_delete = true }, vm.case_sensitive);
         },
         .boolean => |b| {
             vm.objects.get(h).proto = .{ .object = vm.boolean_proto };
@@ -1118,6 +1118,16 @@ fn ctorString(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const s: strings.AvmString = if (args.len > 0) try vm.toStringValue(args[0]) else S("");
     if (vm.in_construct > 0 and this == .object) {
         vm.objects.get(this.object).native = .{ .boxed_string = s };
+        // A REAL own property, not a virtual one: `hasOwnProperty`
+        // reports it, `for..in` does not, assigning to it sticks, and
+        // deleting it does nothing (corpus boxed_primitives).
+        try vm.objects.putWithAttrs(
+            this.object,
+            S("length"),
+            .{ .number = @floatFromInt(s.len) },
+            .{ .dont_enum = true, .dont_delete = true },
+            vm.case_sensitive,
+        );
         return this;
     }
     return .{ .string = s };

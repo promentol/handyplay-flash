@@ -5,6 +5,7 @@ add2
 add_property
 add_swf4
 add_swf5
+arguments
 array_call_method
 array_concat
 array_constructor
@@ -82,6 +83,7 @@ bitor
 biturshift
 biturshift_swf8
 bitxor
+boxed_primitives
 button_children
 button_goto
 button_key_events
@@ -319,6 +321,7 @@ loadvariables_method
 loadvariablesnum
 loadvars_tostring
 local_to_global
+localconnection_properties
 lock_root
 logical_ops_swf4
 logical_ops_swf8

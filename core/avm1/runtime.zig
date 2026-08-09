@@ -1496,6 +1496,8 @@ pub const Vm = struct {
             const arr = try self.newArray();
             for (args, 0..) |av, i| try self.arraySet(arr, @intCast(i), av);
             try self.objects.putWithAttrs(arr, S("callee"), .{ .object = callee }, .{ .dont_enum = true }, self.case_sensitive);
+            const caller = activation.Activation.callerCallee(self);
+            try self.objects.putWithAttrs(arr, S("caller"), caller, .{ .dont_enum = true }, self.case_sensitive);
             args_val = .{ .object = arr };
         }
         if (preload and fl.preload_arguments) {
@@ -1573,6 +1575,7 @@ pub const Vm = struct {
 
         var act = activation.Activation.init(self, f.body, local_this, local, f.constant_pool);
         act.local_registers = registers;
+        act.callee = callee;
         // SWF6+ functions are CLOSURES: they carry the base clip from
         // where they were defined. SWF5 functions are not — they adopt
         // `this`'s clip, which Activation.init already derived.
