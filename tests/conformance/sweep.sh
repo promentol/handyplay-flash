@@ -34,13 +34,19 @@ JOBS="${2:-8}"
 # per-version subdirs), and `known_failure` dirs are excluded — that flag
 # means RUFFLE does not match Flash there, so output.txt is a target
 # nobody currently hits.
+#
+# The flag has three spellings and ruffle treats all of them as the same
+# known failure (framework/src/options/known_failure.rs): the bare
+# `known_failure = true`, `known_failure.ruffle_check = false`, and
+# `known_failure.panic = "<message>"` for a test that makes ruffle panic.
+# Matching only the first spelling scored one dir nobody expects to pass.
 dirs() {
     cd "$CORPUS" || exit 1
     for dir in */ */*/; do
         d=${dir%/}
         [ "$d" = "__framework__" ] && continue
         [ -f "$d/test.swf" ] && [ -f "$d/output.txt" ] || continue
-        grep -q '^known_failure *= *true' "$d/test.toml" 2>/dev/null && continue
+        grep -qE '^known_failure( *= *true|\.)' "$d/test.toml" 2>/dev/null && continue
         echo "$d"
     done
 }

@@ -35,7 +35,7 @@ skipped=0
 for toml in "$CORPUS"/*/test.toml; do
     d=$(basename "$(dirname "$toml")")
     grep -q '^\[image_comparisons\|^image_comparisons' "$toml" 2>/dev/null || continue
-    grep -q '^known_failure *= *true' "$toml" 2>/dev/null && continue
+    grep -qE '^known_failure( *= *true|\.)' "$toml" 2>/dev/null && continue
     [ -f "$CORPUS/$d/test.swf" ] || continue
 
     # A trigger means "capture mid-run"; we only have the final frame.
