@@ -27,6 +27,7 @@ const edit_text = @import("../display/edit_text.zig");
 const display_font = @import("../display/font.zig");
 const edit_text_device = @import("../display/device_font.zig");
 const text_layout = @import("../display/text_layout.zig");
+const bounds_mod = @import("../display/bounds.zig");
 const bitmap_decode = @import("../bitmap/decode.zig");
 const bitmap_data = @import("../bitmap/data.zig");
 const bitmap_pixels = @import("../bitmap/pixels.zig");
@@ -103,6 +104,10 @@ pub const Renderer = struct {
     /// bits that change how the texels are read. The transform is set per
     /// use; the pixels are shared.
     patterns: std.AutoHashMapUnmanaged(u64, simdra.SmPattern) = .empty,
+    /// The stage transform of the frame being drawn. A `setMask` target
+    /// is reached from outside the walk, so its own place in the tree has
+    /// to be measured from here.
+    stage_t: Transform = .{},
 
     pub fn init(movie_arena: std.mem.Allocator) Renderer {
         return .{ .arena = movie_arena };
@@ -361,6 +366,7 @@ pub const Renderer = struct {
         const bg = background | 0xFF000000;
         simdra.simd.fillU32(canvas.surface.pixels, simdra.simd.swizzleRB(bg));
         if (!root_placement.visible) return;
+        self.stage_t = stage;
         const ctx = try canvas.ctx();
         try self.renderClip(
             ctx,
@@ -494,12 +500,137 @@ pub const Renderer = struct {
     ) Error!void {
         // Script-drawn geometry sits UNDER every child of the same clip.
         if (clip.drawing) |*d| try self.renderDrawing(ctx, @constCast(d), parent_t, parent_cx);
-        for (clip.children.items) |child| {
+        const children = clip.children.items;
+        var i: usize = 0;
+        while (i < children.len) : (i += 1) {
+            const child = children[i];
+            // A CLIPPING LAYER: it is never drawn itself, and everything
+            // below it down to `clip_depth` is drawn through its shape.
+            // The run ends at the first child past that depth, so a
+            // masker whose range is empty simply disappears.
+            if (child.clip_depth != 0) {
+                const end = maskRunEnd(children, i, child.clip_depth);
+                if (end == i + 1) continue;
+                ctx.save();
+                defer ctx.restore();
+                try self.clipToMask(ctx, child, parent_t.concat(child.matrix));
+                for (children[i + 1 .. end]) |masked| {
+                    if (!masked.visible) continue;
+                    try self.renderObject(
+                        ctx,
+                        masked,
+                        parent_t.concat(masked.matrix),
+                        concatCxform(parent_cx, masked.color_transform),
+                    );
+                }
+                i = end - 1;
+                continue;
+            }
             if (!child.visible) continue;
-            if (child.clip_depth != 0) continue; // M7: masks (skip the masker)
             const t = parent_t.concat(child.matrix);
             const cx = concatCxform(parent_cx, child.color_transform);
+            // `setMask` says the same thing from the other side, and the
+            // mask can live anywhere in the tree — so it is measured from
+            // the stage rather than from here.
+            if (child.mask) |m| {
+                ctx.save();
+                defer ctx.restore();
+                try self.clipToMask(ctx, m, self.worldOf(m));
+                try self.renderObject(ctx, child, t, cx);
+                continue;
+            }
             try self.renderObject(ctx, child, t, cx);
+        }
+    }
+
+    /// One past the last child this masker covers.
+    fn maskRunEnd(
+        children: []const *display_object.DisplayObject,
+        start: usize,
+        clip_depth: u16,
+    ) usize {
+        var end = start + 1;
+        while (end < children.len and children[end].depth <= @as(i32, clip_depth)) : (end += 1) {}
+        return end;
+    }
+
+    /// The stage-space transform of an object reached from OUTSIDE the
+    /// walk — a `setMask` target, which need not be anywhere near the
+    /// object it masks.
+    fn worldOf(self: *const Renderer, obj: *const display_object.DisplayObject) Transform {
+        var chain: [32]swf.reader.Matrix = undefined;
+        var n: usize = 0;
+        var parent = obj.parent;
+        while (parent) |pc| : (parent = pc.parent) {
+            const placement = pc.placement orelse break;
+            if (n == chain.len) break;
+            chain[n] = placement.matrix;
+            n += 1;
+        }
+        var t = self.stage_t;
+        while (n > 0) {
+            n -= 1;
+            t = t.concat(chain[n]);
+        }
+        return t.concat(obj.matrix);
+    }
+
+    /// Narrow the canvas's clip to everything the masker FILLS. Flash's
+    /// masks are shape-exact and ignore strokes: what is painted through
+    /// is the union of the mask's fill geometry, whatever it is made of.
+    ///
+    /// The subpaths are transformed here rather than through the CTM,
+    /// because a mask can be a whole sprite whose children each carry a
+    /// matrix of their own — and a clip takes ONE path.
+    fn clipToMask(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        masker: *const display_object.DisplayObject,
+        t: Transform,
+    ) Error!void {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.beginPath();
+        var any = false;
+        try self.addMaskGeometry(ctx, masker, t, &any);
+        // A mask with no geometry hides everything it covers.
+        if (!any) ctx.rect(0, 0, 0, 0);
+        ctx.clip(.nonzero);
+    }
+
+    fn addMaskGeometry(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        obj: *const display_object.DisplayObject,
+        t: Transform,
+        any: *bool,
+    ) Error!void {
+        switch (obj.kind) {
+            .shape => |sh| addFillPaths(ctx, try self.distilled(obj.character_id, sh), t, any),
+            .clip => |mc| {
+                if (mc.drawing) |*d| addFillPaths(ctx, d.paths.items, t, any);
+                for (mc.children.items) |child| {
+                    try self.addMaskGeometry(ctx, child, t.concat(child.matrix), any);
+                }
+            },
+            .button => |b| for (b.container.children.items) |child| {
+                try self.addMaskGeometry(ctx, child, t.concat(child.matrix), any);
+            },
+            // A field, a bitmap or a morph masks through its BOX — the
+            // cheapest thing that is never smaller than the truth.
+            .edit_text, .bitmap, .attached_bitmap, .text, .morph_shape => {
+                const box = bounds_mod.engineSelfBounds(obj, self.lib) orelse return;
+                const c0 = t.apply(@floatFromInt(box.xmin), @floatFromInt(box.ymin));
+                const c1 = t.apply(@floatFromInt(box.xmax), @floatFromInt(box.ymin));
+                const c2 = t.apply(@floatFromInt(box.xmax), @floatFromInt(box.ymax));
+                const c3 = t.apply(@floatFromInt(box.xmin), @floatFromInt(box.ymax));
+                ctx.moveTo(c0[0], c0[1]);
+                ctx.lineTo(c1[0], c1[1]);
+                ctx.lineTo(c2[0], c2[1]);
+                ctx.lineTo(c3[0], c3[1]);
+                ctx.closePath();
+                any.* = true;
+            },
+            .video => {},
         }
     }
 
@@ -935,6 +1066,41 @@ pub const Renderer = struct {
         }
     }
 };
+
+/// The FILL subpaths of a distilled shape, pushed through `t` into
+/// device space and appended to whatever the canvas path already holds.
+fn addFillPaths(
+    ctx: *simdra.SmCanvas,
+    paths: []const shape_utils.DrawPath,
+    t: Transform,
+    any: *bool,
+) void {
+    for (paths) |path| {
+        const f = switch (path) {
+            .fill => |x| x,
+            .stroke => continue,
+        };
+        for (f.commands) |cmd| switch (cmd) {
+            .move_to => |pt| {
+                const p = t.apply(@floatFromInt(pt.x), @floatFromInt(pt.y));
+                ctx.moveTo(p[0], p[1]);
+            },
+            .line_to => |pt| {
+                const p = t.apply(@floatFromInt(pt.x), @floatFromInt(pt.y));
+                ctx.lineTo(p[0], p[1]);
+            },
+            .quad_to => |q| {
+                const c = t.apply(@floatFromInt(q.cx), @floatFromInt(q.cy));
+                const a = t.apply(@floatFromInt(q.ax), @floatFromInt(q.ay));
+                ctx.quadraticCurveTo(c[0], c[1], a[0], a[1]);
+            },
+        };
+        if (f.commands.len > 0) {
+            ctx.closePath();
+            any.* = true;
+        }
+    }
+}
 
 fn buildPath(ctx: *simdra.SmCanvas, commands: []const shape_utils.DrawCommand) void {
     ctx.beginPath();

@@ -26,15 +26,23 @@ import sys, zlib, struct
 def read(p):
     d = open(p, 'rb').read()
     assert d[:8] == b'\x89PNG\r\n\x1a\n', f"{p}: not a PNG"
-    i = 8; idat = b''; w = h = bd = ct = None
+    i = 8; idat = b''; w = h = bd = ct = None; plte = b''; trns = b''
     while i < len(d):
         ln = struct.unpack_from('>I', d, i)[0]; typ = d[i+4:i+8]
         body = d[i+8:i+8+ln]; i += 12 + ln
         if typ == b'IHDR': w, h, bd, ct = struct.unpack_from('>IIBB', body, 0)
+        elif typ == b'PLTE': plte = body
+        elif typ == b'tRNS': trns = body
         elif typ == b'IDAT': idat += body
         elif typ == b'IEND': break
     raw = zlib.decompress(idat)
-    ch = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[ct]; bpp = ch * (bd // 8); stride = w * bpp
+    ch = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[ct]
+    # Sub-byte depths (1/2/4) pack several pixels into a byte, so the
+    # filtering unit is one byte and the stride rounds up.
+    if bd < 8:
+        bpp = 1; stride = (w * ch * bd + 7) // 8
+    else:
+        bpp = ch * (bd // 8); stride = w * bpp
     out = bytearray(); prev = bytearray(stride); pos = 0
     for _ in range(h):
         f = raw[pos]; pos += 1
@@ -51,16 +59,42 @@ def read(p):
                 pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
                 line[x] = (line[x] + pr) & 255
         out += line; prev = line
-    # Normalise 8-bit RGB to RGBA. A stage dump is always four channels
-    # and some recorded expectations are three; both are fully opaque, so
-    # the added alpha is 255 and the comparison is unchanged.
-    if ch == 3 and bd == 8:
-        rgba = bytearray(w * h * 4)
-        for i in range(w * h):
-            rgba[i*4:i*4+3] = out[i*3:i*3+3]
-            rgba[i*4+3] = 255
-        return w, h, 4, bytes(rgba)
-    return w, h, bpp, bytes(out)
+    # Everything becomes 8-bit RGBA. A stage dump is always four opaque
+    # channels; a recorded expectation may be RGB, greyscale, or — for a
+    # two-colour mask test — a 1-bit PALETTE image, and all of them have
+    # to compare against it on equal terms.
+    rgba = bytearray(w * h * 4)
+    for y in range(h):
+        row = out[y*stride:(y+1)*stride]
+        for x in range(w):
+            samples = []
+            for c in range(ch):
+                idx = x * ch + c
+                if bd == 8:
+                    v = row[idx]
+                elif bd == 16:
+                    v = row[idx*2]                       # high byte is enough
+                else:
+                    per = 8 // bd
+                    byte = row[idx // per]
+                    shift = 8 - bd * (idx % per + 1)
+                    raw_v = (byte >> shift) & ((1 << bd) - 1)
+                    v = raw_v if ct == 3 else raw_v * 255 // ((1 << bd) - 1)
+                samples.append(v)
+            if ct == 3:
+                e = samples[0] * 3
+                px = (plte[e], plte[e+1], plte[e+2], trns[samples[0]] if samples[0] < len(trns) else 255)
+            elif ct == 0:
+                px = (samples[0], samples[0], samples[0], 255)
+            elif ct == 4:
+                px = (samples[0], samples[0], samples[0], samples[1])
+            elif ct == 2:
+                px = (samples[0], samples[1], samples[2], 255)
+            else:
+                px = tuple(samples)
+            o = (y * w + x) * 4
+            rgba[o:o+4] = bytes(px)
+    return w, h, 4, bytes(rgba)
 
 
 def main(argv):

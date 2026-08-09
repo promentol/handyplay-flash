@@ -198,7 +198,13 @@ inline fn dispatchShader(
 
 inline fn modulateAlpha(rgba: u32, modulator: u8) u32 {
     const a: u32 = (rgba >> 24) & 0xFF;
-    const new_a: u32 = (a * @as(u32, modulator) + 0x80) >> 8;
+    // Exact 8-bit multiply: `(a*m + 0x80) >> 8` alone loses a unit at the
+    // top — 255*255 lands on 254, so a fully covered pixel under a fully
+    // opaque clip comes out one short of the colour that was asked for.
+    // Folding the high byte back in makes 255 map to 255 and leaves every
+    // other product unchanged.
+    const t: u32 = a * @as(u32, modulator) + 0x80;
+    const new_a: u32 = (t + (t >> 8)) >> 8;
     return (rgba & 0x00FFFFFF) | (new_a << 24);
 }
 

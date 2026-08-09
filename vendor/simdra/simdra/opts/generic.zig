@@ -98,6 +98,15 @@ pub fn blendSrcOverU32(dst: []u32, src_color: u32) void {
 //
 // Scalar today; vectorize when this kernel shows up on a profile (the
 // outer per-pixel work is identical to blendSrcOverU32 with cov layered on).
+/// `x * y / 255`, exactly, in shifts. The bare `(x*y + 128) >> 8` is a
+/// unit short at the top — 255*255 lands on 254 — and that is visible
+/// whenever a FULLY covered pixel goes through the coverage path, which
+/// is what a clip mask makes every masked pixel do.
+inline fn mul255(x: u32, y: u32) u32 {
+    const t: u32 = x * y + 0x80;
+    return (t + (t >> 8)) >> 8;
+}
+
 pub fn blendSrcOverCovU32(dst: []u32, src_color: u32, coverage: []const u8) void {
     std.debug.assert(dst.len == coverage.len);
     const sa: u32 = (src_color >> 24) & 0xFF;
@@ -111,23 +120,21 @@ pub fn blendSrcOverCovU32(dst: []u32, src_color: u32, coverage: []const u8) void
     while (i < dst.len) : (i += 1) {
         const cov: u32 = coverage[i];
         if (cov == 0) continue;
-        // `a_eff = sa * cov / 255` via the (x*y + 128) >> 8 approximation.
-        const a_eff: u32 = (sa * cov + 0x80) >> 8;
+        const a_eff: u32 = mul255(sa, cov);
         if (a_eff == 0) continue;
         const inv_a: u32 = 255 - a_eff;
-        // Premultiply src.rgb by a_eff / 255 (same approximation).
-        const r_eff: u32 = (sr * a_eff + 0x80) >> 8;
-        const g_eff: u32 = (sg * a_eff + 0x80) >> 8;
-        const b_eff: u32 = (sb * a_eff + 0x80) >> 8;
+        const r_eff: u32 = mul255(sr, a_eff);
+        const g_eff: u32 = mul255(sg, a_eff);
+        const b_eff: u32 = mul255(sb, a_eff);
         const dst_p = dst[i];
         const dr: u32 = dst_p & 0xFF;
         const dg: u32 = (dst_p >> 8) & 0xFF;
         const db: u32 = (dst_p >> 16) & 0xFF;
         const da: u32 = (dst_p >> 24) & 0xFF;
-        const r: u32 = r_eff + ((dr * inv_a + 0x80) >> 8);
-        const g: u32 = g_eff + ((dg * inv_a + 0x80) >> 8);
-        const b: u32 = b_eff + ((db * inv_a + 0x80) >> 8);
-        const a: u32 = a_eff + ((da * inv_a + 0x80) >> 8);
+        const r: u32 = r_eff + mul255(dr, inv_a);
+        const g: u32 = g_eff + mul255(dg, inv_a);
+        const b: u32 = b_eff + mul255(db, inv_a);
+        const a: u32 = a_eff + mul255(da, inv_a);
         dst[i] = r | (g << 8) | (b << 16) | (a << 24);
     }
 }
