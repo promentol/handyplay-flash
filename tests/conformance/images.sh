@@ -65,9 +65,14 @@ for toml in "$CORPUS"/*/test.toml; do
     inp=""
     [ -f "$CORPUS/$d/input.json" ] && inp="--input $CORPUS/$d/input.json"
 
+    # [player_options] quality — "low" means ONE sample per pixel, and a
+    # reference image taken that way has hard edges.
+    q=""
+    grep -q 'quality *= *"low"' "$toml" 2>/dev/null && q="--quality low"
+
     T=$(mktemp -t hfimg).png
     # shellcheck disable=SC2086
-    if timeout 30 "$BIN" "$CORPUS/$d/test.swf" --headless-frames "$n" $inp --out "$T" >/dev/null 2>&1 &&
+    if timeout 30 "$BIN" "$CORPUS/$d/test.swf" --headless-frames "$n" $inp $q --out "$T" >/dev/null 2>&1 &&
        python3 tools/pngdiff.py "$exp" "$T" --tolerance="$tol" --max-outliers="$mo" >/dev/null 2>&1; then
         echo "PASS $d" >>"$OUT"
     else

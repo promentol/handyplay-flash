@@ -104,6 +104,9 @@ pub const Renderer = struct {
     /// bits that change how the texels are read. The transform is set per
     /// use; the pixels are shared.
     patterns: std.AutoHashMapUnmanaged(u64, simdra.SmPattern) = .empty,
+    /// The focused object's world bounds in TWIPS, when Flash would draw
+    /// its highlight over the stage. Null the rest of the time.
+    focus_highlight: ?swf.reader.Rectangle = null,
     /// The stage transform of the frame being drawn. A `setMask` target
     /// is reached from outside the walk, so its own place in the tree has
     /// to be measured from here.
@@ -382,8 +385,35 @@ pub const Renderer = struct {
             if (!lv.visible) continue;
             try self.renderObject(ctx, lv, stage.concat(lv.matrix), lv.color_transform);
         }
+        // The focus HIGHLIGHT sits above everything, including the levels:
+        // three pixels of yellow drawn INSIDE the focused object's own
+        // bounds (ruffle focus_tracker.rs `render_highlight`).
+        if (self.focus_highlight) |box| {
+            const p0 = stage.apply(@floatFromInt(box.xmin), @floatFromInt(box.ymin));
+            const p1 = stage.apply(@floatFromInt(box.xmax), @floatFromInt(box.ymax));
+            const x0 = @min(p0[0], p1[0]);
+            const y0 = @min(p0[1], p1[1]);
+            const x1 = @max(p0[0], p1[0]);
+            const y1 = @max(p0[1], p1[1]);
+            const th: f64 = HIGHLIGHT_THICKNESS_PX;
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.setColorTransform(.{});
+            setSolid(ctx, 0xFF00FFFF, true); // ABGR: opaque yellow
+            for ([_][4]f64{
+                .{ x0, y0, x1, y0 + th },
+                .{ x0, y1 - th, x1, y1 },
+                .{ x0, y0, x0 + th, y1 },
+                .{ x1 - th, y0, x1, y1 },
+            }) |r| {
+                boxPath(ctx, r[0], r[1], r[2], r[3]);
+                ctx.fill(.nonzero);
+            }
+        }
         ctx.setColorTransform(.{}); // leave ctx state clean
     }
+
+    /// Flash's highlight is three pixels thick, whatever the stage scale.
+    const HIGHLIGHT_THICKNESS_PX: f64 = 3;
 
     /// SWF blend-mode number → simdra. The numbering is PlaceObject3's
     /// and `BitmapData.draw` takes the same set, so this is the one place

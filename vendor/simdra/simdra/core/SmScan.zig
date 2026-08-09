@@ -488,6 +488,7 @@ pub fn fillPathToCoverage(
     canvas_h: u32,
     path: *const SmPath,
     fill_rule: FillRule,
+    antialias: bool,
 ) !void {
     if (path.verbs.len == 0) return;
     if (canvas_w == 0 or canvas_h == 0) return;
@@ -502,7 +503,7 @@ pub fn fillPathToCoverage(
     defer allocator.free(cov_row);
 
     try sweepEdgesToCoverageMask(
-        &edges, allocator, mask, canvas_w, canvas_h, fill_rule, aa_accum, cov_row,
+        &edges, allocator, mask, canvas_w, canvas_h, fill_rule, aa_accum, cov_row, antialias,
     );
 }
 
@@ -684,6 +685,10 @@ fn sweepEdges(
             const run_start = x;
             while (x < row_x_max and aa_accum[@intCast(x)] * 256.0 >= 1.0) : (x += 1) {
                 const v = aa_accum[@intCast(x)] * 256.0;
+                if (!paint.antialias) {
+                    cov_row[@intCast(x)] = if (v >= 128.0) 255 else 0;
+                    continue;
+                }
                 cov_row[@intCast(x)] = if (v >= 255.0) 255 else @intFromFloat(v);
             }
             const n: u32 = @intCast(x - run_start);
@@ -719,6 +724,7 @@ fn sweepEdgesToCoverageMask(
     fill_rule: FillRule,
     aa_accum: []f32,
     cov_row: []u8,
+    antialias: bool,
 ) !void {
     if (edges.len == 0) return;
     if (aa_accum.len < canvas_w or cov_row.len < canvas_w) return;
@@ -819,7 +825,9 @@ fn sweepEdgesToCoverageMask(
         while (x < row_x_max) : (x += 1) {
             const v = aa_accum[@intCast(x)] * 256.0;
             const cov_byte: u8 = if (v >= 255.0) 255 else if (v <= 0.0) 0 else @intFromFloat(v);
-            mask[row_off + @as(usize, @intCast(x))] = cov_byte;
+            mask[row_off + @as(usize, @intCast(x))] = if (antialias)
+                cov_byte
+            else if (cov_byte >= 128) 255 else 0;
         }
     }
 }

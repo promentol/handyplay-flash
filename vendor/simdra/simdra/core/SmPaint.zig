@@ -198,6 +198,11 @@ line_join: LineJoin = .miter,
 /// HTML5 `miterLimit`. Joins exceeding this ratio fall back to bevel.
 miter_limit: f64 = 10.0,
 blend_mode: BlendMode = .src_over,
+/// Antialias the coverage, or quantize it to in/out at the half-pixel.
+/// HTML5 has no such switch; FLASH does — its "low" quality setting
+/// renders with one sample per pixel, and a reference image taken that
+/// way has hard edges nothing can match with a soft one.
+antialias: bool = true,
 /// Per-paint alpha modulator (0..255). Solid paints fold this into their
 /// `Shader.solid` color at construction time (`SmCanvas.applyAlphaModulation`).
 /// Gradient paints carry it through to `SmBlitter.dispatchGradient`, which

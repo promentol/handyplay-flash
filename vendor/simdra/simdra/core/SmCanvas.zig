@@ -187,6 +187,9 @@ filter_blur_scratch: ?[]u8 = null,
 /// AA path-fill row accumulator. Holds per-pixel coverage in [0, 1] across
 /// the 8 sub-y-sample sweep before being packed to u8 in `aa_coverage`.
 /// Sized to `surface.width`. Lazily allocated, freed in `deinit`.
+/// Antialias path coverage. False renders one sample per pixel, which
+/// is what Flash's "low" quality does — see `SmPaint.antialias`.
+antialias: bool = true,
 aa_accum: ?[]f32 = null,
 /// AA path-fill u8 coverage row, fed to `SmBlitter.blitRow`. Sized to
 /// `surface.width`. Lazily allocated, freed in `deinit`.
@@ -702,12 +705,16 @@ inline fn applyAlphaModulation(color: u32, modulator: u8) u32 {
 /// bit-exact); for `.gradient` / `.pattern` the alpha modulator rides along
 /// on `paint.global_alpha` and is applied per-pixel by `SmBlitter`.
 fn paintForFill(self: *const SmCanvas) SmPaint {
-    return paintFromShader(self.fillStyle, .fill, 0, self.alpha, self.blendMode, self.cxform, self.surface.color_type);
+    var p = paintFromShader(self.fillStyle, .fill, 0, self.alpha, self.blendMode, self.cxform, self.surface.color_type);
+    p.antialias = self.antialias;
+    return p;
 }
 
 /// Build a stroke SmPaint from the current ctx state.
 fn paintForStroke(self: *const SmCanvas) SmPaint {
-    return paintFromShader(self.strokeStyle, .stroke, self.lineWidth, self.alpha, self.blendMode, self.cxform, self.surface.color_type);
+    var p = paintFromShader(self.strokeStyle, .stroke, self.lineWidth, self.alpha, self.blendMode, self.cxform, self.surface.color_type);
+    p.antialias = self.antialias;
+    return p;
 }
 
 inline fn paintFromShader(
@@ -1759,6 +1766,7 @@ fn clipInternal(self: *SmCanvas, path: *const SmPath, fill_rule: SmScan.FillRule
         self.surface.height,
         path,
         fill_rule,
+        self.antialias,
     ) catch {
         allocator.free(new_mask);
         return;

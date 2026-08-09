@@ -167,6 +167,8 @@ pub const Player = struct {
     /// hands the Player back (see `externalThunk`).
     external_call: ?ExternalCallFn = null,
     external_user: ?*anyopaque = null,
+    /// Stage quality, as a rasteriser switch (see `Options.antialias`).
+    antialias: bool = true,
     /// The bytes behind each picked FileReference, for `upload`. Keyed by
     /// the script object, so a reference that is browsed twice replaces
     /// its own contents.
@@ -228,6 +230,10 @@ pub const Player = struct {
         open_multi_dialog: ?*const fn (user: ?*anyopaque, filters: []const avm1.runtime.FileFilter) ?[]const DialogFile = null,
         save_dialog: ?*const fn (user: ?*anyopaque, name: []const u8) ?DialogFile = null,
         dialog_user: ?*anyopaque = null,
+        /// Flash's stage QUALITY. "low" renders one sample per pixel —
+        /// no antialiasing at all — and a recorded image taken that way
+        /// has hard edges that a soft renderer cannot match.
+        antialias: bool = true,
         /// The other end of `ExternalInterface`. Wiring one up is what
         /// makes `ExternalInterface.available` true, so a frontend with
         /// nothing to expose leaves it null and the class stays inert.
@@ -306,6 +312,7 @@ pub const Player = struct {
         self.open_multi_dialog = opts.open_multi_dialog;
         self.save_dialog = opts.save_dialog;
         self.dialog_user = opts.dialog_user;
+        self.antialias = opts.antialias;
         self.external_call = opts.external_call;
         self.external_user = opts.external_user;
         if (opts.external_call != null) {
@@ -2146,6 +2153,33 @@ pub const Player = struct {
         self.retireDead(&ctx);
     }
 
+    /// The box Flash outlines in yellow around the focused object, in
+    /// stage TWIPS — or null when there is nothing to outline.
+    ///
+    /// Three conditions, all ruffle's (focus_tracker.rs
+    /// `calculate_highlight`): the highlight has to be ACTIVE, which only
+    /// a key press makes it and any mouse activity ends; `_focusrect` has
+    /// to allow it, which below SWF6 only the stage's flag decides; and
+    /// the object has to have bounds worth outlining — a clip with
+    /// nothing in it is focusable but invisible.
+    fn focusHighlightBox(self: *Player) ?swf.reader.Rectangle {
+        if (!self.vm.focus_highlight or self.vm.focus == 0) return null;
+        const t = avm1.stage_object.targetOf(self.vm, self.vm.focus) orelse return null;
+        const enabled = if (self.movie.swf_version >= 6)
+            t.obj.focus_rect orelse self.vm.stage_focus_rect
+        else
+            self.vm.stage_focus_rect;
+        if (!enabled) return null;
+        const parent_to_global = avm1.stage_object.parentToGlobalMatrix(t);
+        const box = display.bounds.engineBoundsWithTransform(
+            t.obj,
+            parent_to_global.mul(t.obj.matrix),
+            &self.movie.lib,
+        ) orelse return null;
+        if (box.xmin == box.xmax and box.ymin == box.ymax) return null;
+        return box;
+    }
+
     fn focusedFieldTarget(self: *Player) ?avm1.stage_object.Target {
         if (self.vm.focus == 0) return null;
         const t = avm1.stage_object.targetOf(self.vm, self.vm.focus) orelse return null;
@@ -2315,7 +2349,9 @@ pub const Player = struct {
             const t = self.focusedFieldTarget() orelse break :blk null;
             break :blk t.obj.kind.edit_text;
         };
+        self.renderer.focus_highlight = self.focusHighlightBox();
         self.renderer.now_ms = self.elapsed_ms;
+        (try self.canvas.ctx()).antialias = self.antialias;
         try self.renderer.renderFrame(
             &self.canvas,
             &self.root,

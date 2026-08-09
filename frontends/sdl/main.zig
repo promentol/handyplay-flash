@@ -107,6 +107,12 @@ pub fn main(init: std.process.Init) !u8 {
     var out_path: []const u8 = "out.png";
     var device_font_path: ?[]const u8 = null;
     var input_path: ?[]const u8 = null;
+    var antialias = true;
+    // `--capture <tick>:<path>`, repeatable: dump the stage after that
+    // tick as well as at the end. The corpus's focus-rect dirs compare a
+    // whole sequence of mid-run frames.
+    var captures: std.ArrayList(struct { tick: u32, path: []const u8 }) = .empty;
+    defer captures.deinit(gpa);
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -122,6 +128,18 @@ pub fn main(init: std.process.Init) !u8 {
             i += 1;
             if (i >= args.len) return usage(err_out);
             input_path = args[i];
+        } else if (std.mem.eql(u8, arg, "--capture")) {
+            i += 1;
+            if (i >= args.len) return usage(err_out);
+            const colon = std.mem.indexOfScalar(u8, args[i], ':') orelse return usage(err_out);
+            try captures.append(gpa, .{
+                .tick = try std.fmt.parseInt(u32, args[i][0..colon], 10),
+                .path = args[i][colon + 1 ..],
+            });
+        } else if (std.mem.eql(u8, arg, "--quality")) {
+            i += 1;
+            if (i >= args.len) return usage(err_out);
+            antialias = !std.mem.eql(u8, args[i], "low");
         } else if (std.mem.eql(u8, arg, "--out")) {
             i += 1;
             if (i >= args.len) return usage(err_out);
@@ -162,6 +180,7 @@ pub fn main(init: std.process.Init) !u8 {
         .tz_offset_min = localOffsetMinutes(),
         .load_file = FileServer.read,
         .load_user = @ptrCast(&files),
+        .antialias = antialias,
     }) catch |err| {
         try err_out.print("{s}: {t}\n", .{ path, err });
         try err_out.flush();
@@ -195,6 +214,11 @@ pub fn main(init: std.process.Init) !u8 {
         while (f < n) : (f += 1) {
             _ = try player.tick(1000.0 / player.fps());
             cursor = replay.feedUntilWait(player, events, cursor);
+            for (captures.items) |shot| {
+                if (shot.tick != f + 1) continue;
+                const png = try player.canvas.surface.encodePng();
+                try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = shot.path, .data = png });
+            }
         }
         const png = try player.canvas.surface.encodePng();
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = png });
@@ -207,7 +231,7 @@ pub fn main(init: std.process.Init) !u8 {
 }
 
 fn usage(out: *std.Io.Writer) !u8 {
-    try out.writeAll("usage: handyflash-sdl <file.swf> [--headless-frames N] [--input input.json] [--out out.png]\n");
+    try out.writeAll("usage: handyflash-sdl <file.swf> [--headless-frames N] [--input input.json] [--quality low]\n            [--capture TICK:file.png] [--out out.png]\n");
     try out.flush();
     return 2;
 }
