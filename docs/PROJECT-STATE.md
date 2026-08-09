@@ -513,7 +513,7 @@ The other five are close and specific:
 
 | dir | what is left |
 |---|---|
-| `movieclip_begin_gradient_fill`, `movieclip_line_gradient_style` | three cells of twenty-four, the ones BOTH translucent and linearRGB — the reference composites those in linear light and we composite in sRGB. Every other cell matches to within a unit. |
+| `movieclip_begin_gradient_fill`, `movieclip_line_gradient_style` | three cells of twenty-four, the ones BOTH translucent and linearRGB. Every other cell matches to within a unit or two, and the largest remaining error is in the cell with `"repeat"` spread, where the ramp wraps. It is NOT linear-light compositing: the green channel's range across the cell rules that out, and matches an ordinary sRGB composite of the linearRGB'd stop. |
 | `mouse_events_visible_enabled` | 1808 pixels along one button shape's edges. Its left edge lands on x=12.5 and the reference resolves it hard where we still soften it — the `--quality low` switch fixed the right edge and not this one. |
 | `movieclip_setmask` | four corner pixels, each the junction of a stroked square drawn TWICE. Flash's corner is solid there; a round join drawn twice gets to 242/255 and a closed miter join to 192. |
 | `edittext_stylesheet` | two pixels, both the bottom-right corner of a field's border, where Flash is 63% covered and we are 100%. The dir's tolerance is 64 and the difference is 95. |
