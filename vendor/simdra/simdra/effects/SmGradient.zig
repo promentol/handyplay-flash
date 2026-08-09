@@ -69,6 +69,11 @@ stops: StopList = .{},
 /// Spread mode for t outside [0, 1]. Defaulted so every existing
 /// struct-literal construction (and the HTML5 facade) keeps pad behavior.
 spread: Spread = .pad,
+/// Interpolate stops in STRAIGHT alpha rather than premultiplied.
+/// HTML5 says premultiplied and that is the default; Flash says
+/// straight, and the difference is a transparent stop's colour bleeding
+/// across the span instead of vanishing at it.
+straight_alpha: bool = false,
 /// Stop-lookup strategy; see `Sampling`. Defaulted to the exact scan.
 sampling: Sampling = .exact,
 /// Baked 256-entry ramp when `sampling == .lut256`, else null. Owned by
@@ -204,6 +209,21 @@ pub fn addColorStop(
 /// already-premultiplied form to avoid the halo. RGBA storage here is *not*
 /// premultiplied (the rest of the pipeline uses straight alpha), so we
 /// premultiply, lerp, then un-premultiply.
+/// Straight-alpha lerp: every channel interpolates on its own, alpha
+/// included. What Flash does with a gradient.
+inline fn lerpRgbaStraight(lo: u32, hi: u32, t: f64) u32 {
+    const tc = std.math.clamp(t, 0.0, 1.0);
+    var out: u32 = 0;
+    inline for (0..4) |ch| {
+        const shift: u5 = @intCast(ch * 8);
+        const a: f64 = @floatFromInt((lo >> shift) & 0xFF);
+        const b: f64 = @floatFromInt((hi >> shift) & 0xFF);
+        const v: u32 = @intFromFloat(@round(std.math.clamp(a * (1.0 - tc) + b * tc, 0.0, 255.0)));
+        out |= v << shift;
+    }
+    return out;
+}
+
 inline fn lerpRgbaPremul(lo: u32, hi: u32, t: f64) u32 {
     const tc = std.math.clamp(t, 0.0, 1.0);
     const lo_r: f64 = @floatFromInt(lo & 0xFF);
@@ -281,7 +301,10 @@ fn colorAtFolded(self: *const SmGradient, tc: f64) u32 {
     const span = hi.offset - lo.offset;
     if (span <= 0) return hi.rgba;
     const local = (tc - lo.offset) / span;
-    return lerpRgbaPremul(lo.rgba, hi.rgba, local);
+    return if (self.straight_alpha)
+        lerpRgbaStraight(lo.rgba, hi.rgba, local)
+    else
+        lerpRgbaPremul(lo.rgba, hi.rgba, local);
 }
 
 /// sampleLinear — project (x,y) onto the gradient line and look up the
