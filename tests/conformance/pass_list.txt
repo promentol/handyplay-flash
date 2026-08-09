@@ -123,6 +123,8 @@ color
 color_transform
 conflicting_instance_names
 constructor_function
+context_menu
+context_menu_item
 create_empty_movie_clip
 cross_movie_root
 custom_clip_methods
@@ -442,6 +444,7 @@ placeobject_occupied_depth
 point
 primitive_instanceof
 primitive_type_globals
+printjob_props_swf7
 property_invalid_base_clip
 prototype_delete
 prototype_enumerate

@@ -261,6 +261,8 @@ pub const Env = struct {
     sound_proto: ObjectHandle = 0,
     flash_net: ObjectHandle = 0,
     filereference_proto: ObjectHandle = 0,
+    contextmenu_ctor: ObjectHandle = 0,
+    contextmenuitem_ctor: ObjectHandle = 0,
     filter_protos: [10]ObjectHandle = @splat(0),
     textsnapshot_proto: ObjectHandle = 0,
     /// `Object.registerClass` is per-environment too — ruffle keeps one
@@ -568,6 +570,10 @@ pub const Vm = struct {
     /// `flash.net.FileReference.prototype` — a `FileReferenceList` builds
     /// its `fileList` entries against it, not against its own.
     filereference_proto: ObjectHandle = 0,
+    /// The two context-menu constructors — `copy` builds a fresh
+    /// instance through them.
+    contextmenu_ctor: ObjectHandle = 0,
+    contextmenuitem_ctor: ObjectHandle = 0,
     /// `_level1` and up: the levels a `loadMovieNum` has created, as
     /// (id, script object). Level 0 is `root_object` and is not listed.
     /// `stage_object.parseLevel` is the only reader; the Player keeps it

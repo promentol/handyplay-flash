@@ -35,6 +35,10 @@ const Class = struct {
     proto: []const []const u8 = &.{},
     /// Prototype members with no version gate of their own.
     proto_ungated: []const []const u8 = &.{},
+    /// READ-ONLY accessors that answer 0. Unlike the methods these are
+    /// ENUMERABLE — `for..in` over a PrintJob lists them (corpus
+    /// printjob_props_swf7).
+    zero_props: []const []const u8 = &.{},
     /// Members on the CONSTRUCTOR itself (`Camera.get`, `SharedObject.getLocal`).
     statics: []const []const u8 = &.{},
     /// The SWF version the class first appears in, as a gate bit.
@@ -69,7 +73,7 @@ const CLASSES = [_]Class{
         // The CLASS exists at SWF6; only its methods are gated to 7.
         .proto = &.{ "start", "addPage", "send" },
         .proto_version = decl.V7,
-        .proto_ungated = &.{ "paperHeight", "paperWidth", "pageHeight", "pageWidth", "orientation" },
+        .zero_props = &.{ "paperHeight", "paperWidth", "pageHeight", "pageWidth", "orientation" },
     },
     .{
         .name = "SharedObject",
@@ -79,14 +83,6 @@ const CLASSES = [_]Class{
     .{
         .name = "Video",
         .proto = &.{ "attachVideo", "clear" },
-    },
-    .{
-        .name = "ContextMenu",
-        .proto = &.{ "copy", "hideBuiltInItems" },
-    },
-    .{
-        .name = "ContextMenuItem",
-        .proto = &.{"copy"},
     },
 };
 
@@ -99,6 +95,12 @@ pub fn install(vm: *Vm) !void {
         }
         inline for (cls.proto_ungated) |m| {
             try method(vm, proto, m, noop, decl.ver(hidden, cls.version));
+        }
+        inline for (cls.zero_props) |m| {
+            try decl.property(vm, proto, m, zero, null, decl.ver(
+                .{ .dont_delete = true, .read_only = true },
+                cls.version,
+            ));
         }
         const ctor = try decl.class(vm, cls.name, ctorStub, proto, decl.ver(.{ .dont_enum = true }, cls.version));
         inline for (cls.statics) |m| {
@@ -125,6 +127,13 @@ fn ctorStub(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
     _ = args;
     return .undefined_value;
+}
+
+fn zero(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = p;
+    _ = this;
+    _ = args;
+    return .{ .number = 0 };
 }
 
 fn noop(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
