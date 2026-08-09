@@ -1,6 +1,6 @@
 # handyflash — Project State & Handover
 
-**Authoritative snapshot. Last updated: 2026-08-09 (workstream L close, then a long semantics sweep — closures, coercions, SWF4 rules, the ASnative tables and the missing global classes; 623/680).**
+**Authoritative snapshot. Last updated: 2026-08-09 (workstream L close, then a long semantics sweep — closures, coercions, SWF4 rules, the ASnative tables and the missing global classes; 626/680).**
 Read this first if you are picking up the project with no prior context.
 For executing the next milestone, then read `docs/M4-SPEC.md`.
 
@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**623/680**, images **12/26**); F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**626/680**, images **12/26**); F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -483,7 +483,7 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
-**Workstreams A, B, C, D, E and L are CLOSED at 623/680** (images
+**Workstreams A, B, C, D, E and L are CLOSED at 626/680** (images
 12/26), with every bitmap dir and all but three loader dirs passing.
 Pick up F (PlaceObject3 blend modes and clipDepth masks) next —
 `Renderer.blendModeFromSwf` already has the mapping F needs, because
@@ -491,7 +491,7 @@ Pick up F (PlaceObject3 blend modes and clipDepth masks) next —
 and §7 list, by name and cause, every dir those workstreams could not
 reach; do not re-derive them.
 
-**What the remaining 57 failures actually are** (`grep FAIL` the sweep
+**What the remaining 54 failures actually are** (`grep FAIL` the sweep
 output for the list):
 
 | cluster | dirs | what it needs |
