@@ -198,6 +198,13 @@ pub const ScriptObject = struct {
     /// call, so a later `implements` is ignored even when the first
     /// named nothing usable (corpus interface_implements_op).
     interfaces_set: bool = false,
+    /// `new X()` uses this native constructor's RETURN VALUE rather than
+    /// the fresh instance. Ruffle marks the handful of classes declared
+    /// with a separate constructor half; the rest answer `this` whatever
+    /// the native returned, which is what lets most native constructors
+    /// return undefined so `super()` in a subclass does too
+    /// (corpus native_subclasses vs bitmap_data_max_size_swf9).
+    ctor_propagates: bool = false,
     /// Scope-chain parent link (scope objects only; 0 = none).
     scope_parent: ObjectHandle = 0,
     /// `Object.prototype.watch` registrations. Almost always empty.

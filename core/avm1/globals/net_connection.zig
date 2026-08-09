@@ -62,13 +62,15 @@ pub fn install(vm: *Vm) !void {
     try method(vm, proto, "close", close, hidden);
     try method(vm, proto, "call", call, hidden);
     try method(vm, proto, "addHeader", addHeader, hidden);
+    try decl.property(vm, proto, "isConnected", isConnected, null, hidden);
     _ = try decl.class(vm, "NetConnection", ctor, proto, .{ .dont_enum = true });
 }
 
 fn ctor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = p;
+    _ = this;
     _ = args;
-    return this;
+    return .undefined_value;
 }
 
 /// Connecting REPLACES whatever was there, closing it first — which is
@@ -103,6 +105,16 @@ fn connect(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     try vm.objects.putWithAttrs(self, S(CALLS), .{ .number = 0 }, hidden, vm.case_sensitive);
     if (local) try status(vm, self, "NetConnection.Connect.Success");
     return .undefined_value;
+}
+
+fn isConnected(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    const self = selfOf(vm, this);
+    if (self == 0) return .{ .boolean = false };
+    const c = vm.objects.getOwn(self, S(CONNECTED), vm.case_sensitive) orelse
+        return .{ .boolean = false };
+    return .{ .boolean = c == .boolean and c.boolean };
 }
 
 fn isHttp(s: strings.AvmString) bool {

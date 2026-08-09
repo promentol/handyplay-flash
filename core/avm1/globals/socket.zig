@@ -48,11 +48,13 @@ pub fn install(vm: *Vm) !void {
 fn ctor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
-    if (this != .object) return this;
+    if (this != .object) return .undefined_value;
     // The default is 20 seconds. Nothing here honours it — there is no
     // real connection to time out — but content reads it back.
     try vm.objects.putWithAttrs(this.object, S("_timeout"), .{ .number = 20000 }, .{ .dont_enum = true }, false);
-    return this;
+    // What `super()` evaluates to in a subclass: undefined, not the
+    // instance (corpus native_subclasses).
+    return .undefined_value;
 }
 
 fn noop(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {

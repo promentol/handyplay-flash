@@ -104,9 +104,12 @@ pub fn install(vm: *Vm) !void {
     try method(vm, vm.boolean_proto, "valueOf", boolValueOf, hidden);
 
     // --- Constructors -----------------------------------------------------
+    // These two USE their constructor's return value: `new Object(42)`
+    // is a boxed number and `new Function(x)` is x.
     const object_class = try decl.class(vm, "Object", ctorObject, vm.object_proto, attrs);
+    vm.markCtorPropagates(object_class);
     try method(vm, object_class, "registerClass", objRegisterClass, frozen);
-    _ = try decl.class(vm, "Function", ctorFunction, vm.function_proto, ver(attrs, decl.V6));
+    vm.markCtorPropagates(try decl.class(vm, "Function", ctorFunction, vm.function_proto, ver(attrs, decl.V6)));
     const array_class = try decl.class(vm, "Array", ctorArray, vm.array_proto, attrs);
     // The sort option bits live on the class, and content passes them by
     // name rather than by number.
@@ -259,8 +262,11 @@ pub fn install(vm: *Vm) !void {
 
 fn ctorMovieClip(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = p;
+    _ = this;
     _ = args;
-    return this;
+    // Undefined, which is what `super()` in a subclass evaluates to
+    // (corpus native_subclasses).
+    return .undefined_value;
 }
 
 const method = decl.method;
@@ -388,10 +394,18 @@ fn builtinBox(vm: *Vm, v: Value) !Value {
     return .{ .object = h };
 }
 
+/// `Function(x)` — with or without `new` — hands back its FIRST
+/// ARGUMENT unchanged, whatever it is: a function, a boolean, a string.
+/// With no argument at all, `new Function()` is the fresh instance and
+/// `Function()` is a PROTOTYPELESS bare object, which traces as the type
+/// tag and has no `__proto__` (corpus function_as_function).
 fn ctorFunction(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = p;
-    _ = args;
-    return this;
+    const vm = vmOf(p);
+    if (args.len > 0) return args[0];
+    if (vm.in_construct > 0) return this;
+    const h = try vm.objects.create();
+    vm.objects.get(h).proto = .undefined_value;
+    return .{ .object = h };
 }
 
 fn objHasOwnProperty(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {

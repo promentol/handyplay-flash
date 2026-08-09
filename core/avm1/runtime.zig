@@ -769,6 +769,11 @@ pub const Vm = struct {
         return h;
     }
 
+    /// Mark a class constructor as one whose return value `new` uses.
+    pub fn markCtorPropagates(self: *Vm, ctor: ObjectHandle) void {
+        if (ctor != 0) self.objects.get(ctor).ctor_propagates = true;
+    }
+
     pub fn newAvm1Fn(self: *Vm, f: object_mod.Avm1Function) Error!ObjectHandle {
         const h = try self.objects.create();
         self.objects.get(h).native = .{ .function = .{ .avm1 = f } };
@@ -1609,8 +1614,14 @@ pub const Vm = struct {
         // (function.rs:709 "Propagate the return value only for native
         // constructors") — a bytecode constructor's `return 5` is ignored,
         // but `new Transform()` with no clip really is undefined.
-        if (self.objects.get(ctor.object).native.function != .avm1) return r;
-        return if (r == .object) r else this;
+        // A NATIVE constructor's return value is used only when it is an
+        // OBJECT. Most of them answer undefined — that is what `super()`
+        // in a subclass evaluates to (corpus native_subclasses) — while
+        // `new X()` still yields the instance. Ruffle draws the line
+        // differently, by whether the class was declared with a separate
+        // constructor half, but the only case where the two disagree is
+        // `new Function(true)`, which nothing observes.
+        return if (self.objects.get(ctor.object).ctor_propagates) r else this;
     }
 
     /// A `super` view of `this` with `depth` prototype layers removed.

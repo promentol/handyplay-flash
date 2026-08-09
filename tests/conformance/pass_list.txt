@@ -248,6 +248,7 @@ form_loader_encoding_1
 form_loader_encoding_2
 frame_size_translated_negative
 frame_size_translated_positive
+function_as_function
 function_base_clip
 function_base_clip_readded
 function_base_clip_removed
@@ -408,6 +409,7 @@ mutable_this
 named_shapes
 nan_scale
 native_double_construct
+native_subclasses
 nested_textfields_in_buttons
 netconnection_close
 netconnection_send_remote

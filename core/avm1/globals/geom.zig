@@ -129,6 +129,8 @@ pub fn install(vm: *Vm) !void {
     try method(vm, vm.colortransform_proto, "toString", ctToString, .{});
 
     vm.transform_proto = try protoUnder(vm, geom, "Transform", ctorTransform);
+    // `new Transform()` with no clip is undefined, not an empty object.
+    vm.markCtorPropagates(try ctorOf(vm, vm.transform_proto));
     try decl.property(vm, vm.transform_proto, "matrix", trGetMatrix, trSetMatrix, decl.ver(.{}, decl.V8));
     try decl.property(vm, vm.transform_proto, "concatenatedMatrix", trGetConcatMatrix, null, decl.ver(.{}, decl.V8));
     try decl.property(vm, vm.transform_proto, "colorTransform", trGetColorTransform, trSetColorTransform, decl.ver(.{}, decl.V8));

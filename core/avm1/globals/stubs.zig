@@ -117,10 +117,14 @@ pub fn install(vm: *Vm) !void {
     }
 }
 
+/// A native constructor's RETURN VALUE is what `super()` evaluates to,
+/// and for these classes it is undefined — not the instance
+/// (corpus native_subclasses).
 fn ctorStub(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = p;
+    _ = this;
     _ = args;
-    return this;
+    return .undefined_value;
 }
 
 fn noop(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {

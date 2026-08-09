@@ -86,6 +86,9 @@ pub fn install(vm: *Vm, display_ns: ObjectHandle) !void {
     try vm.objects.putWithAttrs(ctor, S("prototype"), .{ .object = proto }, decl.hidden, false);
     try vm.objects.putWithAttrs(proto, S("constructor"), .{ .object = ctor }, decl.hidden, false);
     try vm.objects.putWithAttrs(display_ns, S("BitmapData"), .{ .object = ctor }, .{}, false);
+    // An invalid size makes the constructor answer undefined, and `new`
+    // hands that straight back (corpus bitmap_data_max_size_swf9).
+    vm.markCtorPropagates(ctor);
 }
 
 /// The buffer behind a receiver, or null when it is not a BitmapData —

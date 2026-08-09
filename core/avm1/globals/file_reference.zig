@@ -89,16 +89,20 @@ fn classUnder(
     try vm.objects.putWithAttrs(ns, S(name), .{ .object = ctor }, .{}, false);
 }
 
+/// Both return UNDEFINED, which is what `super()` evaluates to in a
+/// subclass (corpus native_subclasses).
 fn ctorRef(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = p;
+    _ = this;
     _ = args;
-    return this;
+    return .undefined_value;
 }
 
 fn ctorList(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = p;
+    _ = this;
     _ = args;
-    return this;
+    return .undefined_value;
 }
 
 fn slot(vm: *Vm, this: Value, comptime name: []const u8) Value {
