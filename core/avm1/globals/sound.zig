@@ -55,6 +55,9 @@ const LOADED = "_snd_loaded";
 /// dropped — ruffle queues the play and runs it when the bytes land.
 const LOADING = "_snd_loading";
 const QUEUED = "_snd_queued";
+/// `loadSound(url, true)`. A streaming sound auto-plays as soon as it has
+/// loaded, without anyone calling `start`.
+const STREAMING = "_snd_streaming";
 
 pub fn install(vm: *Vm) !void {
     const proto = try vm.objects.create();
@@ -270,7 +273,14 @@ fn attachSound(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 /// to the INSTANCE the first time a sound lands on it, which is why they
 /// read undefined on a bare `new Sound()`.
 fn defineLiveProps(vm: *Vm, obj: ObjectHandle) !void {
-    if (vm.objects.hasOwn(obj, S("duration"), vm.case_sensitive)) return;
+    // BOTH or NEITHER, and the test is an OR: ruffle installs the pair
+    // whenever EITHER is missing. Setting only `position` before the load
+    // therefore loses it — the accessor lands on top — while setting both
+    // keeps both, which is exactly what the corpus walks through
+    // (sound_duration_position_props, places -2, -1 and 0).
+    const has_d = vm.objects.hasChained(obj, S("duration"), vm.case_sensitive);
+    const has_p = vm.objects.hasChained(obj, S("position"), vm.case_sensitive);
+    if (has_d and has_p) return;
     try decl.property(vm, obj, "duration", getDuration, null, decl.hidden);
     try decl.property(vm, obj, "position", getPosition, null, decl.hidden);
 }
@@ -337,6 +347,7 @@ fn loadSound(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     if (!hasOwner(vm, this)) return .undefined_value;
     if (args.len == 0) return .undefined_value;
     const url = try vm.toStringValue(args[0]);
+    try setFlag(vm, this.object, STREAMING, value_mod.toBoolean(arg(args, 1), vm.swf_version));
     // A second `loadSound` DISCARDS whatever was queued against the
     // first — ruffle's `set_is_loading` throws the queue away.
     try setFlag(vm, this.object, LOADING, true);
@@ -355,32 +366,45 @@ fn loadSound(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 pub fn completeLoad(vm: *Vm, obj: ObjectHandle, data: ?[]const u8) !void {
     const l = @import("loader.zig");
     const bytes = data orelse {
+        try setFlag(vm, obj, LOADING, false);
         try l.callMethod(vm, obj, S("onLoad"), &.{.{ .boolean = false }});
         return;
     };
-    try vm.objects.putWithAttrs(obj, S(LOADED), .{ .boolean = true }, decl.hidden, false);
+    try setFlag(vm, obj, LOADED, true);
     try vm.objects.putWithAttrs(obj, S(POSITION), .{ .number = 0 }, decl.hidden, false);
+    try defineLiveProps(vm, obj);
+    // The order is ruffle's `load_sound_avm1` and it is observable: the
+    // duration is ZERO while `onID3` runs and only becomes real before
+    // `onLoad`, so a handler that prints both sees 0 and then 1045.
+    try vm.objects.putWithAttrs(obj, S(DURATION), .{ .number = 0 }, decl.hidden, false);
+    try loadId3(vm, obj, bytes);
     if (mp3DurationMs(bytes)) |ms| {
         try vm.objects.putWithAttrs(obj, S(DURATION), .{ .number = ms }, decl.hidden, false);
     }
-    try defineLiveProps(vm, obj);
     // A play that arrived while the bytes were still coming runs now.
     const queued = queuedCount(vm, obj);
     try vm.objects.putWithAttrs(obj, S(QUEUED), .{ .number = 0 }, decl.hidden, false);
     try setFlag(vm, obj, LOADING, false);
+    try l.callMethod(vm, obj, S("onLoad"), &.{.{ .boolean = true }});
     const h = vm.host;
+    // A streaming sound starts itself, AFTER onLoad.
+    var plays = queued;
+    if (flag(vm, obj, STREAMING)) plays += 1;
     var k: f64 = 0;
-    while (k < queued) : (k += 1) {
+    while (k < plays) : (k += 1) {
         if (h.sound_complete) |f| {
             if (h.ctx) |c| f(c, obj);
         }
     }
-    // ID3 first: Flash has the tag before it has a decoder.
-    if (try id3Object(vm, bytes)) |tag| {
-        try vm.objects.putWithAttrs(obj, S("id3"), .{ .object = tag }, .{ .dont_enum = true }, false);
-        try l.callMethod(vm, obj, S("onID3"), &.{});
+}
+
+/// The sound has finished: its position is now its whole duration, and
+/// only then does the handler run.
+pub fn finishPlay(vm: *Vm, obj: ObjectHandle) !void {
+    if (vm.objects.getOwn(obj, S(DURATION), false)) |d| {
+        try vm.objects.putWithAttrs(obj, S(POSITION), d, decl.hidden, false);
     }
-    try l.callMethod(vm, obj, S("onLoad"), &.{.{ .boolean = true }});
+    try @import("loader.zig").callMethod(vm, obj, S("onSoundComplete"), &.{});
 }
 
 /// An MP3's length, by walking its frame headers. Only the fields the
@@ -443,42 +467,105 @@ fn skipId3(bytes: []const u8) usize {
     return @min(10 + size, bytes.len);
 }
 
-/// The ID3v2 text frames, under the names Flash exposes them by. Only the
-/// text frames matter — Flash's `id3` object is a flat bag of strings.
-fn id3Object(vm: *Vm, bytes: []const u8) !?ObjectHandle {
-    if (bytes.len < 10 or !std.mem.eql(u8, bytes[0..3], "ID3")) return null;
+/// Build the `id3` bag and hand it to `onID3`.
+///
+/// The object has NO PROTOTYPE, which is most of what the corpus checks:
+/// with no `valueOf` to find, `"" + id3` comes out "undefined" while
+/// `typeof` still says object, and `id3 == undefined` is true where
+/// `===` is false.
+///
+/// Each frame contributes its ID3 1.0 ALIAS first and then its raw
+/// four-letter id, so a `for..in` — which walks the list backwards —
+/// reports the raw id ahead of the alias.
+fn loadId3(vm: *Vm, sound: ObjectHandle, bytes: []const u8) !void {
+    const l = @import("loader.zig");
+    if (bytes.len < 10 or !std.mem.eql(u8, bytes[0..3], "ID3")) return;
     const version = bytes[3];
     const end = skipId3(bytes);
-    const out = try vm.objects.create();
-    vm.objects.get(out).proto = .{ .object = vm.object_proto };
-    // v2.2 uses three-character frame ids and three-byte sizes; v2.3+
-    // uses four of each.
+    // Bare: `vm.objects.create()` leaves the prototype unset, which is
+    // exactly `Object::new_without_proto`.
+    const id3 = try vm.objects.create();
     const id_len: usize = if (version <= 2) 3 else 4;
-    const header: usize = if (version <= 2) 6 else 10;
+    const size_len: usize = if (version <= 2) 3 else 4;
+    const flag_len: usize = if (version <= 2) 0 else 2;
     var i: usize = 10;
-    while (i + header <= end) {
+    while (i + id_len + size_len + flag_len <= end) {
         const id = bytes[i .. i + id_len];
         if (id[0] == 0) break;
         var size: usize = 0;
-        for (bytes[i + id_len ..][0 .. header - id_len - (if (version <= 2) @as(usize, 0) else 2)]) |b| {
-            size = (size << 8) | b;
-        }
-        i += header;
+        for (bytes[i + id_len ..][0..size_len]) |b| size = (size << 8) | b;
+        i += id_len + size_len + flag_len;
         if (size == 0 or i + size > end) break;
-        var text = bytes[i .. i + size];
+        const body = bytes[i .. i + size];
         i += size;
-        // The first byte is the text encoding; 0 is Latin-1 and 1 is
-        // UTF-16 with a BOM. Anything else we read as Latin-1 too.
-        if (text.len == 0) continue;
-        const enc = text[0];
-        text = text[1..];
-        while (text.len > 0 and text[text.len - 1] == 0) text = text[0 .. text.len - 1];
-        const s = if (enc == 1) try utf16Bom(vm, text) else try strings.fromSwf(vm.arena(), text, 5);
-        if (id3Name(id)) |name| {
-            try vm.objects.put(out, name, .{ .string = s }, false);
+        const raw = try strings.fromSwf(vm.arena(), id, 5);
+        if (std.mem.eql(u8, id, "COMM") or std.mem.eql(u8, id, "COM")) {
+            const text = try commentText(vm, body);
+            // The 2.0 slot aggregates every comment into an ARRAY; the
+            // 1.0 alias keeps only the last one.
+            const arr = blk: {
+                const existing = vm.objects.getOwn(id3, raw, false) orelse break :blk try vm.newArray();
+                break :blk if (existing == .object) existing.object else try vm.newArray();
+            };
+            const n = vm.arrayLength(arr);
+            try vm.arraySet(arr, n, .{ .string = text });
+            try vm.setArrayLength(arr, n + 1);
+            try vm.objects.put(id3, S("comment"), .{ .string = text }, false);
+            try vm.objects.put(id3, raw, .{ .object = arr }, false);
+            continue;
         }
+        if (id[0] != 'T') continue; // only text frames cross
+        const text = try frameText(vm, body);
+        if (id3Alias(id)) |alias| try vm.objects.put(id3, alias, .{ .string = text }, false);
+        try vm.objects.put(id3, raw, .{ .string = text }, false);
     }
-    return out;
+    // Script can have set `id3` itself, and then it keeps it.
+    if (!vm.objects.hasChained(sound, S("id3"), vm.case_sensitive)) {
+        try vm.objects.putWithAttrs(sound, S("id3"), .{ .object = id3 }, frozen, false);
+    }
+    // Flash always passes `true`, whatever the documentation says.
+    try l.callMethod(vm, sound, S("onID3"), &.{.{ .boolean = true }});
+}
+
+/// A text frame's payload: one encoding byte, then the string.
+fn frameText(vm: *Vm, body: []const u8) !AvmString {
+    if (body.len == 0) return &.{};
+    return decodeFrame(vm, body[0], body[1..]);
+}
+
+/// Encoding 1 is UTF-16 with a BOM, anything else Latin-1. The
+/// TERMINATOR differs with it: a UTF-16 string ends in two NUL bytes,
+/// and stripping them one at a time eats the high byte of the last
+/// character.
+fn decodeFrame(vm: *Vm, enc: u8, raw: []const u8) !AvmString {
+    if (enc != 1) {
+        var t = raw;
+        while (t.len > 0 and t[t.len - 1] == 0) t = t[0 .. t.len - 1];
+        return strings.fromSwf(vm.arena(), t, 5);
+    }
+    var t = raw;
+    while (t.len >= 2 and t[t.len - 1] == 0 and t[t.len - 2] == 0) t = t[0 .. t.len - 2];
+    return utf16Bom(vm, t);
+}
+
+/// A COMM frame: encoding, a three-byte language, a NUL-terminated
+/// description, and then the comment itself.
+fn commentText(vm: *Vm, body: []const u8) !AvmString {
+    if (body.len < 4) return &.{};
+    const enc = body[0];
+    var rest = body[4..];
+    // The description is NUL-terminated, and in UTF-16 that is a NUL
+    // PAIR — on a two-byte boundary, so an odd stray zero is a low byte.
+    if (enc == 1) {
+        var k: usize = 0;
+        while (k + 1 < rest.len) : (k += 2) {
+            if (rest[k] == 0 and rest[k + 1] == 0) break;
+        }
+        rest = if (k + 1 < rest.len) rest[k + 2 ..] else rest[rest.len..];
+    } else if (std.mem.indexOfScalar(u8, rest, 0)) |z| {
+        rest = rest[z + 1 ..];
+    }
+    return decodeFrame(vm, enc, rest);
 }
 
 fn utf16Bom(vm: *Vm, raw: []const u8) !AvmString {
@@ -499,15 +586,13 @@ fn utf16Bom(vm: *Vm, raw: []const u8) !AvmString {
     return out;
 }
 
-/// Flash's own names for the ID3 frames it surfaces. The raw four-letter
-/// ids are exposed as well, which is why both go on the object.
-fn id3Name(id: []const u8) ?AvmString {
+/// The seven frames that also get an ID3 1.0 name. Everything else is
+/// exposed under its raw id only (ruffle sound.rs `load_id3`).
+fn id3Alias(id: []const u8) ?AvmString {
     const table = .{
-        .{ "TALB", "album" },   .{ "TCOM", "comment" }, .{ "TCON", "genre" },
+        .{ "COMM", "comment" }, .{ "TALB", "album" },    .{ "TCON", "genre" },
         .{ "TIT2", "songname" }, .{ "TPE1", "artist" },  .{ "TRCK", "track" },
-        .{ "TYER", "year" },    .{ "TAL", "album" },    .{ "TCM", "comment" },
-        .{ "TCO", "genre" },    .{ "TT2", "songname" }, .{ "TP1", "artist" },
-        .{ "TRK", "track" },    .{ "TYE", "year" },
+        .{ "TYER", "year" },
     };
     inline for (table) |e| {
         if (std.mem.eql(u8, id, e[0])) return S(e[1]);

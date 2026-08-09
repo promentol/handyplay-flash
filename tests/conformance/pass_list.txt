@@ -399,8 +399,11 @@ shared_object_serialize_typed_objects
 single_frame
 slash_syntax
 sound
+sound_duration_position_props
 sound_getters
 sound_gettransform_props
+sound_id3
+sound_id3_prop
 sound_load_start
 sound_multiple_load
 sound_nested_clips

@@ -413,8 +413,6 @@ pub const Player = struct {
         if (self.pending_loads.items.len == 0 and self.pending_dialogs.items.len == 0 and !sockets) {
             return false;
         }
-        const batch = try self.pending_loads.toOwnedSlice(self.gpa);
-        defer self.gpa.free(batch);
         var ctx = self.makeContext();
         defer ctx.deinit(self.gpa);
         self.cur_ctx = &ctx;
@@ -425,9 +423,18 @@ pub const Player = struct {
         }
         self.drainSocket() catch |e| self.reportUncaught(e);
         try self.drainActions(&ctx);
-        for (batch) |req| {
-            self.completeLoad(req) catch |e| self.reportUncaught(e);
-            try self.drainActions(&ctx);
+        // Loads run to EXHAUSTION, like the dialogs below: ruffle's
+        // executor keeps polling until its task list is empty, so a load
+        // started from inside an `onLoad` handler still completes on this
+        // tick. `sound_id3` chains eight of them and runs for ONE.
+        var load_rounds: u32 = 0;
+        while (self.pending_loads.items.len > 0 and load_rounds < 64) : (load_rounds += 1) {
+            const batch = try self.pending_loads.toOwnedSlice(self.gpa);
+            defer self.gpa.free(batch);
+            for (batch) |req| {
+                self.completeLoad(req) catch |e| self.reportUncaught(e);
+                try self.drainActions(&ctx);
+            }
         }
         // Dialogs run to EXHAUSTION, unlike loads: ruffle's executor keeps
         // polling until its task list is empty, so an `upload` started
@@ -803,10 +810,7 @@ pub const Player = struct {
         if (self.pending_sound_done.items.len == 0) return;
         const batch = try self.pending_sound_done.toOwnedSlice(self.gpa);
         defer self.gpa.free(batch);
-        for (batch) |h| {
-            avm1.loader.callMethod(self.vm, h, avm1.strings.ascii("onSoundComplete"), &.{}) catch |e|
-                self.reportUncaught(e);
-        }
+        for (batch) |h| avm1.sound.finishPlay(self.vm, h) catch |e| self.reportUncaught(e);
     }
 
     fn fireLoadInits(self: *Player) !void {
