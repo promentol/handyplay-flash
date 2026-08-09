@@ -30,6 +30,7 @@ const activation = @import("activation.zig");
 const stage_object = @import("stage_object.zig");
 const display_object = @import("../display/display_object.zig");
 const movie_clip = @import("../display/movie_clip.zig");
+const edit_text = @import("../display/edit_text.zig");
 
 const Value = value_mod.Value;
 const Vm = runtime.Vm;
@@ -64,7 +65,7 @@ pub fn bind(vm: *Vm, obj: *DisplayObject, set_initial: bool) !bool {
     if (set_initial) {
         if (vm.objects.getChained(hit.obj, hit.name, vm.case_sensitive)) |v| {
             const s = try vm.toStringValue(v);
-            try et.setText(ctx.gpa, s);
+            try setBound(vm, ctx, et, s);
         } else if (et.text.items.len > 0) {
             // Seeding is skipped for an EMPTY field — and an HTML field is
             // often born holding an empty `<p>`, which does not count as
@@ -158,8 +159,26 @@ pub fn notify(vm: *Vm, target: *DisplayObject, name: strings.AvmString, v: Value
         // The guard is the FIELD's: a write that came from this same
         // field's propagate must not bounce back.
         if (et.firing_binding) continue;
-        try et.setText(ctx.gpa, try vm.toStringValue(v));
+        try setBound(vm, ctx, et, try vm.toStringValue(v));
     }
+}
+
+/// A write through the BINDING is an HTML write: an html field parses the
+/// markup, a plain one takes it verbatim (ruffle `set_html_text`). The
+/// early return on an unchanged value is ruffle's too, and observable —
+/// not every set of spans round-trips through HTML, so re-parsing an
+/// identical string can still change the field.
+fn setBound(
+    vm: *Vm,
+    ctx: *movie_clip.Context,
+    et: *edit_text.EditText,
+    s: []const u16,
+) !void {
+    const current = et.htmlText(vm.arena()) catch null;
+    if (current) |c| {
+        if (strings.eql(c, s)) return;
+    }
+    try et.setHtml(ctx.gpa, s, vm.swf_version);
 }
 
 /// Drop `field`'s link, wherever it points, and take it off the unbound

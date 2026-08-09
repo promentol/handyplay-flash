@@ -264,6 +264,7 @@ issue_2166
 issue_2870
 issue_3169
 issue_3446
+issue_3522
 issue_4377
 issue_710
 issue_768
