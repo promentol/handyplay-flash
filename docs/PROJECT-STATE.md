@@ -1,6 +1,6 @@
 # handyflash — Project State & Handover
 
-**Authoritative snapshot. Last updated: 2026-08-09 (workstream L close — loaders, then a near-miss sweep; 545/680).**
+**Authoritative snapshot. Last updated: 2026-08-09 (workstream L close, then a long semantics sweep — closures, coercions, SWF4 rules, the ASnative tables and the missing global classes; 623/680).**
 Read this first if you are picking up the project with no prior context.
 For executing the next milestone, then read `docs/M4-SPEC.md`.
 
@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**545/680**, images **12/26**); F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**623/680**, images **12/26**); F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -483,34 +483,34 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
-**Workstreams A, B, C, D, E and L are CLOSED at 545/680** (images
-12/26), with every bitmap dir and all but six loader dirs passing. Pick
-up F (PlaceObject3 blend modes and clipDepth masks) next —
+**Workstreams A, B, C, D, E and L are CLOSED at 623/680** (images
+12/26), with every bitmap dir and all but three loader dirs passing.
+Pick up F (PlaceObject3 blend modes and clipDepth masks) next —
 `Renderer.blendModeFromSwf` already has the mapping F needs, because
 `BitmapData.draw` takes the same numbering. `docs/M4-SPEC.md` §4, §5, §6
 and §7 list, by name and cause, every dir those workstreams could not
 reach; do not re-derive them.
 
-**What the remaining 135 failures actually are:**
+**What the remaining 57 failures actually are** (`grep FAIL` the sweep
+output for the list):
 
 | cluster | dirs | what it needs |
 |---|---:|---|
-| `sound*` | 15 | M6 |
-| `movieclip*` | 11 | mixed; several need cross-movie prototypes |
 | `amf*` | 6 | AMF / SharedObject serialisation |
-| `localconnection*`, `netconnection*`, `netstream*` | 7 | subsystems of their own |
+| `localconnection*`, `netconnection*`, `netstream*`, `context_menu*`, `printjob_props_swf7`, `stylesheet*` | 12 | the stub classes in `globals/stubs.zig` growing real behaviour |
+| `looping_child_swf*` | 3 | instantiation ORDER inside a looping child |
+| `global_swf6_7_8`, `global_swf5_6_7_8_9`, `loadmovienum_cross_version_prototype`, `register_class*` | 5 | one prototype set PER SWF VERSION; we keep one |
+| `string_paths_other`, `remove_different_level`, `place_and_lookup` | 3 | `Value::MovieClip` as a re-resolving PATH reference |
 | `external_interface` | 1 | the harness's simulated JS bridge |
-| the loader tail | 6 | named below |
-| the rest | ~110 | one dir at a time, each its own semantics |
+| `form_loader_encoding_3` | 1 | charset detection + a Shift-JIS table |
+| the rest | ~26 | one dir at a time, each its own semantics |
 
-**The loader tail, by name**, so nobody re-derives it:
-`loadmovie_replace_root` and `mcl_loadclip_replace_root` (loading into
-`_level0` REPLACES the root movie, and the stage box with it);
-`loadmovie_registerclass` (registerClass across movies);
-`mcl_events_swf_version` and `loadmovienum_cross_version_prototype` (a
-per-clip `_url`, plus a per-VERSION prototype set — ruffle keeps one set
-per version group, we keep one); `unload` and `unload_nested_child`
-(removal timing, not loading).
+**Two things measured and deliberately left**, so nobody re-derives
+them: `array_length` wants `length` to be a WRAPPING i32 counter (ours
+is a u32, and converting the array model is a wide change for one dir);
+and the two `frame_size_translated_*` dirs pass their traces but fail
+their IMAGE comparison because `images.sh` does not replay `input.json`,
+so the shape renders unpressed.
 
 Eight things to know before you start:
 

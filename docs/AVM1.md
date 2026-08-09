@@ -804,3 +804,78 @@ falling back to the data slot.
 put a clip back at the same path and it revives. A raw handle cannot do
 that. Both readers go through the re-resolution — the activation's own
 base clip and the `preload_parent` register.
+
+---
+
+## Notes from the semantics sweep (569 → 623)
+
+**A SWF5 call is not a closure, and the CALLER decides.** Ruffle branches
+on `activation.swf_version()` — the frame doing the calling, not a global
+and not the function's own version. Below 6 a call keeps nothing of the
+definition site: it adopts `this`'s display object (or the caller's
+target when `this` is not one), allocates a fresh scope over `_global`
+rooted at that clip, and runs at that clip's movie version. A SWF5 movie
+calling a SWF6 movie's function therefore reads `_target: /` and finds
+none of the child's timeline variables.
+
+**`ExecutionReason::Special` exempts a call from that rule, and belongs
+to ONE call.** Implicit coercion calls (`valueOf`, `toString`) set it. A
+native callee never reaches the bytecode path to consume it, so it has
+to be cleared where the dispatch happens or the exemption leaks onto the
+next ordinary call.
+
+**A function that PRELOADS `this` does not get a `this` of its own.**
+`is_this_inherited` makes the activation's `this` the caller's, so a
+constructor whose body preloads sees the new object in r1 and the
+caller's timeline under the NAME, and `r1 === this` is false. `this` is
+never a local variable — it lives on the activation and `resolve`
+answers it before the scope chain. Below SWF6 the name is matched
+case-sensitively only inside a LOCAL scope, so `tHiS` finds nothing
+there but resolves at the top level and inside a `with` body, which is a
+different scope class. `arguments` follows the same preload rule (but
+setting both flags is equivalent to preload alone, unlike `this`), and
+`arguments.caller` is the CALLER's callee — null for timeline code.
+
+**The operand stack is shared and cleared between FRAMES.** Every
+DoAction in the movie pushes and pops the same stack, across clips and
+across levels, so a block that leaves a value behind hands it to
+whatever runs next. The frame boundary wipes it, along with the four
+global registers.
+
+**Builtins are numbered slots.** `Math.pow` IS `ASnative(200, 17)`;
+Flash's own globals.as wires the prototypes up by walking those numbers
+with `ASSetNative`. Modelling them as individual natives cannot express
+what the corpus checks — that every Math method coerces its first two
+arguments whether or not it uses them, and that an undefined index
+answers NaN. `ASSetNative`'s leading-digit version prefix is odd and
+pinned: a leading '1' is always eaten but only "10" is a gate, so "11k"
+installs ungated as "1k".
+
+**Coercions propagate.** A `valueOf` that throws — or a `valueOf`
+PROPERTY that is a throwing getter — unwinds the whole expression. Add2
+runs `to_primitive` on both operands and then coerces the results, so a
+`valueOf` returning an OBJECT is called TWICE. `Trace` prints
+"[type Object]" and then rethrows. An object with no callable `valueOf`
+coerces to UNDEFINED, not to itself.
+
+**SWF4 has no NaN, no Infinity, and no numbers where booleans belong.**
+`NaN` and `Infinity` read as undefined there (they are accessors for
+that reason), so `x == NaN` is `x == undefined` and a zero compares
+EQUAL. Equals, Less, Not, And and Or all push booleans at every version;
+And/Or read their operands as booleans, so an object is true without its
+`valueOf` running. `ToInteger` is ECMA ToInt32 — it wraps and NaN
+becomes 0.
+
+**`var` is a real assignment.** DefineLocal runs virtual setters,
+including inherited ones; outside a function a dotted or slash path
+makes it a path assignment (so `function /:f1() {}` defines `f1` on the
+root); inside a `with` it writes to the target only when the target
+already owns the name. A scope write is a full `set` for the same
+reason.
+
+**Case folding is Flash's table, not Unicode's.** Below SWF7 property
+names fold past ASCII — `this['Ä']` and `this['ä']` are one property —
+but the table stops where Flash's did, so Ⱥ (cased later by Unicode)
+stays distinct from ⱥ. SWF5 and below decode strings as WINDOWS-1252,
+not Latin-1; the two differ only at 0x80..0x9F, where CP1252 has
+typography and Latin-1 has controls.
