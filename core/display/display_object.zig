@@ -11,6 +11,7 @@
 //! NaN scale while still multiplying the matrix by 0.
 
 const std = @import("std");
+const sound_transform_mod = @import("../avm1/runtime.zig");
 const swf = @import("../swf/swf.zig");
 const strings = @import("../avm1/string.zig");
 const library = @import("library.zig");
@@ -70,6 +71,10 @@ pub const DisplayObject = struct {
     /// "unset", and the moment any object in the tree has one the whole
     /// tab order switches to custom (ruffle InteractiveObjectBase).
     tab_index: ?i32 = null,
+    /// This object's sound mix. It lives HERE and not on the `Sound`
+    /// class, which is why two `Sound` objects aimed at the same clip see
+    /// each other's volume (ruffle keeps it on `DisplayObjectBase`).
+    sound_transform: sound_transform_mod.SoundTransform = .{},
     /// `_focusrect`, per object: null = "follow the stage's setting".
     /// Only SWF6+ reads it; below that every object defers to the stage
     /// (ruffle interactive.rs is_highlight_enabled).

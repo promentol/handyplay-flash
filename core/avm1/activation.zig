@@ -1292,17 +1292,18 @@ pub const Activation = struct {
                     try self.push(.{ .number = na + nb });
                 }
             },
+            // Both push the comparison's result VERBATIM, undefined
+            // included: `undefined > 400` is undefined, not false, and
+            // the corpus traces it (sound_start_stop, lessthan2).
             .less2 => {
                 const b = self.pop();
                 const a = self.pop();
-                const r = try self.vm.abstractLess(a, b);
-                try self.push(if (r == .undefined_value) .{ .boolean = false } else r);
+                try self.push(try self.vm.abstractLess(a, b));
             },
             .greater => {
                 const b = self.pop();
                 const a = self.pop();
-                const r = try self.vm.abstractLess(b, a);
-                try self.push(if (r == .undefined_value) .{ .boolean = false } else r);
+                try self.push(try self.vm.abstractLess(b, a));
             },
             .equals2 => {
                 const b = self.pop();

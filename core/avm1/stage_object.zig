@@ -1271,6 +1271,23 @@ pub fn removeDisplayObject(vm: *Vm, t: Target) !bool {
     return true;
 }
 
+/// A `DefineSound`'s length in milliseconds, from its sample count and
+/// rate — the only thing `attachSound` needs from a sound it cannot yet
+/// play. Null when the character is not a sound at all.
+pub fn soundDurationMs(vm: *Vm, owner: ?*MovieClip, id: u16) ?f64 {
+    const ctx = displayCtx(vm) orelse return null;
+    const movie = if (owner) |c| c.movieOf(ctx) else ctx.movie;
+    const ch = movie.lib.characters.get(id) orelse return null;
+    const snd = switch (ch) {
+        .sound => |s| s,
+        else => return null,
+    };
+    if (snd.format.sample_rate == 0) return null;
+    const n: f64 = @floatFromInt(snd.num_samples);
+    const r: f64 = @floatFromInt(snd.format.sample_rate);
+    return @round(n * 1000.0 / r);
+}
+
 /// ExportAssets name -> character id. The library stores the raw SWF bytes,
 /// so the UCS-2 argument comes back down to UTF-8 first.
 pub fn exportedCharacter(vm: *Vm, owner: ?*MovieClip, name: []const u16) !?u16 {

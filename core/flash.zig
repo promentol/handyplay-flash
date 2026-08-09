@@ -16,6 +16,7 @@ pub const avm1 = struct {
     pub const stage_object = @import("avm1/stage_object.zig");
     pub const singletons = @import("avm1/globals/singletons.zig");
     pub const loader = @import("avm1/globals/loader.zig");
+    pub const sound = @import("avm1/globals/sound.zig");
     pub const file_reference = @import("avm1/globals/file_reference.zig");
     pub const text_binding = @import("avm1/text_binding.zig");
 };
@@ -127,6 +128,11 @@ pub const Player = struct {
     levels: std.ArrayList(*display.display_object.DisplayObject) = .empty,
     /// Loads whose `onLoadInit` is still owed — see `fireLoadInits`.
     pending_init: std.ArrayList(avm1.runtime.FetchRequest.Movie) = .empty,
+    /// Sounds started this tick. With no audio device a sound is over the
+    /// moment it starts, but `onSoundComplete` must still arrive on a
+    /// LATER tick — firing it inside `start()` would run the handler
+    /// before the call returned.
+    pending_sound_done: std.ArrayList(u32) = .empty,
     /// The one open `XMLSocket`, its script object, and whatever of a
     /// message has arrived so far. Flash frames on NUL and nothing else,
     /// so a partial message simply waits here for the rest.
@@ -353,6 +359,7 @@ pub const Player = struct {
         }
         self.pending_loads.deinit(gpa);
         self.pending_init.deinit(gpa);
+        self.pending_sound_done.deinit(gpa);
         self.socket_buf.deinit(gpa);
         self.pending_dialogs.deinit(gpa);
         self.file_data.deinit(gpa);
@@ -675,6 +682,7 @@ pub const Player = struct {
         switch (req.target) {
             .form => |h| try avm1.loader.completeForm(self.vm, h, body),
             .load_vars => |h| try avm1.loader.completeLoadVars(self.vm, h, body),
+            .sound => |h| try avm1.sound.completeLoad(self.vm, h, body),
             .movie => |m| try self.completeMovieLoad(m, req.url, body),
         }
     }
@@ -790,6 +798,17 @@ pub const Player = struct {
 
     /// Fire the `onLoadInit`s owed from the previous tick. Called after the
     /// action drain, so the loaded movie's frame-1 trace lands first.
+    /// The `onSoundComplete`s owed from the previous tick.
+    fn fireSoundCompletes(self: *Player) !void {
+        if (self.pending_sound_done.items.len == 0) return;
+        const batch = try self.pending_sound_done.toOwnedSlice(self.gpa);
+        defer self.gpa.free(batch);
+        for (batch) |h| {
+            avm1.loader.callMethod(self.vm, h, avm1.strings.ascii("onSoundComplete"), &.{}) catch |e|
+                self.reportUncaught(e);
+        }
+    }
+
     fn fireLoadInits(self: *Player) !void {
         if (self.pending_init.items.len == 0) return;
         const batch = try self.pending_init.toOwnedSlice(self.gpa);
@@ -802,6 +821,11 @@ pub const Player = struct {
             i -= 1;
             avm1.loader.movieLoadInit(self.vm, batch[i]) catch |e| self.reportUncaught(e);
         }
+    }
+
+    fn hostSoundComplete(ctx: *anyopaque, sound: u32) void {
+        const self: *Player = @ptrCast(@alignCast(ctx));
+        self.pending_sound_done.append(self.gpa, sound) catch {};
     }
 
     /// `MovieClipLoader.getProgress`: how big the clip's movie is.
@@ -953,6 +977,7 @@ pub const Player = struct {
         try self.root.applyPendingGoto(&ctx);
         try self.drainActions(&ctx);
         try self.fireLoadInits();
+        try self.fireSoundCompletes();
         try self.drainActions(&ctx);
         try self.updateTimers(&ctx);
         self.root.clearRanThisTick();
@@ -1406,6 +1431,7 @@ pub const Player = struct {
             .level = hostLevel,
             .unload_movie = hostUnloadMovie,
             .movie_bytes = hostMovieBytes,
+            .sound_complete = hostSoundComplete,
             .socket_connect = hostSocketConnect,
             .socket_send = hostSocketSend,
             .socket_close = hostSocketClose,
@@ -2065,6 +2091,7 @@ test {
     _ = @import("avm1/globals/socket.zig");
     _ = @import("avm1/globals/file_reference.zig");
     _ = @import("avm1/globals/external.zig");
+    _ = @import("avm1/globals/sound.zig");
     _ = @import("avm1/text_binding.zig");
     _ = @import("bitmap/pixels.zig");
     _ = @import("bitmap/data.zig");

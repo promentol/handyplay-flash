@@ -54,6 +54,10 @@ pub const Host = struct {
     /// `unloadMovie` and the empty-URL `loadMovie`. Unlike a load this is
     /// immediate: the timeline is gone before the calling script resumes.
     unload_movie: ?*const fn (ctx: *anyopaque, clip: ObjectHandle) void = null,
+    /// A started sound has finished. With no audio device that is
+    /// immediate, so the Player fires `onSoundComplete` on the next tick
+    /// rather than never.
+    sound_complete: ?*const fn (ctx: *anyopaque, sound: ObjectHandle) void = null,
     /// The compressed length of the movie a clip's timeline came from —
     /// both halves of `MovieClipLoader.getProgress`, since a load here is
     /// either not started or wholly done.
@@ -153,6 +157,8 @@ pub const FetchRequest = struct {
         /// `loadVariables` and `MovieClip.loadVariables`: the pairs are
         /// assigned straight onto the object, then `onData` fires.
         form: ObjectHandle,
+        /// `Sound.loadSound`: the bytes become a duration and an ID3 tag.
+        sound: ObjectHandle,
         /// `LoadVars.load`/`sendAndLoad` AND `XML.load`/`sendAndLoad` —
         /// ruffle drives both through `load_form_into_load_vars`, and the
         /// two classes differ only in what their `onData` does with the
@@ -175,6 +181,45 @@ pub const FetchRequest = struct {
         /// `loadMovie` forms, which broadcast nothing.
         broadcaster: ObjectHandle = 0,
     };
+};
+
+/// A display object's (or the player's) sound mix. Five INTEGER
+/// percentages, and `pan` is not one of them — it is derived, with an
+/// `abs()` in it that makes `setPan(200)` read back as 0 (ruffle
+/// display_object.rs `SoundTransform`).
+pub const SoundTransform = struct {
+    volume: i32 = 100,
+    left_to_left: i32 = 100,
+    left_to_right: i32 = 0,
+    right_to_left: i32 = 0,
+    right_to_right: i32 = 100,
+
+    pub const MAX_VOLUME: i32 = 100;
+
+    pub fn pan(self: SoundTransform) i32 {
+        if (self.left_to_left != MAX_VOLUME) return MAX_VOLUME -| absI32(self.left_to_left);
+        return absI32(self.right_to_right) -| MAX_VOLUME;
+    }
+
+    /// `i32::MIN` has no positive counterpart; Flash's own `abs` wraps it
+    /// back to itself, so saturate instead of trapping.
+    fn absI32(v: i32) i32 {
+        return if (v < 0) (0 -| v) else v;
+    }
+
+    /// -100 is hard left and 100 hard right; the two cross-channels are
+    /// zeroed, which is why a pan write erases a previous `setTransform`.
+    pub fn setPan(self: *SoundTransform, p: i32) void {
+        if (p >= 0) {
+            self.left_to_left = MAX_VOLUME -| p;
+            self.right_to_right = MAX_VOLUME;
+        } else {
+            self.left_to_left = MAX_VOLUME;
+            self.right_to_right = MAX_VOLUME +| p;
+        }
+        self.left_to_right = 0;
+        self.right_to_left = 0;
+    }
 };
 
 /// Stage render quality — `_quality` / `_highquality` read and write it.
@@ -406,6 +451,9 @@ pub const Vm = struct {
     xmlnode_ctor: ObjectHandle = 0,
     xml_proto: ObjectHandle = 0,
     loadvars_proto: ObjectHandle = 0,
+    sound_proto: ObjectHandle = 0,
+    /// The mix a `new Sound()` with no target reads and writes.
+    global_sound_transform: SoundTransform = .{},
     /// The `flash.net` namespace, made by geom.zig and filled by
     /// singletons.zig once the broadcaster functions exist.
     flash_net: ObjectHandle = 0,
