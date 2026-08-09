@@ -237,6 +237,7 @@ frame_size_translated_negative
 frame_size_translated_positive
 function_base_clip
 function_base_clip_readded
+function_base_clip_removed
 function_suppress_and_preload
 funky_function_calls
 get_bytes_total
@@ -313,6 +314,7 @@ loadmovie_fail
 loadmovie_flashvars
 loadmovie_method
 loadmovie_registerclass
+loadmovie_replace_root
 loadmovie_var_persistence
 loadmovienum
 loadvariables

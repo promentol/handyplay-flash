@@ -1448,7 +1448,7 @@ pub const Vm = struct {
         else
             activation.Activation.callerTargetClip(self);
         const eff_base: ObjectHandle = if (is_closure and f.base_clip != 0)
-            activation.Activation.liveBaseClip(self, f.base_clip, f.base_clip_path)
+            activation.Activation.liveBaseClip(self, f.base_clip, f.base_clip_path) orelse this_clip
         else
             this_clip;
         // …and the VERSION comes from the same place: the defining movie

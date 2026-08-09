@@ -252,14 +252,19 @@ pub const Activation = struct {
     /// Re-resolve a function's base clip when the one it captured is gone.
     /// Ruffle keeps it as a path, not a pointer, so a clip removed and put
     /// back at the same place revives every closure that named it.
-    pub fn liveBaseClip(vm: *runtime.Vm, handle: ObjectHandle, path: strings.AvmString) ObjectHandle {
+    /// Null when the reference is DEAD — the clip was removed and
+    /// nothing has taken its place at that path. Ruffle's
+    /// `resolve_reference(...).unwrap_or(this_do)` then falls back to
+    /// `this`'s clip, which is why a function outlives its definer with
+    /// a different base (corpus function_base_clip_removed).
+    pub fn liveBaseClip(vm: *runtime.Vm, handle: ObjectHandle, path: strings.AvmString) ?ObjectHandle {
         if (handle != 0 and stage.targetOf(vm, handle) != null) return handle;
-        if (path.len == 0) return 0;
-        const p = vm.current_activation orelse return handle;
+        if (path.len == 0) return null;
+        const p = vm.current_activation orelse return null;
         const act: *Activation = @ptrCast(@alignCast(p));
         const root = act.rootHandle();
-        const found = act.resolveTargetPath(root, root, path, true, false) catch return handle;
-        return found orelse handle;
+        const found = act.resolveTargetPath(root, root, path, true, false) catch return null;
+        return found;
     }
 
     /// The function object the CALLER is running, as a value: an

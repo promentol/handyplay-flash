@@ -763,6 +763,21 @@ pub const Player = struct {
             .bytes = if (loaded) |m| m.compressed_len else @intCast(bytes.len),
             .version = if (loaded) |m| m.swf_version else 0,
         };
+        // Loading into _level0 REPLACES the root movie, and the stage
+        // takes the new movie's size — `Stage.width` reports the
+        // incoming header, not the one the player started with
+        // (corpus loadmovie_replace_root).
+        if (loaded) |m| {
+            if (mc.level_id == 0 and mc.parent == null) {
+                const w = m.header.widthPx();
+                const h = m.header.heightPx();
+                self.vm.stage_width = w;
+                self.vm.stage_height = h;
+                self.vm.movie_width = @floatFromInt(w);
+                self.vm.movie_height = @floatFromInt(h);
+                _ = avm1.stage_object.recomputeView(self.vm);
+            }
+        }
         // A loaded movie's `#initclip` blocks run at PRELOAD, before its
         // own frame 1 — which is what lets it `Object.registerClass` the
         // symbols its own timeline is about to place.
