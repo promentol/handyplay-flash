@@ -217,6 +217,7 @@ focusrect_swf5
 focusrect_swf6
 form_loader_encoding_1
 function_base_clip
+function_base_clip_readded
 get_bytes_total
 get_variable_in_scope
 getproperty

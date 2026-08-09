@@ -232,6 +232,29 @@ pub const Activation = struct {
     /// The CALLING frame's variable bag, for the natives that submit it as
     /// form data (`MovieClip.getURL` with a method, and the `getURL`
     /// opcode). In timeline code this is the clip itself.
+    /// The defining clip's dot path, captured when a function is created.
+    /// Empty when there is no clip — a function defined inside another
+    /// function inherits its enclosing base clip and its path with it.
+    fn baseClipPath(self: *Activation) !strings.AvmString {
+        if (self.base_clip == 0) return &.{};
+        const t = stage.targetOf(self.vm, self.base_clip) orelse return &.{};
+        const clip = t.clip orelse return &.{};
+        return stage.dotPathOf(self.vm, @ptrCast(clip));
+    }
+
+    /// Re-resolve a function's base clip when the one it captured is gone.
+    /// Ruffle keeps it as a path, not a pointer, so a clip removed and put
+    /// back at the same place revives every closure that named it.
+    pub fn liveBaseClip(vm: *runtime.Vm, handle: ObjectHandle, path: strings.AvmString) ObjectHandle {
+        if (handle != 0 and stage.targetOf(vm, handle) != null) return handle;
+        if (path.len == 0) return 0;
+        const p = vm.current_activation orelse return handle;
+        const act: *Activation = @ptrCast(@alignCast(p));
+        const root = act.rootHandle();
+        const found = act.resolveTargetPath(root, root, path, true, false) catch return handle;
+        return found orelse handle;
+    }
+
     /// The clip the running script BELONGS to (not the one it is
     /// targeting). `System.security.sandboxType` answers for the base
     /// clip's movie, so a loaded SWF reports its own origin.
@@ -703,6 +726,7 @@ pub const Activation = struct {
                     .constant_pool = self.constant_pool,
                     .swf_version = self.swf_version,
                     .base_clip = self.base_clip,
+                    .base_clip_path = try self.baseClipPath(),
                 });
                 if (f.name.len > 0) {
                     const name = try self.swfStr(f.name);
@@ -723,6 +747,7 @@ pub const Activation = struct {
                     .constant_pool = self.constant_pool,
                     .swf_version = self.swf_version,
                     .base_clip = self.base_clip,
+                    .base_clip_path = try self.baseClipPath(),
                 });
                 if (f.name.len > 0) {
                     const name = try self.swfStr(f.name);

@@ -98,6 +98,12 @@ pub const Avm1Function = struct {
     /// closures and use it; SWF5 calls are not and use `this`'s clip
     /// instead (ruffle function.rs:295-334).
     base_clip: ObjectHandle = 0,
+    /// That clip's PATH, kept because ruffle stores the base clip as a
+    /// `MovieClipReference` and re-resolves it on every call. Remove the
+    /// clip and the reference goes dead; put a clip back at the same
+    /// path and the function's `_parent` comes back to life with it
+    /// (corpus function_base_clip_readded).
+    base_clip_path: strings.AvmString = &.{},
 };
 
 pub const FunctionKind = union(enum) {

@@ -1377,7 +1377,7 @@ pub const Vm = struct {
             // calls are closures and keep the defining clip; below that
             // `this` supplies it, which is the same object here.
             const owner: ObjectHandle = if (self.swf_version >= 6 and f.base_clip != 0)
-                f.base_clip
+                activation.Activation.liveBaseClip(self, f.base_clip, f.base_clip_path)
             else if (this == .object)
                 this.object
             else
@@ -1416,8 +1416,9 @@ pub const Vm = struct {
         // `this`'s clip, which Activation.init already derived.
         // ruffle function.rs:303-310.
         if ((self.swf_version >= 6 or special) and f.base_clip != 0) {
-            act.base_clip = f.base_clip;
-            act.target_clip = f.base_clip;
+            const live = activation.Activation.liveBaseClip(self, f.base_clip, f.base_clip_path);
+            act.base_clip = live;
+            act.target_clip = live;
         }
         // A throw propagates as error.Avm1Thrown, so an outer try/catch
         // in a CALLING function still sees it.
