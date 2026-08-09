@@ -36,7 +36,7 @@ pub fn selfBounds(obj: *const DisplayObject) ?Rectangle {
         // clip's is its own. Morph shapes stay undecoded until M7 —
         // ruffle reports the start shape for a morph under
         // BoundsMode::Script, a known gap.
-        .button, .morph_shape => null,
+        .button, .morph_shape, .video => null,
         // A clip's own geometry is whatever the drawing API put there
         // (ruffle MovieClip::self_bounds -> drawing.self_bounds).
         .clip => |mc| if (mc.drawing) |d| d.bounds else null,
@@ -134,6 +134,8 @@ pub fn hitTestShape(
     const inv = to_global.invert() orelse return false;
     const local = inv.transformPoint(point[0], point[1]);
     switch (obj.kind) {
+        // A video with no decoded frame has nothing to hit.
+        .video => return false,
         .shape => |s| return shape_utils.shapeHitTest(s, .{ .x = local[0], .y = local[1] }, to_global),
         .clip => |mc| {
             if (mc.drawing) |*d| {

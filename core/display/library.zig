@@ -50,6 +50,19 @@ pub const Character = union(enum) {
     bitmap: Bitmap,
     sound: swf.sound_tags.Sound,
     sprite: Sprite,
+    /// `DefineVideoStream`. No frames are decoded — the character exists
+    /// so that a placed video is a real display object with a name, a
+    /// path and a script object (corpus place_and_lookup). Decoding
+    /// belongs to the video workstream.
+    video: Video,
+};
+
+pub const Video = struct {
+    id: u16,
+    num_frames: u16 = 0,
+    width: u16 = 0,
+    height: u16 = 0,
+    codec: u8 = 0,
 };
 
 pub const Bitmap = union(enum) {

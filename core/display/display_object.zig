@@ -111,6 +111,13 @@ pub const DisplayObject = struct {
     /// children keep reporting their paths through their own `onUnload`
     /// (corpus string_paths_basic vs string_paths_unload).
     path_lost: bool = false,
+    /// Queued for removal at the START of the next frame, rather than
+    /// removed now. Flash delays the unlink when the subtree has an
+    /// unload handler — the object keeps its place in the child list (at
+    /// a NEGATED depth) for one more tick, so it still resolves by name
+    /// and still reports a path, while its `onUnload` runs immediately
+    /// (ruffle container.rs `queue_removal` + `Avm1::remove_pending`).
+    pending_removal: bool = false,
 
     // Decomposed transform cache — valid only while `sr_cached`.
     // Scales are PERCENT (100 = 1.0), stored exactly as ActionScript set
@@ -144,6 +151,11 @@ pub const DisplayObject = struct {
         attached_bitmap: AttachedBitmap,
         /// Sprites instantiate their own timeline.
         clip: *movie_clip.MovieClip,
+        /// A `DefineVideoStream` on the display list. It draws nothing
+        /// until there is a decoder, but it IS an object: it has a name,
+        /// a path and a script object, which a Graphic or a Shape does
+        /// not (corpus place_and_lookup).
+        video: u16,
     };
 
     pub const LibraryBitmap = struct {

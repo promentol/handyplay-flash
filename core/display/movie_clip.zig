@@ -106,6 +106,8 @@ pub const Context = struct {
     /// The `onClipEvent` half of "button mode" is answered in
     /// display/mouse.zig; this half needs the VM.
     has_button_handler: ?*const fn (user: *anyopaque, clip: *MovieClip) bool = null,
+    /// Does the clip's script object have this property? (`onUnload`.)
+    has_property: ?*const fn (user: *anyopaque, clip: *MovieClip, name: []const u8) bool = null,
     /// `obj.enabled` — a disabled button or clip is not pickable and gets
     /// no events (ruffle InteractiveObject::mouse_enabled).
     mouse_enabled: ?*const fn (user: *anyopaque, obj: *DisplayObject) bool = null,
@@ -130,6 +132,14 @@ pub const Context = struct {
     pub fn lostDisplayObject(self: *Context, obj: *DisplayObject) void {
         const f = self.lost_display_object orelse return;
         f(self.class_lookup_user.?, obj);
+    }
+
+    /// Does this clip's SCRIPT OBJECT carry a property by this name?
+    /// Needed for `onUnload`, which decides whether a removal is
+    /// delayed by a tick.
+    pub fn clipHasProperty(self: *Context, clip: *MovieClip, name: []const u8) bool {
+        const f = self.has_property orelse return false;
+        return f(self.class_lookup_user.?, clip, name);
     }
 
     pub fn clipHasButtonHandler(self: *Context, clip: *MovieClip) bool {
@@ -846,10 +856,74 @@ pub const MovieClip = struct {
     pub fn removeAtDepth(self: *MovieClip, ctx: *Context, depth: i32) Error!void {
         for (self.children.items, 0..) |child, i| {
             if (child.depth == depth) {
+                // A subtree with an unload handler is DELAYED: it stays in
+                // the child list for one more tick, at a negated depth,
+                // and its `onUnload` runs now (ruffle
+                // `ChildContainer::remove_child` -> `queue_removal`).
+                if (shouldDelayRemoval(ctx, child)) {
+                    try queueRemoval(ctx, child);
+                    return;
+                }
                 _ = self.children.orderedRemove(i);
                 try retire(ctx, child);
                 return;
             }
+        }
+    }
+
+    /// Does this object, or anything under it, have an `unload` handler?
+    fn shouldDelayRemoval(ctx: *Context, obj: *DisplayObject) bool {
+        if (obj.kind == .clip) {
+            for (obj.clip_actions) |h| {
+                if (h.events & swf.place.ClipEvent.UNLOAD != 0) return true;
+            }
+            if (ctx.clipHasProperty(obj.kind.clip, "onUnload")) return true;
+            for (obj.kind.clip.children.items) |child| {
+                if (shouldDelayRemoval(ctx, child)) return true;
+            }
+        }
+        if (obj.kind == .button) {
+            for (obj.kind.button.container.children.items) |child| {
+                if (shouldDelayRemoval(ctx, child)) return true;
+            }
+        }
+        return false;
+    }
+
+    /// Move the subtree to negative depths and fire its unload events,
+    /// without unlinking anything. `removePending` finishes the job at
+    /// the start of the next frame.
+    fn queueRemoval(ctx: *Context, obj: *DisplayObject) Error!void {
+        if (obj.kind == .clip) {
+            for (obj.kind.clip.children.items) |child| try queueRemoval(ctx, child);
+        } else if (obj.kind == .button) {
+            for (obj.kind.button.container.children.items) |child| try queueRemoval(ctx, child);
+        }
+        obj.depth = -obj.depth - 1;
+        obj.pending_removal = true;
+        ctx.lostDisplayObject(obj);
+        if (obj.kind == .clip) {
+            try obj.kind.clip.dispatchClipEventEx(ctx, swf.place.ClipEvent.UNLOAD, "onUnload", true);
+        }
+    }
+
+    /// Unlink everything queued last tick. Runs at the START of a frame,
+    /// before any script — which is why a removed clip is still visible
+    /// to the script that removed it and gone by the next one.
+    pub fn removePending(self: *MovieClip, ctx: *Context) Error!void {
+        var i = self.children.items.len;
+        while (i > 0) {
+            i -= 1;
+            const child = self.children.items[i];
+            if (child.pending_removal) {
+                _ = self.children.orderedRemove(i);
+                // The unload events already ran when it was queued.
+                markRemoved(child);
+                child.path_lost = true;
+                try ctx.graveyard.append(ctx.gpa, child);
+                continue;
+            }
+            if (child.kind == .clip) try child.kind.clip.removePending(ctx);
         }
     }
 
@@ -918,6 +992,7 @@ pub const MovieClip = struct {
                     mc.tag_stream_len = sprite.tag_stream_len;
                     break :c mc;
                 } },
+                .video => .{ .video = id },
                 .sound, .font => return null, // not placeable
             };
         };
@@ -1076,7 +1151,9 @@ pub const MovieClip = struct {
 fn takesInstanceName(kind: DisplayObject.Kind) bool {
     return switch (kind) {
         .clip, .button, .edit_text => true,
-        .shape, .morph_shape, .text, .bitmap, .attached_bitmap => false,
+        // A VIDEO is scriptable but does NOT take an instance name — it
+        // is reachable only under the name the tag gave it.
+        .video, .shape, .morph_shape, .text, .bitmap, .attached_bitmap => false,
     };
 }
 

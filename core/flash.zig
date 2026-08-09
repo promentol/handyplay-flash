@@ -969,6 +969,7 @@ pub const Player = struct {
             .class_lookup_user = @ptrCast(self),
             .run_inline = hostRunInline,
             .has_button_handler = hostHasButtonHandler,
+            .has_property = hostHasProperty,
             .mouse_enabled = hostMouseEnabled,
             .lost_display_object = hostLostDisplayObject,
             .bool_property = hostBoolProperty,
@@ -1011,6 +1012,14 @@ pub const Player = struct {
             self.cur_ctx = null;
             self.vm.display_ctx = null;
         }
+        // Everything queued for removal LAST tick goes now, before any
+        // script runs — ruffle's `Avm1::remove_pending` at the head of
+        // `run_frame`.
+        try self.root.removePending(&ctx);
+        for (self.levels.items) |lv| {
+            if (lv.kind == .clip) try lv.kind.clip.removePending(&ctx);
+        }
+        self.dropDeadFromExecList();
         try self.runInitActions(&ctx);
         // ONE list, newest first — no tree walk. A clip prepended during
         // this pass is not visited by it, which is ruffle's rule too
@@ -1065,7 +1074,11 @@ pub const Player = struct {
     /// and scripts see undefined.
     fn drainActions(self: *Player, ctx: *display.movie_clip.Context) !void {
         while (ctx.popAction()) |qa| {
-            if (qa.clip.removed and !qa.on_removed) continue;
+            // A clip that has been removed — or is only QUEUED for
+            // removal — runs nothing but its own unload
+            // (ruffle player.rs `run_actions`).
+            const pending = if (qa.clip.placement) |pl| pl.pending_removal else false;
+            if ((qa.clip.removed or pending) and !qa.on_removed) continue;
             // A button's handler runs on the BUTTON's script object; the
             // queued `clip` is only its parent, for the removal check.
             if (qa.display) |d| {
@@ -1458,6 +1471,15 @@ pub const Player = struct {
             }
         }
         return false;
+    }
+
+    fn hostHasProperty(user: *anyopaque, clip: *display.movie_clip.MovieClip, name: []const u8) bool {
+        const self: *Player = @ptrCast(@alignCast(user));
+        if (clip.avm_object == 0) return false;
+        var buf: [32]u16 = undefined;
+        if (name.len > buf.len) return false;
+        for (name, 0..) |c, i| buf[i] = c;
+        return self.vm.objects.hasChained(clip.avm_object, buf[0..name.len], self.vm.case_sensitive);
     }
 
     /// `obj.enabled`, the AVM1 property. Absent means enabled — only an

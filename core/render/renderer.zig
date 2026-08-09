@@ -481,6 +481,7 @@ pub const Renderer = struct {
             .bitmap => |b| try self.renderBitmap(ctx, .{ .character = b.id }, false, t, cx),
             .attached_bitmap => |b| try self.renderBitmap(ctx, .{ .live = b.data }, b.smoothing, t, cx),
             .morph_shape => {}, // M7
+            .video => {}, // no decoder yet
         }
     }
 

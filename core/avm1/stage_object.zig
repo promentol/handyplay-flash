@@ -72,7 +72,9 @@ pub fn targetOf(vm: *Vm, handle: ObjectHandle) ?Target {
 /// shapes and bitmaps are not (ruffle: object1 returns None for those).
 pub fn isScriptable(kind: DisplayObject.Kind) bool {
     return switch (kind) {
-        .clip, .button, .edit_text => true,
+        // A VIDEO is scriptable — that is the whole difference between
+        // a placed video and a placed graphic (corpus place_and_lookup).
+        .clip, .button, .edit_text, .video => true,
         .shape, .morph_shape, .text, .bitmap, .attached_bitmap => false,
     };
 }

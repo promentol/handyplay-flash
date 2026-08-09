@@ -177,6 +177,22 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error![]lib
                     .body = tag.body,
                 } });
             },
+            .define_video_stream => {
+                var r = rdr.Reader.init(tag.body);
+                const id = try r.readU16();
+                const num_frames = try r.readU16();
+                const width = try r.readU16();
+                const height = try r.readU16();
+                _ = try r.readU8(); // flags: deblocking + smoothing
+                const codec = try r.readU8();
+                try movie.lib.put(a, id, .{ .video = .{
+                    .id = id,
+                    .num_frames = num_frames,
+                    .width = width,
+                    .height = height,
+                    .codec = codec,
+                } });
+            },
             .define_sprite => {
                 var r = rdr.Reader.init(tag.body);
                 const id = try r.readU16();

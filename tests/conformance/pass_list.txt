@@ -410,6 +410,7 @@ on_construct
 parse_float
 parse_int
 path_string
+place_and_lookup
 placeobject_occupied_depth
 point
 primitive_instanceof
@@ -422,6 +423,7 @@ recursive_prototypes
 register_and_init_order
 register_class_return_value
 register_globals_across_frames
+remove_different_level
 remove_movie_clip
 removed_base_clip_tell_target
 removed_clip_halts_script
@@ -570,7 +572,9 @@ uncaught_exception
 uncaught_exception_bubbled
 undefined_to_string_swf6
 unescape
+unload
 unload_clip_event
+unload_nested_child
 unloadmovie
 unloadmovie_method
 unloadmovienum
