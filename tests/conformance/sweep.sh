@@ -84,11 +84,16 @@ one() {
     # the expected output.
     lf=""
     grep -q '^log_fetch *= *true' "$toml" 2>/dev/null && lf="--log-fetch"
+    # The `external_interface` dir has no test.toml because ruffle drives
+    # it from a bespoke Rust test that installs a provider and calls INTO
+    # the movie; `--external-interface` is that test in the runner.
+    xi=""
+    [ "$d" = "external_interface" ] && xi="--external-interface"
     # socket.json — the scripted far end of an XMLSocket.
     sk=""
     [ -f "$CORPUS/$d/socket.json" ] && sk="--socket $CORPUS/$d/socket.json"
     # shellcheck disable=SC2086
-    timeout 20 "$BIN" "$swf" --frames "$n" $inp $vp $df $lf $sk >"$T" 2>/dev/null
+    timeout 20 "$BIN" "$swf" --frames "$n" $inp $vp $df $lf $sk $xi >"$T" 2>/dev/null
     if grep -q '^bare_numbers *= *true' "$toml" 2>/dev/null; then
         eps=$(sed -n 's/^epsilon *= *\([0-9.eE+-]*\).*/\1/p' "$toml" | head -1)
         [ -n "$eps" ] || eps=2.220446049250313e-16

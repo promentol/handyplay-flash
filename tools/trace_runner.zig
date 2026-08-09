@@ -1,5 +1,6 @@
 //! trace_runner — headless conformance driver.
 //! Usage: trace_runner <test.swf> [--frames N] [--input input.json]
+//!        [--external-interface]
 //!
 //! Loads the movie, runs N timeline frames, prints accumulated trace()
 //! output to stdout, exit 0. The conformance script diffs stdout against
@@ -37,10 +38,15 @@ pub fn main(init: std.process.Init) !u8 {
     var viewport_h: u32 = 0;
     var scale_factor: f64 = 1.0;
     var log_fetch = false;
+    var external_interface = false;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--log-fetch")) {
             log_fetch = true;
+            continue;
+        }
+        if (std.mem.eql(u8, args[i], "--external-interface")) {
+            external_interface = true;
             continue;
         }
         if (std.mem.eql(u8, args[i], "--frames")) {
@@ -121,6 +127,8 @@ pub fn main(init: std.process.Init) !u8 {
             }
         }
     }
+    var ei: ExternalTest = .{ .store = std.heap.ArenaAllocator.init(gpa) };
+    defer ei.store.deinit();
     const player = flash.Player.createWith(gpa, bytes, .{
         .url = url,
         .device_font = device_font,
@@ -138,6 +146,8 @@ pub fn main(init: std.process.Init) !u8 {
         .open_dialog = Dialogs.open,
         .open_multi_dialog = Dialogs.openMulti,
         .save_dialog = Dialogs.save,
+        .external_call = if (external_interface) ExternalTest.call else null,
+        .external_user = @ptrCast(&ei),
     }) catch {
         // A movie we can't run produces no trace output (several corpus
         // dirs are AVM2/image-comparison tests whose expected stdout is
@@ -167,6 +177,9 @@ pub fn main(init: std.process.Init) !u8 {
     // first batch is delivered immediately after it and the rest keep the
     // before-the-tick position. Getting this off by one drops the events
     // after the final `Wait` entirely.
+    // Frame 1 ran inside `create`, so this is ruffle's after-the-first-
+    // tick position — where its external-interface test makes its calls.
+    if (external_interface) ei.drive(player);
     cursor = feedUntilWait(player, events, cursor);
     var f: u32 = 1;
     while (f < frames) : (f += 1) {
@@ -592,3 +605,132 @@ fn namedKeyCode(name: []const u8) i32 {
     }
     return 0;
 }
+
+/// The host end of `ExternalInterface`, as ruffle's own test provider
+/// implements it (tests/tests/external_interface/mod.rs): three methods
+/// the movie can call out to, one of which calls straight back in.
+///
+/// Everything it traces goes through the player's sink, so the two sides
+/// of a call land in one stream — which is what the expected output of
+/// the `external_interface` dir records. That dir has no `test.toml`
+/// because ruffle drives it from a bespoke Rust test rather than the
+/// generic runner; `--external-interface` is that test.
+const ExternalTest = struct {
+    store: std.heap.ArenaAllocator,
+
+    const EV = flash.external.Value;
+
+    fn call(user: ?*anyopaque, player: *flash.Player, name: []const u8, args: []const EV) EV {
+        const self: *ExternalTest = @ptrCast(@alignCast(user orelse return .null_value));
+        const a = self.store.allocator();
+        if (std.mem.eql(u8, name, "trace")) {
+            const text = std.fmt.allocPrint(a, "[ExternalInterface] trace: {s}", .{
+                debugList(a, args),
+            }) catch return .null_value;
+            player.traceUtf8(text);
+            return .{ .string = "Traced!" };
+        }
+        if (std.mem.eql(u8, name, "ping")) {
+            player.traceUtf8("[ExternalInterface] ping");
+            return .{ .string = "Pong!" };
+        }
+        if (std.mem.eql(u8, name, "reentry")) {
+            player.traceUtf8("[ExternalInterface] starting reentry");
+            return player.callExternalInterface("callWith", &.{
+                .{ .string = "trace" },
+                .{ .string = "successful reentry!" },
+            });
+        }
+        return .null_value;
+    }
+
+    /// The calls ruffle's test makes from the host side once the movie
+    /// has had its first tick.
+    fn drive(self: *ExternalTest, player: *flash.Player) void {
+        const a = self.store.allocator();
+
+        const parroted = player.callExternalInterface("parrot", &.{.{ .string = "Hello World!" }});
+        report(player, a, "After calling `parrot` with a string: ", parroted);
+
+        const nested_list = [_]EV{
+            .{ .string = "string" },
+            .{ .number = 100 },
+            .{ .boolean = false },
+            .{ .object = &.{} },
+        };
+        const nested = [_]flash.external.Pair{
+            .{ .key = "list", .value = .{ .list = &nested_list } },
+        };
+        // Sorted, because the host side is a map.
+        const root = [_]flash.external.Pair{
+            .{ .key = "false", .value = .{ .boolean = false } },
+            .{ .key = "nested", .value = .{ .object = &nested } },
+            .{ .key = "null", .value = .null_value },
+            .{ .key = "number", .value = .{ .number = -500.1 } },
+            .{ .key = "string", .value = .{ .string = "A string!" } },
+            .{ .key = "true", .value = .{ .boolean = true } },
+        };
+        const result = player.callExternalInterface("callWith", &.{
+            .{ .string = "trace" },
+            .{ .object = &root },
+        });
+        report(player, a, "After calling `callWith` with a complex payload: ", result);
+    }
+
+    fn report(player: *flash.Player, a: std.mem.Allocator, prefix: []const u8, v: EV) void {
+        const text = std.fmt.allocPrint(a, "{s}{s}", .{ prefix, debugValue(a, v) }) catch return;
+        player.traceUtf8(text);
+    }
+
+    // --- Rust's `{:?}`, which is the format the expected output records ---
+
+    fn debugList(a: std.mem.Allocator, args: []const EV) []const u8 {
+        var out: std.ArrayList(u8) = .empty;
+        out.append(a, '[') catch return "[]";
+        for (args, 0..) |v, i| {
+            if (i > 0) out.appendSlice(a, ", ") catch {};
+            out.appendSlice(a, debugValue(a, v)) catch {};
+        }
+        out.append(a, ']') catch {};
+        return out.items;
+    }
+
+    fn debugValue(a: std.mem.Allocator, v: EV) []const u8 {
+        return switch (v) {
+            .undefined_value => "Undefined",
+            .null_value => "Null",
+            .boolean => |b| if (b) "Bool(true)" else "Bool(false)",
+            .number => |n| std.fmt.allocPrint(a, "Number({s})", .{debugNumber(a, n)}) catch "Number(0.0)",
+            .string => |s| std.fmt.allocPrint(a, "String(\"{s}\")", .{s}) catch "String(\"\")",
+            .object => |pairs| blk: {
+                var out: std.ArrayList(u8) = .empty;
+                out.appendSlice(a, "Object({") catch break :blk "Object({})";
+                for (pairs, 0..) |pair, i| {
+                    if (i > 0) out.appendSlice(a, ", ") catch {};
+                    const one = std.fmt.allocPrint(a, "\"{s}\": {s}", .{
+                        pair.key, debugValue(a, pair.value),
+                    }) catch continue;
+                    out.appendSlice(a, one) catch {};
+                }
+                out.appendSlice(a, "})") catch {};
+                break :blk out.items;
+            },
+            .list => |items| blk: {
+                var out: std.ArrayList(u8) = .empty;
+                out.appendSlice(a, "List(") catch break :blk "List([])";
+                out.appendSlice(a, debugList(a, items)) catch {};
+                out.append(a, ')') catch {};
+                break :blk out.items;
+            },
+        };
+    }
+
+    /// Rust prints an integral float with its `.0`; Zig does not.
+    fn debugNumber(a: std.mem.Allocator, n: f64) []const u8 {
+        if (std.math.isNan(n)) return "NaN";
+        if (std.math.isInf(n)) return if (n > 0) "inf" else "-inf";
+        const s = std.fmt.allocPrint(a, "{d}", .{n}) catch return "0.0";
+        if (std.mem.indexOfAny(u8, s, ".eE") != null) return s;
+        return std.fmt.allocPrint(a, "{s}.0", .{s}) catch s;
+    }
+};

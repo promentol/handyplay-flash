@@ -14,6 +14,7 @@ const strings = @import("string.zig");
 const value_mod = @import("value.zig");
 const object_mod = @import("object.zig");
 const opcodes = @import("opcodes.zig");
+pub const external = @import("../external.zig");
 
 pub const Value = value_mod.Value;
 pub const ObjectHandle = value_mod.ObjectHandle;
@@ -78,6 +79,15 @@ pub const Host = struct {
 /// One entry of `FileReference.browse`'s filter argument. Only the
 /// description is load-bearing here: the test backend keys its simulated
 /// selection on it.
+/// One `ExternalInterface.addCallback` registration: the host calls it
+/// by NAME, and it runs with the `this` the script chose, not the movie.
+pub const ExternalCallback = struct {
+    /// UTF-8, owned by the VM arena.
+    name: []const u8,
+    this: Value,
+    method: ObjectHandle,
+};
+
 pub const FileFilter = struct {
     description: []const u8,
     extension: []const u8,
@@ -487,6 +497,14 @@ pub const Vm = struct {
     screen_height: u32 = 1080,
     use_codepage: bool = false,
     exact_settings: bool = true,
+    /// The host's end of `ExternalInterface`. Its presence IS
+    /// `ExternalInterface.available` — a movie with nothing to call out
+    /// to reports false and `call` answers null without asking anybody.
+    external_call: ?external.CallFn = null,
+    external_user: ?*anyopaque = null,
+    /// What `addCallback` registered, for the host to call back INTO.
+    /// A name registered twice keeps the newer function.
+    external_callbacks: std.ArrayList(ExternalCallback) = .empty,
     /// `FileAttributes.UseNetwork` — the only thing that separates the two
     /// local sandboxes.
     use_network_sandbox: bool = false,

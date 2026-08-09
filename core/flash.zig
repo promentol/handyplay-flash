@@ -5,6 +5,7 @@
 const std = @import("std");
 
 pub const swf = @import("swf/swf.zig");
+pub const external = @import("external.zig");
 
 pub const avm1 = struct {
     pub const opcodes = @import("avm1/opcodes.zig");
@@ -161,6 +162,10 @@ pub const Player = struct {
     dialog_user: ?*anyopaque = null,
     /// FileReference dialogs awaiting the end of the tick.
     pending_dialogs: std.ArrayList(avm1.runtime.FileDialogRequest) = .empty,
+    /// The host's `ExternalInterface` end, reached through a thunk that
+    /// hands the Player back (see `externalThunk`).
+    external_call: ?ExternalCallFn = null,
+    external_user: ?*anyopaque = null,
     /// The bytes behind each picked FileReference, for `upload`. Keyed by
     /// the script object, so a reference that is browsed twice replaces
     /// its own contents.
@@ -222,6 +227,14 @@ pub const Player = struct {
         open_multi_dialog: ?*const fn (user: ?*anyopaque, filters: []const avm1.runtime.FileFilter) ?[]const DialogFile = null,
         save_dialog: ?*const fn (user: ?*anyopaque, name: []const u8) ?DialogFile = null,
         dialog_user: ?*anyopaque = null,
+        /// The other end of `ExternalInterface`. Wiring one up is what
+        /// makes `ExternalInterface.available` true, so a frontend with
+        /// nothing to expose leaves it null and the class stays inert.
+        /// The Player is handed back because a host that calls out is
+        /// usually about to call back IN, and frame 1 runs before
+        /// `createWith` has returned a pointer to hold on to.
+        external_call: ?ExternalCallFn = null,
+        external_user: ?*anyopaque = null,
     };
 
     /// A file the host's dialog picked.
@@ -292,6 +305,12 @@ pub const Player = struct {
         self.open_multi_dialog = opts.open_multi_dialog;
         self.save_dialog = opts.save_dialog;
         self.dialog_user = opts.dialog_user;
+        self.external_call = opts.external_call;
+        self.external_user = opts.external_user;
+        if (opts.external_call != null) {
+            self.vm.external_call = externalThunk;
+            self.vm.external_user = @ptrCast(self);
+        }
         // The ROOT consumes instance0 without keeping it: ruffle runs
         // post_instantiation (which names it) and only then
         // set_default_root_name, which blanks the name again for AVM1
@@ -2295,6 +2314,40 @@ pub const Player = struct {
     }
     pub fn currentFrame(self: *const Player) u16 {
         return self.root.current_frame;
+    }
+
+    /// A host's answer to `ExternalInterface.call`, with the Player in
+    /// hand so the answer can trace or call straight back in.
+    pub const ExternalCallFn = *const fn (
+        user: ?*anyopaque,
+        player: *Player,
+        name: []const u8,
+        args: []const external.Value,
+    ) external.Value;
+
+    fn externalThunk(user: ?*anyopaque, name: []const u8, args: []const external.Value) external.Value {
+        const self: *Player = @ptrCast(@alignCast(user orelse return .null_value));
+        const f = self.external_call orelse return .null_value;
+        return f(self.external_user, self, name, args);
+    }
+
+    /// The host calling IN through `ExternalInterface`: run whatever the
+    /// movie registered under `name`. Null when nothing did, when the
+    /// callback throws, or when the marshalling gives up.
+    pub fn callExternalInterface(
+        self: *Player,
+        name: []const u8,
+        args: []const external.Value,
+    ) external.Value {
+        return @import("avm1/globals/external.zig").callRegistered(self.vm, name, args) catch .null_value;
+    }
+
+    /// Trace a line the way the movie's own `trace()` does — the bridge's
+    /// host end shares the sink, which is how the corpus records both
+    /// sides of a call in one stream.
+    pub fn traceUtf8(self: *Player, line: []const u8) void {
+        const wide = avm1.strings.fromSwf(self.vm.arena(), line, 8) catch return;
+        self.vm.traceLine(wide) catch {};
     }
     pub fn totalFrames(self: *const Player) u16 {
         return self.root.totalFrames();

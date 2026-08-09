@@ -20,6 +20,7 @@ const value_mod = @import("../value.zig");
 const runtime = @import("../runtime.zig");
 const object_mod = @import("../object.zig");
 const decl = @import("decl.zig");
+const ext = @import("../../external.zig");
 
 const Value = value_mod.Value;
 const Vm = runtime.Vm;
@@ -55,7 +56,7 @@ pub fn install(vm: *Vm, flash: ObjectHandle) !void {
     try decl.method(vm, ctor, "_jsQuoteString", jsQuoteString, frozen8);
     try decl.method(vm, ctor, "_useSetReturnValueHack", undefinedFn, frozen8);
     try decl.property(vm, ctor, "available", getAvailable, null, frozen8);
-    try decl.method(vm, ctor, "addCallback", falseFn, frozen8);
+    try decl.method(vm, ctor, "addCallback", addCallback, frozen8);
     try decl.method(vm, ctor, "call", callFn, decl.frozen);
     try decl.method(vm, ctor, "_callIn", undefinedFn, frozen8);
     try decl.method(vm, ctor, "_arrayToXML", arrayToXml, frozen8);
@@ -91,20 +92,156 @@ fn falseFn(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return .{ .boolean = false };
 }
 
-/// There is no browser here, so the bridge is never available and `call`
-/// answers null without asking anybody.
+/// The bridge is available exactly when the host wired one up. With no
+/// host there is nothing to call out to: `available` is false, `call`
+/// answers null without asking anybody, and `addCallback` refuses.
 fn getAvailable(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = p;
     _ = this;
     _ = args;
-    return .{ .boolean = false };
+    return .{ .boolean = vmOf(p).external_call != null };
 }
 
-fn callFn(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = p;
+/// `addCallback(name, this, method)` — the host's way IN. All three
+/// arguments are required and the third must be an object; anything else
+/// is a false, not an error.
+fn addCallback(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
-    _ = args;
-    return .null_value;
+    const vm = vmOf(p);
+    if (vm.external_call == null or args.len < 3) return .{ .boolean = false };
+    if (args[2] != .object) return .{ .boolean = false };
+    const name = try strings.toUtf8(vm.arena(), try vm.toStringValue(args[0]));
+    for (vm.external_callbacks.items) |*cb| {
+        if (std.mem.eql(u8, cb.name, name)) {
+            cb.this = args[1];
+            cb.method = args[2].object;
+            return .{ .boolean = true };
+        }
+    }
+    try vm.external_callbacks.append(vm.gpa, .{
+        .name = name,
+        .this = args[1],
+        .method = args[2].object,
+    });
+    return .{ .boolean = true };
+}
+
+/// `call(name, ...args)` — the host's way OUT. The arguments are
+/// flattened on the way over and the answer is rebuilt on the way back.
+fn callFn(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    const host = vm.external_call orelse return .null_value;
+    const a = vm.arena();
+    const name = try strings.toUtf8(a, try vm.toStringValue(arg(args, 0)));
+    var out: std.ArrayList(ext.Value) = .empty;
+    if (args.len > 1) {
+        for (args[1..]) |v| try out.append(a, try toExternal(vm, v, 0));
+    }
+    return fromExternal(vm, host(vm.external_user, name, out.items));
+}
+
+// --- marshalling -----------------------------------------------------------
+
+/// AVM1 → the flat form. A clip is NULL however it was reached — the
+/// other side has no display list to point at (ruffle external.rs
+/// `from_avm1`).
+pub fn toExternal(vm: *Vm, v: Value, depth: u32) anyerror!ext.Value {
+    if (depth > 32) return .undefined_value;
+    const a = vm.arena();
+    return switch (v) {
+        .undefined_value => .undefined_value,
+        .null_value => .null_value,
+        .boolean => |b| .{ .boolean = b },
+        .number => |n| .{ .number = n },
+        .string => |s| .{ .string = try strings.toUtf8(a, s) },
+        .object => |h| blk: {
+            const native = vm.objects.get(h).native;
+            if (native == .clip or native == .display or native == .removed_display) {
+                break :blk .null_value;
+            }
+            if (native == .array) {
+                const n = vm.arrayLength(h);
+                var items: std.ArrayList(ext.Value) = .empty;
+                var i: u32 = 0;
+                while (i < n) : (i += 1) {
+                    const el = vm.getProperty(h, try indexName(vm, i), v) catch Value.undefined_value;
+                    try items.append(a, try toExternal(vm, el, depth + 1));
+                }
+                break :blk .{ .list = items.items };
+            }
+            var keys: std.ArrayList(strings.AvmString) = .empty;
+            try @import("loader.zig").enumKeys(vm, h, &keys);
+            var pairs: std.ArrayList(ext.Pair) = .empty;
+            for (keys.items) |k| {
+                const val = vm.getProperty(h, k, v) catch Value.undefined_value;
+                try pairs.append(a, .{
+                    .key = try strings.toUtf8(a, k),
+                    .value = try toExternal(vm, val, depth + 1),
+                });
+            }
+            // A map on the other side, so the keys arrive in THEIR order.
+            std.mem.sort(ext.Pair, pairs.items, {}, ext.lessThanKey);
+            break :blk .{ .object = pairs.items };
+        },
+    };
+}
+
+/// The flat form → AVM1. The one surprise is the empty string: below
+/// SWF9 a string that is nothing but whitespace crosses as the four
+/// letters "null" (ruffle external.rs `into_avm1`).
+pub fn fromExternal(vm: *Vm, v: ext.Value) anyerror!Value {
+    const a = vm.arena();
+    switch (v) {
+        .undefined_value => return .undefined_value,
+        .null_value => return .null_value,
+        .boolean => |b| return .{ .boolean = b },
+        .number => |n| return .{ .number = n },
+        .string => |s| {
+            const blank = std.mem.trim(u8, s, " \t\n\r").len == 0;
+            const text = if (vm.swf_version < 9 and blank) "null" else s;
+            return .{ .string = try strings.fromSwf(a, text, 8) };
+        },
+        .object => |pairs| {
+            const h = try vm.newObject();
+            for (pairs) |pair| {
+                const key = try strings.fromSwf(a, pair.key, 8);
+                try vm.setProperty(h, key, try fromExternal(vm, pair.value), .{ .object = h });
+            }
+            return .{ .object = h };
+        },
+        .list => |items| {
+            const h = try vm.newArray();
+            for (items, 0..) |item, i| {
+                const key = try indexName(vm, @intCast(i));
+                try vm.setProperty(h, key, try fromExternal(vm, item), .{ .object = h });
+            }
+            return .{ .object = h };
+        },
+    }
+}
+
+fn indexName(vm: *Vm, i: u32) !AvmString {
+    var buf: [12]u8 = undefined;
+    return strings.fromSwf(vm.arena(), std.fmt.bufPrint(&buf, "{d}", .{i}) catch "0", 8);
+}
+
+/// The host calling IN: run the callback registered under `name` with
+/// flattened arguments, and flatten what it returns. An unknown name —
+/// or a callback that throws — is null, as ruffle's `Callback::call` is.
+pub fn callRegistered(vm: *Vm, name: []const u8, args: []const ext.Value) anyerror!ext.Value {
+    var found: ?runtime.ExternalCallback = null;
+    for (vm.external_callbacks.items) |cb| {
+        if (std.mem.eql(u8, cb.name, name)) found = cb;
+    }
+    const cb = found orelse return .null_value;
+    const a = vm.arena();
+    var avm_args: std.ArrayList(Value) = .empty;
+    for (args) |v| try avm_args.append(a, try fromExternal(vm, v));
+    const result = vm.callFunction(.{ .object = cb.method }, cb.this, avm_args.items) catch {
+        vm.pending_throw = .undefined_value;
+        return .null_value;
+    };
+    return toExternal(vm, result, 0);
 }
 
 // --- the string helpers ----------------------------------------------------

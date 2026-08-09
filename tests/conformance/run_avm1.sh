@@ -56,6 +56,14 @@ log_fetch_for() {
     grep -q '^log_fetch *= *true' "$CORPUS/$1/test.toml" 2>/dev/null && echo "--log-fetch"
 }
 
+# The `external_interface` dir has no test.toml because ruffle drives it
+# from a bespoke Rust test (tests/tests/external_interface/tests.rs) that
+# installs a provider and then calls INTO the movie. `--external-interface`
+# is that test, reimplemented in the runner.
+external_for() {
+    [ "$1" = "external_interface" ] && echo "--external-interface"
+}
+
 # socket.json — the scripted far end of an XMLSocket.
 socket_for() {
     [ -f "$CORPUS/$1/socket.json" ] && echo "--socket $CORPUS/$1/socket.json"
@@ -157,7 +165,7 @@ run_one() {
     # normalizes them (framework/src/runner/trace.rs:14), so we must too.
     exp="$TMP.exp"; tr -d '\r' <"$CORPUS/$d/output.txt" >"$exp"
     # shellcheck disable=SC2086
-    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") $(device_font_for "$d") $(log_fetch_for "$d") $(socket_for "$d") >"$TMP" 2>/dev/null || return 1
+    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") $(device_font_for "$d") $(log_fetch_for "$d") $(socket_for "$d") $(external_for "$d") >"$TMP" 2>/dev/null || return 1
     if have_approx "$toml"; then
         # `approx`'s defaults are f64::EPSILON for both knobs.
         approx_cmp "$TMP" "$exp" \
@@ -218,7 +226,7 @@ case "${1:-}" in
     have_approx "$toml" && verdict="$verdict (approximate)"
     # Re-run with stderr merged so panics show up in the diff.
     # shellcheck disable=SC2086
-    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") $(device_font_for "$d") $(log_fetch_for "$d") $(socket_for "$d") >"$TMP" 2>&1
+    "$BIN" "$swf" --frames "$(frames_for "$toml")" $(input_for "$d") $(viewport_for "$d") $(device_font_for "$d") $(log_fetch_for "$d") $(socket_for "$d") $(external_for "$d") >"$TMP" 2>&1
     echo "--- $verdict: ours vs expected ($d):"
     tr -d '\r' <"$CORPUS/$d/output.txt" >"$TMP.exp"
     diff "$TMP" "$TMP.exp" | head -40
