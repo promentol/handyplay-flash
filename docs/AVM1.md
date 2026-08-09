@@ -770,3 +770,37 @@ that loaded it is SWF5.
 included — `Object.prototype.valueOf` returns `this`, so the pointer
 comparison still applies afterwards, but `new Number(1) == new Number(1)`
 comes out TRUE.
+
+### The sweep continued (539 → 545)
+
+**`sandboxType` answers for the running script's own movie**, not the
+root's — a SWF fetched over http reports "remote" inside a local movie.
+
+**A rewind keeps the child it is about to place again.** Ruffle reduces a
+goto's range to one command per depth before applying anything, so a
+`Remove` later refilled at the same depth never happens; replaying tag by
+tag we destroyed and re-created the survivor, and the replacement re-ran
+its first frame. The collapse is deliberately narrow — REWIND only, and
+only when the sitting child is the same character the replay will place.
+
+**`_global` is the last scope a dotted variable path is tried against.**
+Ruffle walks `Scope::ancestors`, which ends at the global scope; our
+chain ends one link earlier, so `a.b.c` gave up once the timeline's own
+`a.b` turned out to be a string instead of finding `_global.a.b.c`.
+
+**A text field's `variable` binding carries HTML both ways.** Writing the
+variable of an html field PARSES it, so `.text` afterwards is the plain
+text. The early return on an unchanged value is ruffle's and is
+observable: not every set of spans round-trips through HTML.
+
+**The per-property recursion budget belongs to the PROPERTY, not to its
+name.** Ruffle keys on `Property::id`, so a getter that deletes and
+re-adds its own property gets a fresh budget every call — and runs on
+until the CALL-DEPTH limit, which kills the whole action rather than
+falling back to the data slot.
+
+**A closure's base clip is a PATH.** Ruffle keeps it as a
+`MovieClipReference`; remove the clip and the closure's `_parent` dies,
+put a clip back at the same path and it revives. A raw handle cannot do
+that. Both readers go through the re-resolution — the activation's own
+base clip and the `preload_parent` register.
