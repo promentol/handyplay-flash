@@ -791,11 +791,16 @@ fn blendModeArg(vm: *Vm, v: Value) !u8 {
 fn colorTransformArg(vm: *Vm, o: ObjectHandle) !ops.ColorTransform {
     var mult: [4]f64 = .{ 1, 1, 1, 1 };
     var add: [4]f64 = .{ 0, 0, 0, 0 };
+    // Through `getProperty`, not a raw slot read: on a real
+    // `flash.geom.ColorTransform` all eight are ACCESSORS on the
+    // prototype and the raw slot holds nothing.
     inline for (.{ "redMultiplier", "greenMultiplier", "blueMultiplier", "alphaMultiplier" }, 0..) |k, i| {
-        if (vm.objects.getChained(o, S(k), vm.case_sensitive)) |v| mult[i] = try vm.toNumber(v);
+        const v = try vm.getProperty(o, S(k), .{ .object = o });
+        if (v != .undefined_value) mult[i] = try vm.toNumber(v);
     }
     inline for (.{ "redOffset", "greenOffset", "blueOffset", "alphaOffset" }, 0..) |k, i| {
-        if (vm.objects.getChained(o, S(k), vm.case_sensitive)) |v| add[i] = try vm.toNumber(v);
+        const v = try vm.getProperty(o, S(k), .{ .object = o });
+        if (v != .undefined_value) add[i] = try vm.toNumber(v);
     }
     return ops.ColorTransform.fromFloats(mult, add);
 }

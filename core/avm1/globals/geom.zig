@@ -55,28 +55,42 @@ pub fn install(vm: *Vm) !void {
     const geom = try decl.subObject(vm, flash, "geom", .{});
 
     vm.point_proto = try protoUnder(vm, geom, "Point", ctorPoint);
-    try method(vm, vm.point_proto, "toString", pointToString, .{});
-    try method(vm, vm.point_proto, "clone", pointClone, .{});
-    try method(vm, vm.point_proto, "equals", pointEquals, .{});
-    try method(vm, vm.point_proto, "offset", pointOffset, .{});
-    try method(vm, vm.point_proto, "add", pointAdd, .{});
-    try method(vm, vm.point_proto, "subtract", pointSubtract, .{});
-    try method(vm, vm.point_proto, "normalize", pointNormalize, .{});
     try decl.property(vm, vm.point_proto, "length", pointLength, null, .{ .read_only = true });
+    try method(vm, vm.point_proto, "clone", pointClone, .{});
+    try method(vm, vm.point_proto, "offset", pointOffset, .{});
+    try method(vm, vm.point_proto, "equals", pointEquals, .{});
+    try method(vm, vm.point_proto, "subtract", pointSubtract, .{});
+    try method(vm, vm.point_proto, "add", pointAdd, .{});
+    try method(vm, vm.point_proto, "normalize", pointNormalize, .{});
+    try method(vm, vm.point_proto, "toString", pointToString, .{});
+    const point_ctor = try ctorOf(vm, vm.point_proto);
+    try method(vm, point_ctor, "distance", pointDistance, .{});
+    try method(vm, point_ctor, "polar", pointPolar, .{});
+    try method(vm, point_ctor, "interpolate", pointInterpolate, .{});
 
     vm.rectangle_proto = try protoUnder(vm, geom, "Rectangle", ctorRectangle);
-    try method(vm, vm.rectangle_proto, "toString", rectToString, .{});
     try method(vm, vm.rectangle_proto, "clone", rectClone, .{});
-    try method(vm, vm.rectangle_proto, "isEmpty", rectIsEmpty, .{});
     try method(vm, vm.rectangle_proto, "setEmpty", rectSetEmpty, .{});
-    try method(vm, vm.rectangle_proto, "equals", rectEquals, .{});
-    try method(vm, vm.rectangle_proto, "contains", rectContains, .{});
-    try method(vm, vm.rectangle_proto, "offset", rectOffset, .{});
-    try method(vm, vm.rectangle_proto, "inflate", rectInflate, .{});
+    try method(vm, vm.rectangle_proto, "isEmpty", rectIsEmpty, .{});
     try decl.property(vm, vm.rectangle_proto, "left", rectGetLeft, rectSetLeft, .{});
-    try decl.property(vm, vm.rectangle_proto, "top", rectGetTop, rectSetTop, .{});
     try decl.property(vm, vm.rectangle_proto, "right", rectGetRight, rectSetRight, .{});
+    try decl.property(vm, vm.rectangle_proto, "top", rectGetTop, rectSetTop, .{});
     try decl.property(vm, vm.rectangle_proto, "bottom", rectGetBottom, rectSetBottom, .{});
+    try decl.property(vm, vm.rectangle_proto, "topLeft", rectGetTopLeft, rectSetTopLeft, .{});
+    try decl.property(vm, vm.rectangle_proto, "bottomRight", rectGetBottomRight, rectSetBottomRight, .{});
+    try decl.property(vm, vm.rectangle_proto, "size", rectGetSize, rectSetSize, .{});
+    try method(vm, vm.rectangle_proto, "inflate", rectInflate, .{});
+    try method(vm, vm.rectangle_proto, "inflatePoint", rectInflatePoint, .{});
+    try method(vm, vm.rectangle_proto, "offset", rectOffset, .{});
+    try method(vm, vm.rectangle_proto, "offsetPoint", rectOffsetPoint, .{});
+    try method(vm, vm.rectangle_proto, "contains", rectContains, .{});
+    try method(vm, vm.rectangle_proto, "containsPoint", rectContainsPoint, .{});
+    try method(vm, vm.rectangle_proto, "containsRectangle", rectContainsRectangle, .{});
+    try method(vm, vm.rectangle_proto, "intersection", rectIntersection, .{});
+    try method(vm, vm.rectangle_proto, "intersects", rectIntersects, .{});
+    try method(vm, vm.rectangle_proto, "union", rectUnion, .{});
+    try method(vm, vm.rectangle_proto, "equals", rectEquals, .{});
+    try method(vm, vm.rectangle_proto, "toString", rectToString, .{});
 
     vm.matrix_proto = try protoUnder(vm, geom, "Matrix", ctorMatrix);
     try method(vm, vm.matrix_proto, "toString", matrixToString, .{});
@@ -87,13 +101,23 @@ pub fn install(vm: *Vm) !void {
     try method(vm, vm.matrix_proto, "translate", matrixTranslate, .{});
     try method(vm, vm.matrix_proto, "scale", matrixScale, .{});
     try method(vm, vm.matrix_proto, "rotate", matrixRotate, .{});
+    try method(vm, vm.matrix_proto, "createBox", matrixCreateBox, .{});
+    try method(vm, vm.matrix_proto, "createGradientBox", matrixCreateGradientBox, .{});
     try method(vm, vm.matrix_proto, "transformPoint", matrixTransformPoint, .{});
     try method(vm, vm.matrix_proto, "deltaTransformPoint", matrixDeltaTransformPoint, .{});
 
+    // DECLARATION ORDER IS OBSERVABLE. Every one of the eight components
+    // is a virtual property on the PROTOTYPE, not a field on the instance
+    // — `for (var k in ColorTransform.prototype)` walks all eleven, and
+    // AVM1 enumerates newest-first, so this list is ruffle's read
+    // backwards (corpus color_transform).
     vm.colortransform_proto = try protoUnder(vm, geom, "ColorTransform", ctorColorTransform);
-    try method(vm, vm.colortransform_proto, "toString", ctToString, .{});
-    try method(vm, vm.colortransform_proto, "concat", ctConcat, .{});
+    inline for (CT_DECL_ORDER) |i| {
+        try decl.property(vm, vm.colortransform_proto, CT_KEYS[i], CT_GETTERS[i], CT_SETTERS[i], .{});
+    }
     try decl.property(vm, vm.colortransform_proto, "rgb", ctGetRgb, ctSetRgb, .{});
+    try method(vm, vm.colortransform_proto, "concat", ctConcat, .{});
+    try method(vm, vm.colortransform_proto, "toString", ctToString, .{});
 
     vm.transform_proto = try protoUnder(vm, geom, "Transform", ctorTransform);
     try decl.property(vm, vm.transform_proto, "matrix", trGetMatrix, trSetMatrix, decl.ver(.{}, decl.V8));
@@ -119,10 +143,24 @@ fn protoUnder(
     return proto;
 }
 
+/// The constructor a prototype was installed with.
+fn ctorOf(vm: *Vm, proto: ObjectHandle) !ObjectHandle {
+    const v = vm.objects.getOwn(proto, S("constructor"), vm.case_sensitive) orelse
+        unreachable;
+    return v.object;
+}
+
 // --- small helpers -------------------------------------------------------------
 
 fn numArg(vm: *Vm, args: []const Value, i: usize) !f64 {
     if (i >= args.len) return 0;
+    return vm.toNumber(args[i]);
+}
+
+/// Like `numArg`, but a MISSING argument is undefined → NaN, not zero.
+/// The geom classes almost all take this reading.
+fn numArgNan(vm: *Vm, args: []const Value, i: usize) !f64 {
+    if (i >= args.len) return std.math.nan(f64);
     return vm.toNumber(args[i]);
 }
 
@@ -159,20 +197,45 @@ fn formatFields(
 
 // --- Point ----------------------------------------------------------------------
 
+/// Every Point is built by CALLING the constructor, so the property
+/// insertion order (`y` then `x`) is the same wherever it comes from.
 pub fn newPoint(vm: *Vm, x: f64, y: f64) !Value {
+    return pointFrom(vm, &.{ .{ .number = x }, .{ .number = y } });
+}
+
+fn pointFrom(vm: *Vm, args: []const Value) !Value {
     const h = try vm.objects.create();
     vm.objects.get(h).proto = .{ .object = vm.point_proto };
-    try setNum(vm, h, "x", x);
-    try setNum(vm, h, "y", y);
+    _ = try ctorPoint(@ptrCast(vm), .{ .object = h }, args);
     return .{ .object = h };
 }
 
+/// The arguments are stored VERBATIM — `new Point(1)` leaves `y`
+/// undefined, and `new Point({}, 2)` keeps the object. Only the
+/// zero-argument form fills in numbers. `y` goes in first, which is what
+/// `for (var k in pt)` reports (corpus point).
 fn ctorPoint(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    try setNum(vm, this.object, "x", try numArg(vm, args, 0));
-    try setNum(vm, this.object, "y", try numArg(vm, args, 1));
+    if (args.len == 0) {
+        try vm.setProperty(this.object, S("y"), .{ .number = 0 }, this);
+        try vm.setProperty(this.object, S("x"), .{ .number = 0 }, this);
+    } else {
+        try vm.setProperty(this.object, S("y"), arg(args, 1), this);
+        try vm.setProperty(this.object, S("x"), arg(args, 0), this);
+    }
     return this;
+}
+
+/// `{x, y}` read off any object as numbers. A non-object (or a missing
+/// component) yields NaN, which then poisons the arithmetic — that is the
+/// documented result, not a defaulted zero.
+fn valueToPoint(vm: *Vm, v: Value) ![2]f64 {
+    if (v != .object) return .{ std.math.nan(f64), std.math.nan(f64) };
+    return .{
+        try getNum(vm, v.object, "x"),
+        try getNum(vm, v.object, "y"),
+    };
 }
 
 fn pointToString(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -185,22 +248,32 @@ fn pointClone(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    return newPoint(vm, try getNum(vm, this.object, "x"), try getNum(vm, this.object, "y"));
+    return pointFrom(vm, &.{
+        try vm.getProperty(this.object, S("x"), this),
+        try vm.getProperty(this.object, S("y"), this),
+    });
 }
 
+/// Component-wise VALUE equality, not numeric: two undefined components
+/// are equal, and `"1"` never equals `1`.
 fn pointEquals(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
+    if (this != .object or args.len == 0) return .{ .boolean = false };
     const other = arg(args, 0);
-    if (this != .object or other != .object) return .{ .boolean = false };
-    return .{ .boolean = (try getNum(vm, this.object, "x")) == (try getNum(vm, other.object, "x")) and
-        (try getNum(vm, this.object, "y")) == (try getNum(vm, other.object, "y")) };
+    if (other != .object) return .{ .boolean = false };
+    const ax = try vm.getProperty(this.object, S("x"), this);
+    const ay = try vm.getProperty(this.object, S("y"), this);
+    const bx = try vm.getProperty(other.object, S("x"), other);
+    const by = try vm.getProperty(other.object, S("y"), other);
+    return .{ .boolean = vm.strictEquals(ax, bx) and vm.strictEquals(ay, by) };
 }
 
 fn pointOffset(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    try setNum(vm, this.object, "x", (try getNum(vm, this.object, "x")) + (try numArg(vm, args, 0)));
-    try setNum(vm, this.object, "y", (try getNum(vm, this.object, "y")) + (try numArg(vm, args, 1)));
+    const pt = try valueToPoint(vm, this);
+    try setNum(vm, this.object, "x", pt[0] + try numArgNan(vm, args, 0));
+    try setNum(vm, this.object, "y", pt[1] + try numArgNan(vm, args, 1));
     return .undefined_value;
 }
 
@@ -215,64 +288,126 @@ fn pointSubtract(p: *anyopaque, this: Value, args: []const Value) anyerror!Value
 fn pointCombine(p: *anyopaque, this: Value, args: []const Value, sign: f64) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    const other = arg(args, 0);
-    var ox: f64 = 0;
-    var oy: f64 = 0;
-    if (other == .object) {
-        ox = try getNum(vm, other.object, "x");
-        oy = try getNum(vm, other.object, "y");
-    }
-    return newPoint(
-        vm,
-        (try getNum(vm, this.object, "x")) + sign * ox,
-        (try getNum(vm, this.object, "y")) + sign * oy,
-    );
+    const a = try valueToPoint(vm, this);
+    const b = try valueToPoint(vm, arg(args, 0));
+    return newPoint(vm, a[0] + sign * b[0], a[1] + sign * b[1]);
 }
 
 fn pointLength(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    const x = try getNum(vm, this.object, "x");
-    const y = try getNum(vm, this.object, "y");
-    return .{ .number = @sqrt(x * x + y * y) };
+    const pt = try valueToPoint(vm, this);
+    return .{ .number = @sqrt(pt[0] * pt[0] + pt[1] * pt[1]) };
 }
 
-/// Scale the point to the given length. A zero-length point cannot be
-/// pointed anywhere, so it is left alone.
+/// Scale the point to the given length. A zero-length point has no
+/// direction, so Flash MULTIPLIES instead of dividing — both components
+/// stay zero rather than becoming NaN. An infinite length does nothing.
 fn pointNormalize(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    const x = try getNum(vm, this.object, "x");
-    const y = try getNum(vm, this.object, "y");
-    const len = @sqrt(x * x + y * y);
-    if (len == 0) return .undefined_value;
-    const target = try numArg(vm, args, 0);
-    try setNum(vm, this.object, "x", x * target / len);
-    try setNum(vm, this.object, "y", y * target / len);
+    const cur: f64 = try vm.toNumber(try vm.getProperty(this.object, S("length"), this));
+    if (!std.math.isFinite(cur)) return .undefined_value;
+    const pt = try valueToPoint(vm, this);
+    const target = try numArgNan(vm, args, 0);
+    const x = if (cur == 0) pt[0] * target else pt[0] / cur * target;
+    const y = if (cur == 0) pt[1] * target else pt[1] / cur * target;
+    try setNum(vm, this.object, "x", x);
+    try setNum(vm, this.object, "y", y);
     return .undefined_value;
+}
+
+/// `Point.distance(a, b)` is defined as `a.subtract(b).length` — it goes
+/// through the SCRIPT method, so a plain `{x, y}` object with no
+/// `subtract` returns undefined rather than a number.
+fn pointDistance(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    if (args.len < 2) return .{ .number = std.math.nan(f64) };
+    const a = arg(args, 0);
+    if (a != .object) return .undefined_value;
+    const sub = try vm.getProperty(a.object, S("subtract"), a);
+    if (!vm.isCallable(sub)) return .undefined_value;
+    const delta = try vm.callFunction(sub, a, args[1..2]);
+    if (delta != .object) return .undefined_value;
+    return vm.getProperty(delta.object, S("length"), delta);
+}
+
+fn pointPolar(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    const len = try numArgNan(vm, args, 0);
+    const angle = try numArgNan(vm, args, 1);
+    return newPoint(vm, len * @cos(angle), len * @sin(angle));
+}
+
+/// Note the direction: `f = 0` is the SECOND point, `f = 1` the first.
+fn pointInterpolate(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    if (args.len < 3) return newPoint(vm, std.math.nan(f64), std.math.nan(f64));
+    const a = try valueToPoint(vm, arg(args, 0));
+    const b = try valueToPoint(vm, arg(args, 1));
+    const f = try numArgNan(vm, args, 2);
+    return newPoint(vm, b[0] - (b[0] - a[0]) * f, b[1] - (b[1] - a[1]) * f);
 }
 
 // --- Rectangle --------------------------------------------------------------------
 
+/// Every Rectangle is built by CALLING the constructor, so its four
+/// properties always land in the same order.
 pub fn newRectangle(vm: *Vm, x: f64, y: f64, w: f64, h: f64) !Value {
+    return rectFrom(vm, &.{
+        .{ .number = x }, .{ .number = y }, .{ .number = w }, .{ .number = h },
+    });
+}
+
+fn rectFrom(vm: *Vm, args: []const Value) !Value {
     const o = try vm.objects.create();
     vm.objects.get(o).proto = .{ .object = vm.rectangle_proto };
-    try setNum(vm, o, "x", x);
-    try setNum(vm, o, "y", y);
-    try setNum(vm, o, "width", w);
-    try setNum(vm, o, "height", h);
+    _ = try ctorRectangle(@ptrCast(vm), .{ .object = o }, args);
     return .{ .object = o };
 }
 
+/// Verbatim arguments again — `new Rectangle(1)` has a numeric `x` and
+/// three undefined components, and every derived reading (`right`,
+/// `size`, `isEmpty`) then reports NaN rather than pretending zero.
 fn ctorRectangle(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    try setNum(vm, this.object, "x", try numArg(vm, args, 0));
-    try setNum(vm, this.object, "y", try numArg(vm, args, 1));
-    try setNum(vm, this.object, "width", try numArg(vm, args, 2));
-    try setNum(vm, this.object, "height", try numArg(vm, args, 3));
+    if (args.len == 0) {
+        inline for (.{ "height", "width", "y", "x" }) |k| {
+            try vm.setProperty(this.object, S(k), .{ .number = 0 }, this);
+        }
+    } else {
+        inline for (.{ "x", "y", "width", "height" }, 0..) |k, i| {
+            try vm.setProperty(this.object, S(k), arg(args, i), this);
+        }
+    }
     return this;
+}
+
+/// The four stored components as numbers.
+const Rect = struct { x: f64, y: f64, w: f64, h: f64 };
+
+fn rectOf(vm: *Vm, h: ObjectHandle) !Rect {
+    return .{
+        .x = try getNum(vm, h, "x"),
+        .y = try getNum(vm, h, "y"),
+        .w = try getNum(vm, h, "width"),
+        .h = try getNum(vm, h, "height"),
+    };
+}
+
+/// The same four read off an ARGUMENT: anything that is not an object at
+/// all reads as NaN throughout.
+fn rectArg(vm: *Vm, v: Value) !Rect {
+    if (v != .object) {
+        const nan = std.math.nan(f64);
+        return .{ .x = nan, .y = nan, .w = nan, .h = nan };
+    }
+    return rectOf(vm, v.object);
 }
 
 fn rectToString(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -290,22 +425,21 @@ fn rectClone(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    return newRectangle(
-        vm,
-        try getNum(vm, this.object, "x"),
-        try getNum(vm, this.object, "y"),
-        try getNum(vm, this.object, "width"),
-        try getNum(vm, this.object, "height"),
-    );
+    var vals: [4]Value = undefined;
+    inline for (.{ "x", "y", "width", "height" }, 0..) |k, i| {
+        vals[i] = try vm.getProperty(this.object, S(k), this);
+    }
+    return rectFrom(vm, &vals);
 }
 
+/// A NaN dimension counts as empty, which is how a partly-built
+/// rectangle reports itself.
 fn rectIsEmpty(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    const w = try getNum(vm, this.object, "width");
-    const h = try getNum(vm, this.object, "height");
-    return .{ .boolean = !(w > 0 and h > 0) };
+    const r = try rectOf(vm, this.object);
+    return .{ .boolean = r.w <= 0 or r.h <= 0 or std.math.isNan(r.w) or std.math.isNan(r.h) };
 }
 
 fn rectSetEmpty(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -316,102 +450,304 @@ fn rectSetEmpty(p: *anyopaque, this: Value, args: []const Value) anyerror!Value 
     return .undefined_value;
 }
 
+/// Component-wise VALUE equality, and the other side must actually be a
+/// Rectangle — a matching `{x, y, width, height}` is not equal to one.
 fn rectEquals(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     const other = arg(args, 0);
     if (this != .object or other != .object) return .{ .boolean = false };
     inline for (.{ "x", "y", "width", "height" }) |k| {
-        if ((try getNum(vm, this.object, k)) != (try getNum(vm, other.object, k))) {
-            return .{ .boolean = false };
-        }
+        const a = try vm.getProperty(this.object, S(k), this);
+        const b = try vm.getProperty(other.object, S(k), other);
+        if (!vm.strictEquals(a, b)) return .{ .boolean = false };
     }
-    return .{ .boolean = true };
+    // …and the other side must BE a Rectangle: a plain object with the
+    // same four numbers is not equal to one.
+    var cur = vm.objects.get(other.object).proto;
+    var depth: u32 = 0;
+    while (cur == .object and depth < 256) : (depth += 1) {
+        if (cur.object == vm.rectangle_proto) return .{ .boolean = true };
+        cur = vm.objects.get(cur.object).proto;
+    }
+    return .{ .boolean = false };
 }
 
 fn rectContains(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    const x = try numArg(vm, args, 0);
-    const y = try numArg(vm, args, 1);
-    const rx = try getNum(vm, this.object, "x");
-    const ry = try getNum(vm, this.object, "y");
-    return .{ .boolean = x >= rx and y >= ry and
-        x < rx + (try getNum(vm, this.object, "width")) and
-        y < ry + (try getNum(vm, this.object, "height")) };
+    return containsXY(vm, this.object, try numArgNan(vm, args, 0), try numArgNan(vm, args, 1));
+}
+
+fn rectContainsPoint(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const pt = try valueToPoint(vm, arg(args, 0));
+    return containsXY(vm, this.object, pt[0], pt[1]);
+}
+
+fn containsXY(vm: *Vm, h: ObjectHandle, x: f64, y: f64) !Value {
+    if (std.math.isNan(x) or std.math.isNan(y)) return .undefined_value;
+    const r = try rectOf(vm, h);
+    return .{ .boolean = x >= r.x and x < r.x + r.w and y >= r.y and y < r.y + r.h };
+}
+
+fn rectContainsRectangle(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const other = arg(args, 0);
+    if (this != .object or other != .object) return .undefined_value;
+    const a = try rectOf(vm, this.object);
+    const b = try rectOf(vm, other.object);
+    if (std.math.isNan(b.x) or std.math.isNan(b.y) or
+        std.math.isNan(b.x + b.w) or std.math.isNan(b.y + b.h)) return .undefined_value;
+    return .{ .boolean = b.x >= a.x and b.x + b.w <= a.x + a.w and
+        b.y >= a.y and b.y + b.h <= a.y + a.h };
+}
+
+fn rectIntersects(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const other = arg(args, 0);
+    if (this != .object or other != .object) return .{ .boolean = false };
+    const a = try rectOf(vm, this.object);
+    const b = try rectOf(vm, other.object);
+    return .{ .boolean = a.x < b.x + b.w and a.x + a.w > b.x and
+        a.y < b.y + b.h and a.y + a.h > b.y };
+}
+
+/// NaN is CONTAGIOUS here rather than ignored: if either edge is NaN the
+/// union edge is NaN, this side first.
+fn rectUnion(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const a = try rectOf(vm, this.object);
+    const b = try rectArg(vm, arg(args, 0));
+    const left = nanFirst(a.x, b.x, false);
+    const top = nanFirst(a.y, b.y, false);
+    const right = nanFirst(a.x + a.w, b.x + b.w, true);
+    const bottom = nanFirst(a.y + a.h, b.y + b.h, true);
+    return newRectangle(vm, left, top, right - left, bottom - top);
+}
+
+fn nanFirst(a: f64, b: f64, take_max: bool) f64 {
+    if (std.math.isNan(a)) return a;
+    if (std.math.isNan(b)) return b;
+    return if (take_max) @max(a, b) else @min(a, b);
+}
+
+/// Any NaN anywhere collapses the intersection to the empty rectangle,
+/// as does a non-overlap.
+fn rectIntersection(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const a = try rectOf(vm, this.object);
+    const b = try rectArg(vm, arg(args, 0));
+    // The NaN test is on the INPUTS: `@max` quietly ignores a NaN
+    // operand, so testing the result would let a missing argument
+    // through as "the whole of this rectangle".
+    const bad = for ([_]f64{
+        a.x, a.y, a.x + a.w, a.y + a.h, b.x, b.y, b.x + b.w, b.y + b.h,
+    }) |v| {
+        if (std.math.isNan(v)) break true;
+    } else false;
+    var left = @max(a.x, b.x);
+    var top = @max(a.y, b.y);
+    var right = @min(a.x + a.w, b.x + b.w);
+    var bottom = @min(a.y + a.h, b.y + b.h);
+    if (bad or right <= left or bottom <= top) {
+        left = 0;
+        top = 0;
+        right = 0;
+        bottom = 0;
+    }
+    return newRectangle(vm, left, top, right - left, bottom - top);
 }
 
 fn rectOffset(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    try setNum(vm, this.object, "x", (try getNum(vm, this.object, "x")) + (try numArg(vm, args, 0)));
-    try setNum(vm, this.object, "y", (try getNum(vm, this.object, "y")) + (try numArg(vm, args, 1)));
+    return offsetBy(vm, this.object, try numArgNan(vm, args, 0), try numArgNan(vm, args, 1));
+}
+
+fn rectOffsetPoint(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const pt = try valueToPoint(vm, arg(args, 0));
+    return offsetBy(vm, this.object, pt[0], pt[1]);
+}
+
+fn offsetBy(vm: *Vm, h: ObjectHandle, dx: f64, dy: f64) !Value {
+    const r = try rectOf(vm, h);
+    try setNum(vm, h, "x", r.x + dx);
+    try setNum(vm, h, "y", r.y + dy);
     return .undefined_value;
 }
 
 fn rectInflate(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    const dx = try numArg(vm, args, 0);
-    const dy = try numArg(vm, args, 1);
-    try setNum(vm, this.object, "x", (try getNum(vm, this.object, "x")) - dx);
-    try setNum(vm, this.object, "y", (try getNum(vm, this.object, "y")) - dy);
-    try setNum(vm, this.object, "width", (try getNum(vm, this.object, "width")) + 2 * dx);
-    try setNum(vm, this.object, "height", (try getNum(vm, this.object, "height")) + 2 * dy);
+    return inflateBy(vm, this.object, try numArgNan(vm, args, 0), try numArgNan(vm, args, 1));
+}
+
+fn rectInflatePoint(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const pt = try valueToPoint(vm, arg(args, 0));
+    return inflateBy(vm, this.object, pt[0], pt[1]);
+}
+
+fn inflateBy(vm: *Vm, h: ObjectHandle, dx: f64, dy: f64) !Value {
+    const r = try rectOf(vm, h);
+    try setNum(vm, h, "x", r.x - dx);
+    try setNum(vm, h, "y", r.y - dy);
+    try setNum(vm, h, "width", r.w + dx * 2);
+    try setNum(vm, h, "height", r.h + dy * 2);
     return .undefined_value;
 }
 
+/// `left` and `top` are ALIASES for `x` and `y` that keep the opposite
+/// edge fixed: moving the left edge changes the width to compensate.
+/// They pass the new value through verbatim, so assigning a string
+/// leaves `x` a string while `width` goes NaN.
 fn rectGetLeft(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
-    return .{ .number = try getNum(vmOf(p), this.object, "x") };
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    return vm.getProperty(this.object, S("x"), this);
 }
 
-/// Moving an edge keeps the OPPOSITE edge fixed, so the size changes.
 fn rectSetLeft(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    const v = try numArg(vm, args, 0);
-    const right = (try getNum(vm, this.object, "x")) + (try getNum(vm, this.object, "width"));
-    try setNum(vm, this.object, "x", v);
-    try setNum(vm, this.object, "width", right - v);
+    if (this != .object) return .undefined_value;
+    const v = arg(args, 0);
+    const old = try getNum(vm, this.object, "x");
+    const w = try getNum(vm, this.object, "width");
+    try vm.setProperty(this.object, S("x"), v, this);
+    try setNum(vm, this.object, "width", w + (old - try vm.toNumber(v)));
     return .undefined_value;
 }
 
 fn rectGetTop(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
-    return .{ .number = try getNum(vmOf(p), this.object, "y") };
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    return vm.getProperty(this.object, S("y"), this);
 }
 
 fn rectSetTop(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    const v = try numArg(vm, args, 0);
-    const bottom = (try getNum(vm, this.object, "y")) + (try getNum(vm, this.object, "height"));
-    try setNum(vm, this.object, "y", v);
-    try setNum(vm, this.object, "height", bottom - v);
+    if (this != .object) return .undefined_value;
+    const v = arg(args, 0);
+    const old = try getNum(vm, this.object, "y");
+    const h = try getNum(vm, this.object, "height");
+    try vm.setProperty(this.object, S("y"), v, this);
+    try setNum(vm, this.object, "height", h + (old - try vm.toNumber(v)));
     return .undefined_value;
 }
 
 fn rectGetRight(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
-    return .{ .number = (try getNum(vm, this.object, "x")) + (try getNum(vm, this.object, "width")) };
+    if (this != .object) return .undefined_value;
+    const r = try rectOf(vm, this.object);
+    return .{ .number = r.x + r.w };
 }
 
 fn rectSetRight(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    const v = try numArg(vm, args, 0);
-    try setNum(vm, this.object, "width", v - (try getNum(vm, this.object, "x")));
+    if (this != .object) return .undefined_value;
+    const right = try numArgNan(vm, args, 0);
+    try setNum(vm, this.object, "width", right - try getNum(vm, this.object, "x"));
     return .undefined_value;
 }
 
 fn rectGetBottom(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
-    return .{ .number = (try getNum(vm, this.object, "y")) + (try getNum(vm, this.object, "height")) };
+    if (this != .object) return .undefined_value;
+    const r = try rectOf(vm, this.object);
+    return .{ .number = r.y + r.h };
 }
 
 fn rectSetBottom(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
-    const v = try numArg(vm, args, 0);
-    try setNum(vm, this.object, "height", v - (try getNum(vm, this.object, "y")));
+    if (this != .object) return .undefined_value;
+    const bottom = try numArgNan(vm, args, 0);
+    try setNum(vm, this.object, "height", bottom - try getNum(vm, this.object, "y"));
+    return .undefined_value;
+}
+
+/// `size` is a Point of (width, height) — built fresh on every read, so
+/// mutating it does nothing to the rectangle.
+fn rectGetSize(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    return pointFrom(vm, &.{
+        try vm.getProperty(this.object, S("width"), this),
+        try vm.getProperty(this.object, S("height"), this),
+    });
+}
+
+fn rectSetSize(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const src = arg(args, 0);
+    var w: Value = .undefined_value;
+    var h: Value = .undefined_value;
+    if (src == .object) {
+        w = try vm.getProperty(src.object, S("x"), src);
+        h = try vm.getProperty(src.object, S("y"), src);
+    }
+    try vm.setProperty(this.object, S("width"), w, this);
+    try vm.setProperty(this.object, S("height"), h, this);
+    return .undefined_value;
+}
+
+fn rectGetTopLeft(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    return pointFrom(vm, &.{
+        try vm.getProperty(this.object, S("x"), this),
+        try vm.getProperty(this.object, S("y"), this),
+    });
+}
+
+/// Like `left`/`top` together: the opposite corner stays put.
+fn rectSetTopLeft(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const src = arg(args, 0);
+    var nx: Value = .undefined_value;
+    var ny: Value = .undefined_value;
+    if (src == .object) {
+        nx = try vm.getProperty(src.object, S("x"), src);
+        ny = try vm.getProperty(src.object, S("y"), src);
+    }
+    const r = try rectOf(vm, this.object);
+    try vm.setProperty(this.object, S("x"), nx, this);
+    try vm.setProperty(this.object, S("y"), ny, this);
+    try setNum(vm, this.object, "width", r.w + (r.x - try vm.toNumber(nx)));
+    try setNum(vm, this.object, "height", r.h + (r.y - try vm.toNumber(ny)));
+    return .undefined_value;
+}
+
+fn rectGetBottomRight(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const r = try rectOf(vm, this.object);
+    return newPoint(vm, r.x + r.w, r.y + r.h);
+}
+
+/// Note the swap: Flash reads the point's x into the WIDTH against `x`,
+/// and its y into the HEIGHT against `y`. Ruffle names the locals
+/// `bottom`/`right`/`top`/`left` crosswise for exactly this reason.
+fn rectSetBottomRight(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const pt = try valueToPoint(vm, arg(args, 0));
+    try setNum(vm, this.object, "width", pt[0] - try getNum(vm, this.object, "x"));
+    try setNum(vm, this.object, "height", pt[1] - try getNum(vm, this.object, "y"));
     return .undefined_value;
 }
 
@@ -454,12 +790,12 @@ fn ctorMatrix(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
         try storeIdentity(vm, this.object);
         return this;
     }
-    try setNum(vm, this.object, "a", try numArg(vm, args, 0));
-    try setNum(vm, this.object, "b", try numArg(vm, args, 1));
-    try setNum(vm, this.object, "c", try numArg(vm, args, 2));
-    try setNum(vm, this.object, "d", try numArg(vm, args, 3));
-    try setNum(vm, this.object, "tx", try numArg(vm, args, 4));
-    try setNum(vm, this.object, "ty", try numArg(vm, args, 5));
+    // Present arguments are stored VERBATIM and absent ones are not
+    // stored at all — `new Matrix(1)` leaves b..ty undefined, and an
+    // object argument stays an object until something coerces it.
+    inline for (MATRIX_KEYS, 0..) |k, i| {
+        if (i < args.len) try vm.setProperty(this.object, S(k), args[i], this);
+    }
     return this;
 }
 
@@ -482,9 +818,15 @@ fn matrixClone(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
+    // Clone runs the CONSTRUCTOR over the six raw values, so a component
+    // that is not a number survives as itself.
+    var vals: [MATRIX_KEYS.len]Value = undefined;
+    inline for (MATRIX_KEYS, 0..) |k, i| {
+        vals[i] = try vm.getProperty(this.object, S(k), this);
+    }
     const h = try vm.objects.create();
     vm.objects.get(h).proto = .{ .object = vm.matrix_proto };
-    inline for (MATRIX_KEYS) |k| try setNum(vm, h, k, try getNum(vm, this.object, k));
+    _ = try ctorMatrix(p, .{ .object = h }, &vals);
     return .{ .object = h };
 }
 
@@ -579,6 +921,61 @@ fn matrixRotate(p: *anyopaque, this: Value, args: []const Value) anyerror!Value 
     return .undefined_value;
 }
 
+/// `createBox` builds a rotate+scale+translate matrix. The rotation is
+/// NOT optional despite the docs: leaving it out makes every component
+/// NaN, because `cos(undefined)` is NaN.
+fn matrixCreateBox(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    try storeBox(
+        vm,
+        this.object,
+        try numArgNan(vm, args, 0),
+        try numArgNan(vm, args, 1),
+        try numArgNan(vm, args, 2),
+        try numArg(vm, args, 3),
+        try numArg(vm, args, 4),
+    );
+    return .undefined_value;
+}
+
+/// The gradient form scales by 1/1638.4 (a 1638.4-pixel square is the
+/// unit gradient) and centres the box on the translation. Here the
+/// rotation IS optional.
+fn matrixCreateGradientBox(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    if (this != .object) return .undefined_value;
+    const w = try numArgNan(vm, args, 0);
+    const h = try numArgNan(vm, args, 1);
+    try storeBox(
+        vm,
+        this.object,
+        w / 1638.4,
+        h / 1638.4,
+        try numArg(vm, args, 2),
+        try numArg(vm, args, 3) + w / 2.0,
+        try numArg(vm, args, 4) + h / 2.0,
+    );
+    return .undefined_value;
+}
+
+/// Ruffle's `create_box_with_rotation`, down to the f32 rounding: the
+/// render matrix is f32, so `200 / 1638.4` comes back out as
+/// 0.1220703125 and not the f64 value.
+fn storeBox(vm: *Vm, h: ObjectHandle, sx: f64, sy: f64, rot: f64, tx: f64, ty: f64) !void {
+    const r: f32 = @floatCast(rot);
+    const fsx: f32 = @floatCast(sx);
+    const fsy: f32 = @floatCast(sy);
+    try storeRaw(vm, h, .{
+        .a = @cos(r) * fsx,
+        .b = @sin(r) * fsy,
+        .c = -@sin(r) * fsx,
+        .d = @cos(r) * fsy,
+        .tx = pixelsFromTwips(twipsFromPixels(tx)),
+        .ty = pixelsFromTwips(twipsFromPixels(ty)),
+    });
+}
+
 fn matrixTransformPoint(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return matrixApply(p, this, args, true);
 }
@@ -589,15 +986,15 @@ fn matrixDeltaTransformPoint(p: *anyopaque, this: Value, args: []const Value) an
 
 fn matrixApply(p: *anyopaque, this: Value, args: []const Value, translate: bool) anyerror!Value {
     const vm = vmOf(p);
-    const pt = arg(args, 0);
-    if (this != .object or pt != .object) return .undefined_value;
+    if (this != .object) return .undefined_value;
     const m = try rawMatrix(vm, this.object);
-    const x = try getNum(vm, pt.object, "x");
-    const y = try getNum(vm, pt.object, "y");
+    // A missing point is undefined, whose x and y are NaN — the call
+    // still returns a Point, just a NaN one.
+    const pt = try valueToPoint(vm, arg(args, 0));
     return newPoint(
         vm,
-        m.a * x + m.c * y + (if (translate) m.tx else 0),
-        m.b * x + m.d * y + (if (translate) m.ty else 0),
+        m.a * pt[0] + m.c * pt[1] + (if (translate) m.tx else 0),
+        m.b * pt[0] + m.d * pt[1] + (if (translate) m.ty else 0),
     );
 }
 
@@ -626,17 +1023,77 @@ fn storeRaw(vm: *Vm, h: ObjectHandle, m: RawMatrix) !void {
 
 // --- ColorTransform ----------------------------------------------------------------
 
+/// The eight components in ARGUMENT order, which is also `toString`
+/// order. The prototype declares them in a DIFFERENT order (see install).
 const CT_KEYS = [_][]const u8{
     "redMultiplier",   "greenMultiplier", "blueMultiplier", "alphaMultiplier",
     "redOffset",       "greenOffset",     "blueOffset",     "alphaOffset",
 };
 
+/// Prototype DECLARATION order, as indices into `CT_KEYS`: alpha first
+/// among the multipliers, then alpha first among the offsets.
+const CT_DECL_ORDER = [_]usize{ 3, 0, 1, 2, 7, 4, 5, 6 };
+
+/// Where the numbers actually live. The public names are accessors, so the
+/// values need somewhere else to sit; a hidden own slot per instance is
+/// ruffle's `NativeObject` payload in the shape this VM has.
+const CT_SLOTS = [_][]const u8{
+    "_ct_rm", "_ct_gm", "_ct_bm", "_ct_am",
+    "_ct_ro", "_ct_go", "_ct_bo", "_ct_ao",
+};
+
+fn ctGetter(comptime i: usize) object_mod.NativeFn {
+    return struct {
+        fn f(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+            _ = args;
+            const vm = vmOf(p);
+            if (this != .object) return .undefined_value;
+            return .{ .number = try ctRead(vm, this.object, i) };
+        }
+    }.f;
+}
+
+fn ctSetter(comptime i: usize) object_mod.NativeFn {
+    return struct {
+        fn f(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+            const vm = vmOf(p);
+            if (this != .object) return .undefined_value;
+            // The setter COERCES: `ct.redMultiplier = "Test123"` stores NaN,
+            // it does not store the string.
+            try ctWrite(vm, this.object, i, try numArg(vm, args, 0));
+            return .undefined_value;
+        }
+    }.f;
+}
+
+const CT_GETTERS = blk: {
+    var out: [8]object_mod.NativeFn = undefined;
+    for (0..8) |i| out[i] = ctGetter(i);
+    break :blk out;
+};
+
+const CT_SETTERS = blk: {
+    var out: [8]?object_mod.NativeFn = undefined;
+    for (0..8) |i| out[i] = ctSetter(i);
+    break :blk out;
+};
+
+fn ctRead(vm: *Vm, h: ObjectHandle, comptime i: usize) !f64 {
+    const v = vm.objects.getOwn(h, S(CT_SLOTS[i]), vm.case_sensitive) orelse
+        return if (i < 4) 1 else 0;
+    return vm.toNumber(v);
+}
+
+fn ctWrite(vm: *Vm, h: ObjectHandle, comptime i: usize, n: f64) !void {
+    try vm.objects.putWithAttrs(h, S(CT_SLOTS[i]), .{ .number = n }, hidden, false);
+}
+
 pub fn newColorTransform(vm: *Vm, ct: ColorTransform) !Value {
     const h = try vm.objects.create();
     vm.objects.get(h).proto = .{ .object = vm.colortransform_proto };
     inline for (0..4) |i| {
-        try setNum(vm, h, CT_KEYS[i], @as(f64, @floatFromInt(ct.mult[i])) / 256.0);
-        try setNum(vm, h, CT_KEYS[i + 4], @floatFromInt(ct.add[i]));
+        try ctWrite(vm, h, i, @as(f64, @floatFromInt(ct.mult[i])) / 256.0);
+        try ctWrite(vm, h, i + 4, @floatFromInt(ct.add[i]));
     }
     return .{ .object = h };
 }
@@ -647,11 +1104,18 @@ fn ctorColorTransform(p: *anyopaque, this: Value, args: []const Value) anyerror!
     // Fewer than eight arguments means the identity — Flash does not
     // partially apply them (ruffle color_transform.rs constructor).
     if (args.len >= 8) {
-        inline for (CT_KEYS, 0..) |k, i| try setNum(vm, this.object, k, try numArg(vm, args, i));
+        inline for (0..8) |i| try ctWrite(vm, this.object, i, try numArg(vm, args, i));
     } else {
-        inline for (0..4) |i| {
-            try setNum(vm, this.object, CT_KEYS[i], 1);
-            try setNum(vm, this.object, CT_KEYS[i + 4], 0);
+        // A single ColorTransform argument is COPIED; anything else (and
+        // nothing at all) gives the identity.
+        const src = arg(args, 0);
+        const copy = args.len == 1 and src == .object and
+            vm.objects.getOwn(src.object, S(CT_SLOTS[0]), vm.case_sensitive) != null;
+        inline for (0..8) |i| {
+            const v: f64 = if (copy)
+                try ctRead(vm, src.object, i)
+            else if (i < 4) 1 else 0;
+            try ctWrite(vm, this.object, i, v);
         }
     }
     return this;
@@ -670,10 +1134,10 @@ fn ctConcat(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     inline for (0..4) |i| {
         const om = try getNum(vm, other.object, CT_KEYS[i]);
         const oa = try getNum(vm, other.object, CT_KEYS[i + 4]);
-        const sm = try getNum(vm, this.object, CT_KEYS[i]);
-        const sa = try getNum(vm, this.object, CT_KEYS[i + 4]);
-        try setNum(vm, this.object, CT_KEYS[i + 4], oa * sm + sa);
-        try setNum(vm, this.object, CT_KEYS[i], om * sm);
+        const sm = try ctRead(vm, this.object, i);
+        const sa = try ctRead(vm, this.object, i + 4);
+        try ctWrite(vm, this.object, i + 4, oa * sm + sa);
+        try ctWrite(vm, this.object, i, om * sm);
     }
     return .undefined_value;
 }
@@ -684,9 +1148,9 @@ fn ctGetRgb(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
-    const r: i32 = @intFromFloat(@trunc(try getNum(vm, this.object, "redOffset")));
-    const g: i32 = @intFromFloat(@trunc(try getNum(vm, this.object, "greenOffset")));
-    const b: i32 = @intFromFloat(@trunc(try getNum(vm, this.object, "blueOffset")));
+    const r = value_mod.toInt32(try ctRead(vm, this.object, 4));
+    const g = value_mod.toInt32(try ctRead(vm, this.object, 5));
+    const b = value_mod.toInt32(try ctRead(vm, this.object, 6));
     return .{ .number = @floatFromInt(((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF)) };
 }
 
@@ -694,12 +1158,12 @@ fn ctSetRgb(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const vm = vmOf(p);
     if (this != .object) return .undefined_value;
     const rgb = value_mod.toInt32(try numArg(vm, args, 0));
-    try setNum(vm, this.object, "redOffset", @floatFromInt((rgb >> 16) & 0xFF));
-    try setNum(vm, this.object, "greenOffset", @floatFromInt((rgb >> 8) & 0xFF));
-    try setNum(vm, this.object, "blueOffset", @floatFromInt(rgb & 0xFF));
-    try setNum(vm, this.object, "redMultiplier", 0);
-    try setNum(vm, this.object, "greenMultiplier", 0);
-    try setNum(vm, this.object, "blueMultiplier", 0);
+    try ctWrite(vm, this.object, 4, @floatFromInt((rgb >> 16) & 0xFF));
+    try ctWrite(vm, this.object, 5, @floatFromInt((rgb >> 8) & 0xFF));
+    try ctWrite(vm, this.object, 6, @floatFromInt(rgb & 0xFF));
+    try ctWrite(vm, this.object, 0, 0);
+    try ctWrite(vm, this.object, 1, 0);
+    try ctWrite(vm, this.object, 2, 0);
     return .undefined_value;
 }
 
