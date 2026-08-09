@@ -175,10 +175,10 @@ pub const FetchRequest = struct {
         /// SWF replaces the target clip's entire timeline, library and
         /// version.
         movie: Movie,
-        /// `NetConnection.call`: the request is made and the response is
-        /// DROPPED. Flash Remoting's reply path needs a real server;
-        /// what the corpus checks is the packet that goes out.
-        discard,
+        /// `NetConnection.call`: the reply is an AMF packet whose
+        /// messages name a responder method — `/1/onResult` calls
+        /// `onResult` on the responder of call 1.
+        net_connection: ObjectHandle,
     };
 
     pub const Movie = struct {
@@ -197,6 +197,28 @@ pub const FetchRequest = struct {
 /// percentages, and `pan` is not one of them — it is derived, with an
 /// `abs()` in it that makes `setPan(200)` read back as 0 (ruffle
 /// display_object.rs `SoundTransform`).
+/// One queued Flash Remoting call. They accumulate on the connection
+/// and go out as ONE packet at the end of the tick, which is why two
+/// calls in the same frame share a request and get `/1` and `/2`.
+pub const NetMessage = struct {
+    conn: ObjectHandle,
+    command: strings.AvmString,
+    /// Who hears `onResult`/`onStatus` for THIS message. 0 = nobody
+    /// asked, and the reply is dropped.
+    responder: ObjectHandle,
+    /// The arguments, already AMF-encoded as a strict array.
+    payload: []const u8,
+};
+
+/// `NetConnection.addHeader`. Headers ride at the front of the packet
+/// and persist across calls; adding the same name twice REPLACES it.
+pub const NetHeader = struct {
+    conn: ObjectHandle,
+    name: strings.AvmString,
+    must_understand: bool,
+    payload: []const u8,
+};
+
 pub const LocalConnection = struct {
     name: strings.AvmString,
     object: ObjectHandle,
@@ -532,6 +554,13 @@ pub const Vm = struct {
     /// Messages waiting for the end of the tick — delivery is
     /// asynchronous, like every other LocalConnection operation.
     pending_local_sends: std.ArrayList(LocalSend) = .empty,
+    /// Flash Remoting calls waiting to be flushed, and the headers that
+    /// will ride with them.
+    net_messages: std.ArrayList(NetMessage) = .empty,
+    net_headers: std.ArrayList(NetHeader) = .empty,
+    /// The responders of the batch currently in flight, indexed from 1
+    /// to match the `/N` response URIs.
+    net_inflight: std.ArrayList(ObjectHandle) = .empty,
     /// Non-zero while inside `construct` — native constructors box their
     /// argument only for `new X()`, and coerce for a plain `X()` call
     /// (ruffle globals/{number,string,boolean}.rs split those paths).
