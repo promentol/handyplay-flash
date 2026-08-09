@@ -534,11 +534,34 @@ fn sysSetExactSettings(p: *anyopaque, this: Value, args: []const Value) anyerror
 /// We only ever play local files, so the choice is between the two LOCAL
 /// sandboxes and it is the movie's own `FileAttributes.UseNetwork` bit that
 /// decides (ruffle system_security.rs + SwfMovie::sandbox_type).
+/// The sandbox of the movie the RUNNING SCRIPT belongs to, not the root's
+/// — a SWF fetched over http reports "remote" even when the movie that
+/// loaded it is local (corpus sandbox_type_remote). Inferred from the
+/// URL's scheme, exactly as ruffle's `SandboxType::infer` does; only a
+/// `file:` URL consults the FileAttributes UseNetwork bit.
 fn secSandboxType(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
     _ = args;
     const vm = vmOf(p);
-    return .{ .string = if (vm.use_network_sandbox) S("localWithNetwork") else S("localWithFile") };
+    var url = vm.movie_url;
+    var network = vm.use_network_sandbox;
+    if (@import("../activation.zig").Activation.baseClipForNative(vm)) |h| {
+        if (stage_object.clipOfHandle(vm, h)) |c| {
+            if (c.loadInfoOf()) |l| url = l.url;
+            if (stage_object.displayCtxOf(vm)) |ctx| network = c.movieOf(ctx).use_network_sandbox;
+        }
+    }
+    if (!isFileUrl(url)) return .{ .string = S("remote") };
+    return .{ .string = if (network) S("localWithNetwork") else S("localWithFile") };
+}
+
+/// A URL with no scheme at all counts as local: ruffle's inference falls
+/// back to `LocalWithFile` when the URL will not parse.
+fn isFileUrl(url: []const u16) bool {
+    var i: usize = 0;
+    while (i < url.len and url[i] != ':') i += 1;
+    if (i == url.len) return true;
+    return strings.eqlIgnoreCase(url[0..i], S("file"));
 }
 
 /// A fixed profile. Everything here is a claim about the host, and a wrong

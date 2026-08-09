@@ -374,6 +374,7 @@ root_button_mode
 root_global_parent
 sandbox_type_local_file
 sandbox_type_local_network
+sandbox_type_remote
 selection
 selection_asbroadcaster
 selection_handlers

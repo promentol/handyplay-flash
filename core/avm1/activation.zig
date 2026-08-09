@@ -232,6 +232,15 @@ pub const Activation = struct {
     /// The CALLING frame's variable bag, for the natives that submit it as
     /// form data (`MovieClip.getURL` with a method, and the `getURL`
     /// opcode). In timeline code this is the clip itself.
+    /// The clip the running script BELONGS to (not the one it is
+    /// targeting). `System.security.sandboxType` answers for the base
+    /// clip's movie, so a loaded SWF reports its own origin.
+    pub fn baseClipForNative(vm: *runtime.Vm) ?ObjectHandle {
+        const p = vm.current_activation orelse return null;
+        const act: *Activation = @ptrCast(@alignCast(p));
+        return if (act.base_clip == 0) null else act.base_clip;
+    }
+
     pub fn localsForNative(vm: *runtime.Vm) ?ObjectHandle {
         const p = vm.current_activation orelse return null;
         const act: *Activation = @ptrCast(@alignCast(p));
