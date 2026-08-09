@@ -85,6 +85,19 @@ pub fn constStr(vm: *Vm, target: ObjectHandle, comptime name: []const u8, compti
 /// existing accessor-aware paths in `Vm.getProperty`/`setProperty`.
 /// A null setter makes the property read-only in the ES3 sense: writes are
 /// silently dropped rather than shadowing it.
+/// Install a numbered ASnative slot as a named method.
+pub fn tableMethod(
+    vm: *Vm,
+    target: ObjectHandle,
+    comptime name: []const u8,
+    f: object_mod.TableNativeFn,
+    index: u16,
+    attrs: Attributes,
+) !void {
+    const h = try vm.newTableNativeFn(f, index);
+    try vm.objects.putWithAttrs(target, S(name), .{ .object = h }, attrs, false);
+}
+
 pub fn property(
     vm: *Vm,
     target: ObjectHandle,

@@ -113,6 +113,12 @@ pub fn install(vm: *Vm) !void {
     try decl.method(vm, class, "UTC", dateUtc, decl.frozen);
 }
 
+/// The whole class as ONE ASnative slot table (category 103), which is
+/// how `ASnative(103, 16)` finds `getTime`.
+pub fn dateMethod(p: *anyopaque, this: Value, args: []const Value, index: u16) anyerror!Value {
+    return dispatch(vmOf(p), this, args, index);
+}
+
 /// One native entry point per method index. `comptime index` is the only
 /// thing that varies, so the whole class is one function.
 fn entry(comptime index: u16) object_mod.NativeFn {
@@ -339,7 +345,7 @@ fn coerceArgs(vm: *Vm, args: []const Value, out: *[7]f64) !usize {
     var n: usize = 0;
     for (args) |a| {
         if (n == 7 or a == .undefined_value) break;
-        out[n] = try vm.toNumber(a);
+        out[n] = try vm.toNumberThrowing(a);
         n += 1;
     }
     return n;

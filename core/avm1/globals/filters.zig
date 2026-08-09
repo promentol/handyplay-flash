@@ -941,3 +941,21 @@ fn gradientFromTag(vm: *Vm, comptime index: usize, g: swf.filters.Filter.Gradien
     try put(vm, st, "type", bevelTypeOf(g.flags));
     return made[0];
 }
+
+/// ASnative category 1109: ConvolutionFilter. Index 0 is the
+/// constructor and the rest run getter/setter in declaration order —
+/// `alpha`'s getter is 17 because it is the ninth property.
+pub fn convolutionMethod(p: *anyopaque, this: Value, args: []const Value, index: u16) anyerror!Value {
+    const CLS = CLASSES[7];
+    comptime std.debug.assert(std.mem.eql(u8, CLS.name, "ConvolutionFilter"));
+    if (index == 0) return constructorFor(CLS)(p, this, args);
+    const slot = (index - 1) / 2;
+    const is_set = (index % 2) == 0;
+    inline for (CONVOLUTION, 0..) |prop, i| {
+        if (i == slot) {
+            const acc = accessors(prop);
+            return if (is_set) acc.set(p, this, args) else acc.get(p, this, args);
+        }
+    }
+    return .undefined_value;
+}

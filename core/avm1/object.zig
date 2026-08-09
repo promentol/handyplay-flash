@@ -79,6 +79,18 @@ pub const Watcher = struct {
 /// this module cycle-light; runtime.zig provides a typed wrapper.
 pub const NativeFn = *const fn (vm: *anyopaque, this: Value, args: []const Value) anyerror!Value;
 
+/// A native that dispatches on an ASnative INDEX. Flash's builtins are
+/// not individual functions but numbered slots inside a category:
+/// `ASnative(200, 0)` IS `Math.abs`, and `Math.abs` is that slot. One
+/// Zig function per category, keyed by index, mirrors that exactly
+/// (ruffle's `TableNativeFunction`).
+pub const TableNativeFn = *const fn (
+    vm: *anyopaque,
+    this: Value,
+    args: []const Value,
+    index: u16,
+) anyerror!Value;
+
 /// Bytecode-defined function (DefineFunction / DefineFunction2).
 pub const Avm1Function = struct {
     body: []const u8,
@@ -108,6 +120,8 @@ pub const Avm1Function = struct {
 
 pub const FunctionKind = union(enum) {
     native: NativeFn,
+    /// A numbered slot in an ASnative category — see `TableNativeFn`.
+    table_native: struct { f: TableNativeFn, index: u16 },
     avm1: Avm1Function,
 };
 

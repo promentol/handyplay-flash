@@ -579,6 +579,20 @@ pub const Vm = struct {
         return h;
     }
 
+    /// A function object standing for ASnative category slot `index`.
+    pub fn newTableNativeFn(
+        self: *Vm,
+        f: object_mod.TableNativeFn,
+        index: u16,
+    ) Error!ObjectHandle {
+        const h = try self.objects.create();
+        self.objects.get(h).native = .{ .function = .{ .table_native = .{ .f = f, .index = index } } };
+        if (self.function_proto != 0) {
+            self.objects.get(h).proto = .{ .object = self.function_proto };
+        }
+        return h;
+    }
+
     pub fn newAvm1Fn(self: *Vm, f: object_mod.Avm1Function) Error!ObjectHandle {
         const h = try self.objects.create();
         self.objects.get(h).native = .{ .function = .{ .avm1 = f } };
@@ -689,6 +703,25 @@ pub const Vm = struct {
             S("valueOf");
         const r = try self.callSpecial(v, name);
         return if (r.isPrimitive()) r else v;
+    }
+
+    /// Like `toNumber`, but a `valueOf` that THROWS unwinds instead of
+    /// being swallowed. Ruffle's `coerce_to_f64` always propagates; ours
+    /// cannot everywhere without widening every coercion signature, so
+    /// the natives whose corpus tests observe it opt in.
+    pub fn toNumberThrowing(self: *Vm, v: Value) anyerror!f64 {
+        if (v != .object) return value_mod.toNumberPrimitive(v, self.swf_version);
+        switch (self.objects.get(v.object).native) {
+            .clip, .display, .removed_display => {
+                return value_mod.toNumberPrimitive(v, self.swf_version);
+            },
+            else => {},
+        }
+        const m = self.getProperty(v.object, S("valueOf"), v) catch Value.undefined_value;
+        if (!self.isCallable(m)) return value_mod.toNumberPrimitive(v, self.swf_version);
+        self.call_special = true;
+        const p = try self.callFunction(m, v, &.{});
+        return value_mod.toNumberPrimitive(p, self.swf_version);
     }
 
     pub fn toNumber(self: *Vm, v: Value) Error!f64 {
@@ -1209,6 +1242,7 @@ pub const Vm = struct {
         const fk = self.objects.get(callee.object).native.function;
         switch (fk) {
             .native => |f| return f(@ptrCast(self), this, args),
+            .table_native => |t| return t.f(@ptrCast(self), this, args, t.index),
             .avm1 => |f| {
                 self.call_special = special_here;
                 return self.callAvm1(callee.object, f, this, args);
@@ -1289,7 +1323,7 @@ pub const Vm = struct {
         // (function.rs:709 "Propagate the return value only for native
         // constructors") — a bytecode constructor's `return 5` is ignored,
         // but `new Transform()` with no clip really is undefined.
-        if (self.objects.get(ctor.object).native.function == .native) return r;
+        if (self.objects.get(ctor.object).native.function != .avm1) return r;
         return if (r == .object) r else this;
     }
 

@@ -143,25 +143,22 @@ pub fn install(vm: *Vm) !void {
     try constNum(vm, math, "LOG2E", 1.0 / @log(2.0));
     try constNum(vm, math, "SQRT1_2", @sqrt(0.5));
     try constNum(vm, math, "SQRT2", @sqrt(2.0));
-    // Every Math method is READ_ONLY in ruffle math.rs.
-    try method(vm, math, "abs", mathAbs, frozen);
-    try method(vm, math, "floor", mathFloor, frozen);
-    try method(vm, math, "ceil", mathCeil, frozen);
-    try method(vm, math, "round", mathRound, frozen);
-    try method(vm, math, "sqrt", mathSqrt, frozen);
-    try method(vm, math, "pow", mathPow, frozen);
-    try method(vm, math, "min", mathMin, frozen);
-    try method(vm, math, "max", mathMax, frozen);
-    try method(vm, math, "random", mathRandom, frozen);
-    try method(vm, math, "sin", mathSin, frozen);
-    try method(vm, math, "cos", mathCos, frozen);
-    try method(vm, math, "tan", mathTan, frozen);
-    try method(vm, math, "atan", mathAtan, frozen);
-    try method(vm, math, "atan2", mathAtan2, frozen);
-    try method(vm, math, "asin", mathAsin, frozen);
-    try method(vm, math, "acos", mathAcos, frozen);
-    try method(vm, math, "exp", mathExp, frozen);
-    try method(vm, math, "log", mathLog, frozen);
+    // Every Math method is READ_ONLY in ruffle math.rs, and every one is
+    // the SAME function under a different ASnative index. Declaration
+    // order is ruffle's; for-in reports it backwards.
+    inline for (.{
+        .{ "abs", math_index.ABS },     .{ "min", math_index.MIN },
+        .{ "max", math_index.MAX },     .{ "sin", math_index.SIN },
+        .{ "cos", math_index.COS },     .{ "atan2", math_index.ATAN2 },
+        .{ "tan", math_index.TAN },     .{ "exp", math_index.EXP },
+        .{ "log", math_index.LOG },     .{ "sqrt", math_index.SQRT },
+        .{ "round", math_index.ROUND }, .{ "random", math_index.RANDOM },
+        .{ "floor", math_index.FLOOR }, .{ "ceil", math_index.CEIL },
+        .{ "atan", math_index.ATAN },   .{ "asin", math_index.ASIN },
+        .{ "acos", math_index.ACOS },   .{ "pow", math_index.POW },
+    }) |e| {
+        try decl.tableMethod(vm, math, e[0], mathMethod, e[1], frozen);
+    }
 
     // --- global functions + constants -------------------------------------
     try method(vm, vm.globals, "isNaN", globalIsNan, attrs);
@@ -171,6 +168,8 @@ pub fn install(vm: *Vm) !void {
     try method(vm, vm.globals, "getTimer", globalGetTimer, attrs);
     try method(vm, vm.globals, "ASSetPropFlags", globalAsSetPropFlags, attrs);
     try method(vm, vm.globals, "ASnative", globalAsNative, attrs);
+    try decl.tableMethod(vm, vm.globals, "ASSetNative", asSetNativeMethod, 0, attrs);
+    try decl.tableMethod(vm, vm.globals, "ASSetNativeAccessor", asSetNativeMethod, 1, attrs);
     try method(vm, vm.globals, "escape", globalEscape, attrs);
     try method(vm, vm.globals, "unescape", globalUnescape, attrs);
     try method(vm, vm.globals, "updateAfterEvent", globalNoop, attrs);
@@ -1457,188 +1456,94 @@ fn boolValueOf(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
 
 // --- Math --------------------------------------------------------------------
 
-/// How many arguments a Math method really wants, for the SWF6 arity
-/// check.
-const MathArity = enum { one, two, pow, min_max };
+/// The ASnative INDEX of every Math method. These are not decoration:
+/// `ASnative(200, 17)` IS `Math.pow`, and the corpus calls it that way.
+pub const math_index = struct {
+    pub const ABS: u16 = 0;
+    pub const MIN: u16 = 1;
+    pub const MAX: u16 = 2;
+    pub const SIN: u16 = 3;
+    pub const COS: u16 = 4;
+    pub const ATAN2: u16 = 5;
+    pub const TAN: u16 = 6;
+    pub const EXP: u16 = 7;
+    pub const LOG: u16 = 8;
+    pub const SQRT: u16 = 9;
+    pub const ROUND: u16 = 10;
+    pub const RANDOM: u16 = 11;
+    pub const FLOOR: u16 = 12;
+    pub const CEIL: u16 = 13;
+    pub const ATAN: u16 = 14;
+    pub const ASIN: u16 = 15;
+    pub const ACOS: u16 = 16;
+    pub const POW: u16 = 17;
+};
 
-/// Every Math method coerces its FIRST TWO arguments, whether or not it
-/// uses them — a `valueOf` on either runs, and the corpus counts the
-/// calls. Below SWF7 the ARITY is checked as well, and a call with too
-/// few arguments is NaN before the method itself is reached.
-fn mathPrep(vm: *Vm, args: []const Value, arity: MathArity) !?[2]f64 {
-    const x = try vm.toNumber(arg(args, 0));
-    const y = try vm.toNumber(arg(args, 1));
+/// ONE function for the whole of Math, keyed by ASnative index — which is
+/// how Flash really implements it, and the only way `ASnative(200, n)`
+/// can work for every n.
+///
+/// Two rules apply before the index is looked at. Every Math method
+/// coerces its FIRST TWO arguments whether or not it uses them, so a
+/// `valueOf` on either runs and the corpus counts the calls — including
+/// for `Math.random`, which uses neither. And below SWF7 the ARITY is
+/// checked: a call with too few arguments is NaN before the method is
+/// reached. An index nobody defines is NaN as well, unlike most ASnative
+/// categories, which answer undefined.
+pub fn mathMethod(p: *anyopaque, this: Value, args: []const Value, index: u16) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    const I = math_index;
+    const nan = std.math.nan(f64);
+
+    // A `valueOf` that throws stops the call here, and the SECOND
+    // argument is never coerced (corpus math_swf6 "Math.min({throw A},
+    // {throw B})" reports only A).
+    const x = try vm.toNumberThrowing(arg(args, 0));
+    const y = try vm.toNumberThrowing(arg(args, 1));
+
     if (vm.swf_version <= 6) {
-        const ok = switch (arity) {
-            .min_max => args.len == 0 or args.len >= 2,
+        const valid = switch (index) {
+            I.RANDOM => true,
+            I.MIN, I.MAX => args.len == 0 or args.len >= 2,
             // `Math.pow(1)` is the one single-argument call that passes:
             // the answer would be 1 whatever the exponent.
-            .pow => args.len >= 2 or (args.len == 1 and x == 1.0),
-            .two => args.len >= 2,
-            .one => args.len >= 1,
+            I.POW => args.len >= 2 or (args.len == 1 and x == 1.0),
+            I.ATAN2 => args.len >= 2,
+            else => args.len >= 1,
         };
-        if (!ok) return null;
+        if (!valid) return .{ .number = nan };
     }
-    return .{ x, y };
-}
 
-fn math1(p: *anyopaque, args: []const Value, comptime f: fn (f64) f64) anyerror!Value {
-    const vm = vmOf(p);
-    const a = try mathPrep(vm, args, .one) orelse return .{ .number = std.math.nan(f64) };
-    return .{ .number = f(a[0]) };
-}
-
-fn mathAbs(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return math1(p, args, struct {
-        fn f(x: f64) f64 {
-            return @abs(x);
-        }
-    }.f);
-}
-fn mathFloor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return math1(p, args, struct {
-        fn f(x: f64) f64 {
-            return @floor(x);
-        }
-    }.f);
-}
-fn mathCeil(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return math1(p, args, struct {
-        fn f(x: f64) f64 {
-            return @ceil(x);
-        }
-    }.f);
-}
-fn mathRound(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return math1(p, args, struct {
-        fn f(x: f64) f64 {
-            if (std.math.isNan(x)) return x;
-            return @floor(x + 0.5); // ES3: round-half-up (round(-0.5) = 0)
-        }
-    }.f);
-}
-fn mathSqrt(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return math1(p, args, struct {
-        fn f(x: f64) f64 {
-            return @sqrt(x);
-        }
-    }.f);
-}
-fn mathSin(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return math1(p, args, struct {
-        fn f(x: f64) f64 {
-            return std.math.sin(x);
-        }
-    }.f);
-}
-fn mathCos(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return math1(p, args, struct {
-        fn f(x: f64) f64 {
-            return std.math.cos(x);
-        }
-    }.f);
-}
-fn mathTan(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return math1(p, args, struct {
-        fn f(x: f64) f64 {
-            return @tan(x);
-        }
-    }.f);
-}
-fn mathAtan(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return math1(p, args, struct {
-        fn f(x: f64) f64 {
-            return std.math.atan(x);
-        }
-    }.f);
-}
-fn mathAsin(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return math1(p, args, struct {
-        fn f(x: f64) f64 {
-            return std.math.asin(x);
-        }
-    }.f);
-}
-fn mathAcos(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return math1(p, args, struct {
-        fn f(x: f64) f64 {
-            return std.math.acos(x);
-        }
-    }.f);
-}
-fn mathExp(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return math1(p, args, struct {
-        fn f(x: f64) f64 {
-            return @exp(x);
-        }
-    }.f);
-}
-fn mathLog(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return math1(p, args, struct {
-        fn f(x: f64) f64 {
-            return @log(x);
-        }
-    }.f);
-}
-
-fn mathPow(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    const vm = vmOf(p);
-    const a = try mathPrep(vm, args, .pow) orelse return .{ .number = std.math.nan(f64) };
-    return .{ .number = std.math.pow(f64, a[0], a[1]) };
-}
-
-fn mathAtan2(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    const vm = vmOf(p);
-    const a = try mathPrep(vm, args, .two) orelse return .{ .number = std.math.nan(f64) };
-    return .{ .number = std.math.atan2(a[0], a[1]) };
-}
-
-/// BINARY, not variadic: a third argument is ignored and a MISSING
-/// second one is undefined, which above SWF6 is NaN — so `Math.min(1)`
-/// is NaN, not 1. With no arguments at all the answer is the identity
-/// for the operation.
-fn mathMinMax(vm: *Vm, args: []const Value, comptime want_min: bool) anyerror!Value {
-    const a = try mathPrep(vm, args, .min_max) orelse return .{ .number = std.math.nan(f64) };
-    // With NO arguments the answer is the identity for the operation.
-    if (args.len == 0) {
-        return .{ .number = if (want_min) std.math.inf(f64) else -std.math.inf(f64) };
-    }
-    // A NaN in EITHER argument wins, unlike the usual min/max which
-    // prefer the number.
-    if (std.math.isNan(a[0]) or std.math.isNan(a[1])) return .{ .number = std.math.nan(f64) };
-    return .{ .number = if (want_min) @min(a[0], a[1]) else @max(a[0], a[1]) };
-}
-
-fn mathMin(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return mathMinMax(vmOf(p), args, true);
-}
-
-fn mathMax(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    return mathMinMax(vmOf(p), args, false);
-}
-
-fn mathRandom(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    _ = args;
-    const vm = vmOf(p);
-    return .{ .number = vm.rng.random().float(f64) };
+    const r: f64 = switch (index) {
+        I.ABS => @abs(x),
+        // With NO arguments min/max are the identity for the operation;
+        // with one, the missing second is NaN and a NaN in EITHER wins.
+        I.MIN => if (args.len == 0)
+            std.math.inf(f64)
+        else if (std.math.isNan(x) or std.math.isNan(y)) nan else @min(x, y),
+        I.MAX => if (args.len == 0)
+            -std.math.inf(f64)
+        else if (std.math.isNan(x) or std.math.isNan(y)) nan else @max(x, y),
+        I.SIN => std.math.sin(x),
+        I.COS => std.math.cos(x),
+        I.ATAN2 => std.math.atan2(x, y),
+        I.TAN => @tan(x),
+        I.EXP => @exp(x),
+        I.LOG => @log(x),
+        I.SQRT => @sqrt(x),
+        // ES3 round-half-UP, not away from zero: round(-0.5) is 0.
+        I.ROUND => if (std.math.isNan(x)) x else @floor(x + 0.5),
+        I.RANDOM => vm.rng.random().float(f64),
+        I.FLOOR => @floor(x),
+        I.CEIL => @ceil(x),
+        I.ATAN => std.math.atan(x),
+        I.ASIN => std.math.asin(x),
+        I.ACOS => std.math.acos(x),
+        I.POW => std.math.pow(f64, x, y),
+        else => nan,
+    };
+    return .{ .number = r };
 }
 
 // --- global functions --------------------------------------------------------
@@ -1805,21 +1710,155 @@ fn globalAsSetPropFlags(p: *anyopaque, this: Value, args: []const Value) anyerro
     return .undefined_value;
 }
 
-/// ASnative(set, index) — returns a stub native function. Real dispatch
-/// tables are out of scope; returning a callable keeps `typeof` and call
-/// sites sane.
-fn globalAsNative(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = this;
-    _ = args;
-    const vm = vmOf(p);
-    return .{ .object = try vm.newNativeFn(asNativeStub) };
+/// The ASnative CATEGORY table: Flash's builtins are numbered
+/// `(category, index)` pairs, and `ASnative` hands back the slot as a
+/// callable whether or not anything is defined there. An unknown
+/// CATEGORY is undefined; an unknown index within a known category is a
+/// live function that answers undefined (or, for Math, NaN).
+fn nativeCategory(cat: u32) ?object_mod.TableNativeFn {
+    return switch (cat) {
+        4 => asSetNativeMethod,
+        100 => globalMethod,
+        103 => @import("date.zig").dateMethod,
+        200 => mathMethod,
+        1109 => @import("filters.zig").convolutionMethod,
+        else => null,
+    };
 }
 
-fn asNativeStub(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = p;
+/// `ASnative(category, index)`. Exactly two arguments — one is
+/// undefined, three is undefined. The index is taken as a u32 (so 4.5
+/// truncates to 4 and 2^32+4 wraps to 4) and then narrowed to u16; an
+/// index that will not fit becomes u16::MAX, which no category defines.
+fn globalAsNative(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = this;
-    _ = args;
+    const vm = vmOf(p);
+    if (args.len != 2) return .undefined_value;
+    const cat = try toU32(vm, args[0]);
+    const idx = try toU32(vm, args[1]);
+    const f = nativeCategory(cat) orelse return .undefined_value;
+    const index: u16 = if (idx <= std.math.maxInt(u16)) @intCast(idx) else std.math.maxInt(u16);
+    return .{ .object = try vm.newTableNativeFn(f, index) };
+}
+
+/// ECMA ToUint32, which is what `ASnative` reads its arguments with —
+/// NaN and infinities become 0.
+fn toU32(vm: *Vm, v: Value) anyerror!u32 {
+    return @bitCast(value_mod.toInt32(try vm.toNumberThrowing(v)));
+}
+
+/// ASnative category 100: the five loose functions on `_global`.
+pub fn globalMethod(p: *anyopaque, this: Value, args: []const Value, index: u16) anyerror!Value {
+    return switch (index) {
+        0 => globalEscape(p, this, args),
+        1 => globalUnescape(p, this, args),
+        2 => globalParseInt(p, this, args),
+        3 => globalParseFloat(p, this, args),
+        4 => globalTrace(p, this, args),
+        else => .undefined_value,
+    };
+}
+
+/// `_global.trace`, which is NOT the `Trace` action: it coerces
+/// undefined to "" at every version, where the action prints
+/// "undefined" from SWF7 up.
+fn globalTrace(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    try vm.traceLine(try vm.toStringValue(arg(args, 0)));
     return .undefined_value;
+}
+
+
+/// ASnative category 4: `ASSetNative` (0) and `ASSetNativeAccessor` (1),
+/// the loaders Flash's own `globals.as` uses to wire the numbered slots
+/// onto the prototypes. Both take
+/// `(object, category, "a,b,c" , first_index)` and walk the comma list,
+/// consuming one index per name — two per name for the accessor form,
+/// getter then setter.
+///
+/// A name may carry a VERSION PREFIX digit ("6alpha", "10foo"): the
+/// property is then gated to that SWF version and above. The prefix is
+/// stripped from the name. An empty name still consumes its index.
+pub fn asSetNativeMethod(p: *anyopaque, this: Value, args: []const Value, index: u16) anyerror!Value {
+    _ = this;
+    const vm = vmOf(p);
+    if (index > 1) return .undefined_value;
+    if (args.len < 3) return .undefined_value;
+    const target = arg(args, 0);
+    if (target != .object) return .undefined_value;
+    const cat = try toU32(vm, args[1]);
+    const props = try vm.toStringThrowing(args[2]);
+    var minor: u32 = if (args.len > 3) try toU32(vm, args[3]) else 0;
+
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i <= props.len) : (i += 1) {
+        if (i != props.len and props[i] != ',') continue;
+        var name = props[start..i];
+        start = i + 1;
+        const attrs = versionPrefix(&name);
+        if (index == 0) {
+            const f = try slotOf(vm, cat, minor);
+            minor +%= 1;
+            if (name.len == 0) continue;
+            const had = vm.objects.findOwn(target.object, name, vm.case_sensitive) != null;
+            try vm.setProperty(target.object, name, f, target);
+            if (!had) {
+                if (vm.objects.findOwn(target.object, name, vm.case_sensitive)) |prop| {
+                    prop.attrs = attrs;
+                }
+            }
+        } else {
+            const getter = try slotOf(vm, cat, minor);
+            minor +%= 1;
+            const setter = try slotOf(vm, cat, minor);
+            minor +%= 1;
+            if (name.len == 0 or getter != .object) continue;
+            try decl.putAccessor(
+                vm,
+                target.object,
+                name,
+                getter.object,
+                if (setter == .object) setter.object else 0,
+                attrs,
+            );
+        }
+    }
+    return .undefined_value;
+}
+
+/// Strip a leading version digit and report the gate it asks for.
+fn versionPrefix(name: *strings.AvmString) object_mod.Attributes {
+    const n = name.*;
+    if (n.len == 0) return .{};
+    const bits: u16 = switch (n[0]) {
+        '6' => decl.V6,
+        '7' => decl.V7,
+        '8' => decl.V8,
+        '9' => decl.V9,
+        // A leading '1' is ALWAYS eaten, but only "10" is a gate: "11k"
+        // loses its first digit and installs as "1k" ungated.
+        '1' => {
+            if (n.len >= 2 and n[1] == '0') {
+                name.* = n[2..];
+                return .{ .version_bits = decl.V10 };
+            }
+            name.* = n[1..];
+            return .{};
+        },
+        else => 0,
+    };
+    if (bits == 0) return .{};
+    name.* = n[1..];
+    return .{ .version_bits = bits };
+}
+
+/// `ASnative(cat, index)` as a value, for the loaders above.
+fn slotOf(vm: *Vm, cat: u32, idx: u32) !Value {
+    const f = nativeCategory(cat) orelse return .undefined_value;
+    const narrow: u16 = if (idx <= std.math.maxInt(u16)) @intCast(idx) else std.math.maxInt(u16);
+    return .{ .object = try vm.newTableNativeFn(f, narrow) };
 }
 
 fn ctorError(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
