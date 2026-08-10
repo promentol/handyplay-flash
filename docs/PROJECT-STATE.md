@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**679/679** traces, images **21/26**); F open |
+| M4 | objects/stage/buttons/text/bitmaps | ✅ every workstream closed — A, B, C, D, E, F, L (**679/679** traces, images **21/26**) |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -483,13 +483,22 @@ bitmaps → blend modes), each with exact semantics and the authoritative
 Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
-**Workstreams A, B, C, D, E and L are CLOSED, and the trace corpus is
-GREEN: 679 of 679** (images 21/26). Pick up F (PlaceObject3 blend modes
-and clipDepth masks) next — `Renderer.blendModeFromSwf` already has the
-mapping F needs, because `BitmapData.draw` takes the same numbering.
-`docs/M4-SPEC.md` §4, §5, §6 and §7 name, by dir and cause, everything
-those workstreams could not reach at the time; the last 54 of those are
-now closed and the tables are history, not a hit list.
+**M4 IS CLOSED. Every workstream — A, B, C, D, E, F and L — is done and
+the trace corpus is GREEN: 679 of 679** (images 21/26). F was the last:
+PlaceObject3 blend modes and `cacheAsBitmap` now draw the object onto a
+layer of its own and composite the layer, which is what a blend mode
+means for a clip with children. No corpus dir and no sample movie
+exercises it — that was measured, not assumed — so it ships with
+hand-computed pixel tests and `tools/make_blend_demo.py`.
+`docs/M4-SPEC.md` §4 to §8 name, by dir and cause, everything those
+workstreams could not reach at the time; the last 54 of those are now
+closed and the tables are history, not a hit list.
+
+**Next is M5** (libretro core + save-states, with the byte-identical
+framebuffer gate the other handyplay cores use), then M6 (audio) and M7
+(morph tweening, EditText polish, and the visual FILTER kernels — the
+filter list already decodes, and F's layer machinery is what they draw
+through).
 
 **The one dir the corpus does NOT score, and why.**
 `bitmap_data_thorough/pixelDissolve` carries

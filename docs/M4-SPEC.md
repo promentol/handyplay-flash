@@ -549,9 +549,11 @@ reached and exactly why.
 | The LOADER (M5) — `_root.loadMovie("test2.swf")`, whose trace is the ONE line each of these three differs by (1236 of 1237 match) | `focusrect_property_swf5/6/7` |
 
 **Deliberately left for M7**, and not corpus-visible: a filter's VISUAL
-effect and the PlaceObject3 filter list (`bitmap_filters` needs the
-latter — it went from 540 differing lines to 182 once the AVM1 filter
-surface existed), and `StyleSheet.load`, which needs the M5 loader.
+effect. `bitmap_filters` PASSES — its remaining 182 differing lines were
+the PlaceObject3 filter list, which `core/swf/place.zig` decodes, so the
+dir has been green since; what M7 owes it is only pixels, and it has no
+image comparison to check them with. `StyleSheet.load` landed with the
+loader in workstream L.
 
 **Two corrections to this section's own plan**, so nobody re-derives them:
 
@@ -718,17 +720,45 @@ would actually take.
   `core/bitmap/operations.zig` records what the image says and why the
   obvious alternative is worse.
 
-## 8. Renderer additions (workstream F)
+## 8. Renderer additions (workstream F) — ✅ CLOSED
 
-- PlaceObject3 `blend_mode` byte → simdra BlendMode: 0/1 normal
-  (src_over), 2 layer (src_over for now), 3 multiply, 4 screen,
-  5 lighten, 6 darken, 7 difference, 8 add, 9 subtract
-  (`flash_subtract`), 10 invert (`flash_invert`), 11 alpha
-  (`flash_alpha`), 12 erase (`flash_erase`), 13 overlay, 14 hardlight.
-  Set via canvas `blendMode` around the object's draws.
-- clipDepth masks CAN land here if cheap (simdra `clipPath` +
-  save/restore; mask shape's fills → clip region; maskees = depths in
-  (depth, clip_depth]) — else defer to M7 as planned.
+**The corpus does not exercise this section, and that was measured, not
+assumed.** Scanning every `test.swf` for PlaceObject3's flag bit 9 finds
+NO dir that places an object with a blend mode; exactly one
+(`bitmap_filters`) carries PO3 filters, and it is trace-only and passes.
+None of the five sample movies uses a blend mode, a filter or
+`cacheAsBitmap`. So F ships verified by construction — hand-computed
+pixel tests plus `tools/make_blend_demo.py` — and neither score moved.
+
+What shipped:
+
+- **The blend byte reaches the compositor**, through a LAYER. An object
+  with a blend mode (or `cacheAsBitmap`) is drawn onto an offscreen
+  layer of its own and the layer is composited; the alternative —
+  blending each child against the backdrop as it is drawn — is a
+  different picture and the wrong one. `renderObject` decides,
+  `renderLayered` does it, `renderObjectInner` is the old dispatch.
+- **The layer is the object's bounding box**, its origin floored to a
+  whole pixel. That is enough even for the modes whose formula differs
+  from `dst` outside the source, since inside the box it is the source's
+  own alpha that the formula reads — and the whole-pixel origin is what
+  gives `cacheAsBitmap` the pixel snapping Flash has.
+- **`cacheAsBitmap`** is a real property over the display object now,
+  from PlaceObject3's flag or from script, rather than a stored `false`.
+- **clipDepth masks** were already done (`clipToMask`, `maskRunEnd`);
+  `movieclip_setmask` passes pixel-exact and there is now a regression
+  test for the run's extent.
+
+Three bugs surfaced that no earlier code path had ever reached, all in
+vendored simdra: `sampleImageRow` indexed a `@Vector` with a runtime
+lane; `drawImage` wants RGBA where our surfaces are BGRA; and the
+layer-composite modes ignored the clip mask, so `erase` knocked its hole
+through the entire stage instead of the object's own box.
+
+Not in F, and deliberately: rendering the FILTER list (blur, glow, drop
+shadow, bevel, colour matrix, convolution, displacement). The list is
+decoded and readable from script; drawing it is M7, and the layer
+machinery above is what it will be built on.
 
 ---
 

@@ -96,3 +96,19 @@ Sorenson's picture header is H.263's with the GOB number reused as a
 version field, a picture size that may be custom in 8 or 16 bits, and a
 deblocking flag. Its version 1 also picks the escape-coefficient width
 with a flag (7 or 11 bits) where plain H.263 always spends 8.
+
+## PlaceObject3 extras (M4-F)
+
+| field | state |
+|---|---|
+| `blend_mode` (flag bit 9) | applied — the object is drawn to a layer and the layer composited |
+| `cacheAsBitmap` (bit 10) | applied — same layer, origin snapped to a whole pixel |
+| filter list (bit 8) | decoded and readable from script; RENDERING is M7 |
+| `is_visible` (bit 13) | honoured from SWF 11 |
+| `background_color` (bit 14) | parsed, unused |
+
+The blend numbering is Flash's, not HTML5's: 0/1 normal, 2 layer, 3
+multiply, 4 screen, 5 lighten, 6 darken, 7 difference, 8 add, 9
+subtract, 10 invert, 11 alpha, 12 erase, 13 overlay, 14 hardlight.
+`alpha` and `erase` only mean anything against a parent layer — they
+change the DESTINATION's alpha and leave its colour alone.
