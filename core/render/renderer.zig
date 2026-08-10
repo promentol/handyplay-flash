@@ -1419,7 +1419,7 @@ fn applyStrokeStyle(
                 .{ .character = b.id };
             if (try self.pattern(src, b.is_repeating, b.is_smoothed)) |pat| {
                 const full = t.concat(b.matrix);
-                pat.setTransform(full.a * 20, full.b * 20, full.c * 20, full.d * 20, full.tx, full.ty);
+                pat.setTransform(full.a, full.b, full.c, full.d, full.tx, full.ty);
                 ctx.setStrokePattern(pat);
             } else {
                 ctx.setStrokeStyle(128, 128, 128, 255);
@@ -1464,7 +1464,7 @@ fn applyFillStyle(
                 // matrix is the whole chain: texel → bitmap twips (20 per
                 // pixel) → shape twips (the style matrix) → device.
                 const full = t.concat(b.matrix);
-                pat.setTransform(full.a * 20, full.b * 20, full.c * 20, full.d * 20, full.tx, full.ty);
+                pat.setTransform(full.a, full.b, full.c, full.d, full.tx, full.ty);
                 ctx.setFillPattern(pat);
             } else {
                 // A character that is missing or would not decode. Mid

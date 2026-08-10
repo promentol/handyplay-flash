@@ -1,0 +1,11 @@
+width = 320
+height = 120
+fps = 30
+swf_version = 8
+# Two-step build: swfmill makes template.swf from assets.xml, then mtasc
+# injects the code — as2.sh does both when a case has an assets.xml.
+assets = true
+# Scaled and rotated bitmaps. Every pixel is within 4 levels; the budget
+# is for the sampling filter along the icon's alpha ring.
+tolerance = 8
+max_outliers = 600

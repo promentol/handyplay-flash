@@ -16,3 +16,4 @@ samples/*.swf
 .DS_Store
 tests/as2/*/hf.png
 tests/as2/*/hf.txt
+tests/as2/*/template.swf

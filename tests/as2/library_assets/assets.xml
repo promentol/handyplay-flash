@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- The library mtasc cannot build. swfmill turns this into a SWF whose
+     symbols carry LINKAGE NAMES, which is what attachMovie and
+     attachBitmap look up at run time. -->
+<movie width="320" height="120" framerate="30" version="8">
+  <background color="#101828"/>
+  <frame>
+    <library>
+      <clip id="Logo" import="logo.png"/>
+    </library>
+  </frame>
+</movie>

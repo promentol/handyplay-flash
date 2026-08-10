@@ -27,6 +27,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 CASES_DIR="$ROOT/tests/as2"
 COMPILER_IMAGE=${COMPILER_IMAGE:-handyflash-as2c}
 RUNNER_IMAGE=${RUNNER_IMAGE:-handyflash-ruffle}
+ASSETS_IMAGE=${ASSETS_IMAGE:-handyflash-swfassets}
 TRACE_BIN="$ROOT/zig-out/bin/trace_runner"
 SDL_BIN="$ROOT/zig-out/bin/handyflash-sdl"
 # How long ruffle is left running before the screenshot. It has no "tick
@@ -49,6 +50,9 @@ cases() {
 do_build() {
     docker build -t "$COMPILER_IMAGE" "$ROOT/tools/as2/compiler"
     docker build -t "$RUNNER_IMAGE" "$ROOT/tools/as2/runner"
+    # amd64 and emulated: the tools that build asset libraries are not
+    # packaged for arm64 anywhere. See tools/as2/assets/Dockerfile.
+    docker build --platform linux/amd64 -t "$ASSETS_IMAGE" "$ROOT/tools/as2/assets"
 }
 
 do_compile() {
@@ -58,8 +62,22 @@ do_compile() {
         h=$(toml "$d" height);  [ -n "$h" ] || h=150
         f=$(toml "$d" fps);     [ -n "$f" ] || f=30
         v=$(toml "$d" swf_version); [ -n "$v" ] || v=8
-        docker run --rm -v "$d:/work" "$COMPILER_IMAGE" \
-            as2-compile Test.as test.swf "$w" "$h" "$f" "$v" >/dev/null
+        if [ -f "$d/assets.xml" ]; then
+            # A case with static assets is built in two steps: swfmill
+            # turns the manifest into a library SWF with linkage names,
+            # then mtasc INJECTS the compiled classes into that file.
+            # mtasc cannot make a shape or a bitmap; this is how AS2 was
+            # actually built.
+            docker run --rm --platform linux/amd64 -v "$d:/work" "$ASSETS_IMAGE" \
+                swfmill simple assets.xml template.swf >/dev/null
+            docker run --rm -v "$d:/work" "$COMPILER_IMAGE" \
+                mtasc -version "$v" -cp /usr/local/share/mtasc/std8 \
+                      -cp /usr/local/share/mtasc/std -main \
+                      -swf template.swf -out test.swf Test.as >/dev/null
+        else
+            docker run --rm -v "$d:/work" "$COMPILER_IMAGE" \
+                as2-compile Test.as test.swf "$w" "$h" "$f" "$v" >/dev/null
+        fi
         printf '  compiled %-18s %s bytes\n' "$c" "$(wc -c <"$d/test.swf" | tr -d ' ')"
     done
 }

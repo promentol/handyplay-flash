@@ -806,8 +806,19 @@ fn beginBitmapFill(p: *anyopaque, this: Value, args: []const Value) anyerror!Val
         try d.setFillStyle(null);
         return .undefined_value;
     };
-    var m: swf.reader.Matrix = .{};
-    if (arg(args, 1) == .object) m = try geom.matrixOf(vm, args[1].object);
+    // A tag's bitmap fill matrix maps a texel to TWIPS; a script's maps it
+    // to PIXELS. The renderer speaks the tag's language, so the twenty
+    // between them is applied here, where the pixel convention lives,
+    // rather than in the renderer, where it would corrupt every fill that
+    // came from a tag.
+    var m: swf.reader.Matrix = .{ .a = 20, .d = 20 };
+    if (arg(args, 1) == .object) {
+        m = try geom.matrixOf(vm, args[1].object);
+        m.a *= 20;
+        m.b *= 20;
+        m.c *= 20;
+        m.d *= 20;
+    }
     // `repeating` defaults to TRUE and `smoothed` to false — the opposite
     // pair of defaults, and neither is what the documentation says.
     const repeating = if (args.len > 2) value_mod.toBoolean(args[2], vm.swf_version) else true;
