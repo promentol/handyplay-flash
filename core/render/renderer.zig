@@ -499,7 +499,136 @@ pub const Renderer = struct {
     /// supplies the transform. `renderClip`'s per-child arm and this are
     /// the same dispatch; keeping it callable on its own is what lets
     /// `BitmapData.draw` render an object that is not on the stage.
+    ///
+    /// An object with a blend mode or `cacheAsBitmap` does not draw
+    /// straight onto the canvas: it draws onto a LAYER of its own, and
+    /// the layer is composited afterwards. That is the difference
+    /// between blending each of a clip's children against the backdrop
+    /// one at a time and blending the clip as a whole, and only the
+    /// second is what Flash means.
     fn renderObject(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        obj: *const display_object.DisplayObject,
+        t: Transform,
+        cx: swf.reader.ColorTransform,
+    ) Error!void {
+        // Blend 0 and 1 are both "normal"; 2 is "layer", which composites
+        // normally but still needs the layer, because the modes that
+        // reach INTO their backdrop only make sense inside one.
+        if (obj.blend_mode > 1 or obj.cache_as_bitmap) {
+            if (try self.renderLayered(ctx, obj, t, cx)) return;
+        }
+        return self.renderObjectInner(ctx, obj, t, cx);
+    }
+
+    /// Draw `obj` onto a transparent layer of its own and composite the
+    /// layer with its blend mode. Returns false when there is no layer to
+    /// be had — no allocator, or nothing on screen to draw — and the
+    /// caller should fall back to drawing directly.
+    ///
+    /// The layer is the object's BOUNDING BOX, not the whole surface. A
+    /// blend only reaches pixels the source covers, and inside the box
+    /// the source's own alpha is what the formula sees, so the box is
+    /// enough even for `alpha`, `erase` and `invert`, whose results
+    /// differ from `dst` wherever the source is absent.
+    fn renderLayered(
+        self: *Renderer,
+        ctx: *simdra.SmCanvas,
+        obj: *const display_object.DisplayObject,
+        t: Transform,
+        cx: swf.reader.ColorTransform,
+    ) Error!bool {
+        const gpa = self.display_gpa orelse return false;
+        // The object's own box, in its own twips, children included; the
+        // render transform then takes its corners to device pixels.
+        const box = bounds_mod.ownBoundsIn(obj, self.lib) orelse return false;
+        var min_x: f64 = std.math.floatMax(f64);
+        var min_y: f64 = std.math.floatMax(f64);
+        var max_x: f64 = -std.math.floatMax(f64);
+        var max_y: f64 = -std.math.floatMax(f64);
+        for ([_][2]i32{
+            .{ box.xmin, box.ymin },
+            .{ box.xmax, box.ymin },
+            .{ box.xmin, box.ymax },
+            .{ box.xmax, box.ymax },
+        }) |corner| {
+            const p = t.apply(@floatFromInt(corner[0]), @floatFromInt(corner[1]));
+            min_x = @min(min_x, p[0]);
+            min_y = @min(min_y, p[1]);
+            max_x = @max(max_x, p[0]);
+            max_y = @max(max_y, p[1]);
+        }
+
+        const surface_w: i64 = @intCast(ctx.surface.width);
+        const surface_h: i64 = @intCast(ctx.surface.height);
+        // A pixel of slack on each side: a stroke or an antialiased edge
+        // reaches past the geometry's box.
+        const x0 = @max(@as(i64, @intFromFloat(@floor(min_x))) - 1, 0);
+        const y0 = @max(@as(i64, @intFromFloat(@floor(min_y))) - 1, 0);
+        const x1 = @min(@as(i64, @intFromFloat(@ceil(max_x))) + 1, surface_w);
+        const y1 = @min(@as(i64, @intFromFloat(@ceil(max_y))) + 1, surface_h);
+        if (x1 <= x0 or y1 <= y0) return true; // entirely off screen: nothing to draw
+
+        var layer = canvas_mod.Canvas.init(gpa, @intCast(x1 - x0), @intCast(y1 - y0)) catch return false;
+        defer layer.deinit();
+        @memset(layer.surface.pixels, 0);
+        const layer_ctx = try layer.ctx();
+        layer_ctx.antialias = ctx.antialias;
+
+        // The layer's origin is a WHOLE pixel, and shifting the subtree
+        // by it is what snaps a cached object to the pixel grid.
+        const shifted = Transform{
+            .a = t.a,
+            .b = t.b,
+            .c = t.c,
+            .d = t.d,
+            .tx = t.tx - @as(f32, @floatFromInt(x0)),
+            .ty = t.ty - @as(f32, @floatFromInt(y0)),
+        };
+        try self.renderObjectInner(layer_ctx, obj, shifted, cx);
+
+        // `drawImage` reads its source as RGBA and swizzles into the
+        // surface's own BGRA order, so the layer has to be handed over
+        // the way it expects. The layer is about to be dropped, so the
+        // swap happens in place rather than through a copy.
+        for (layer.surface.pixels) |*p| {
+            p.* = (p.* & 0xFF00FF00) | ((p.* & 0x000000FF) << 16) | ((p.* >> 16) & 0x000000FF);
+        }
+        const bitmap = simdra.SmBitmap{
+            .data = std.mem.sliceAsBytes(layer.surface.pixels),
+            .width = layer.surface.width,
+            .height = layer.surface.height,
+            .pixelFormat = .rgba_unorm8,
+        };
+        const saved = ctx.blendMode;
+        // The composite is in DEVICE pixels and the colour transform has
+        // already been spent inside the layer; leaving either in place
+        // would apply it twice.
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.setColorTransform(.{});
+        // CLIPPED TO THE LAYER. `alpha` and `erase` reach every pixel of
+        // the destination — outside the source they see an alpha of zero
+        // and take the backdrop's alpha down with it — so without this
+        // one blended object would knock a hole in the whole stage.
+        ctx.beginPath();
+        ctx.rect(
+            @floatFromInt(x0),
+            @floatFromInt(y0),
+            @floatFromInt(x1 - x0),
+            @floatFromInt(y1 - y0),
+        );
+        ctx.clip(.nonzero);
+        // `layer` (2) composites normally; so does a bare cacheAsBitmap.
+        ctx.blendMode = if (obj.blend_mode > 2) blendModeFromSwf(obj.blend_mode) else .src_over;
+        ctx.drawImageAt(bitmap, @floatFromInt(x0), @floatFromInt(y0));
+        ctx.blendMode = saved;
+        ctx.restore();
+        return true;
+    }
+
+    fn renderObjectInner(
         self: *Renderer,
         ctx: *simdra.SmCanvas,
         obj: *const display_object.DisplayObject,
@@ -1650,3 +1779,282 @@ fn packBits(buf: []u8, fields: []const struct { u32, u6 }) void {
     }
 }
 
+
+// --- Workstream F: blend modes and cacheAsBitmap -----------------------------
+
+/// A DefineShape body for a solid `colour` square filling 200x200 twips
+/// (10x10 px), character `id`. Same construction as the pipeline test
+/// above, with the fill colour lifted out.
+fn squareShape(gpa: std.mem.Allocator, id: u16, colour: [3]u8) !std.ArrayList(u8) {
+    var body: std.ArrayList(u8) = .empty;
+    errdefer body.deinit(gpa);
+    try body.append(gpa, @truncate(id));
+    try body.append(gpa, @truncate(id >> 8));
+    var rect: [6]u8 = @splat(0);
+    packBits(&rect, &.{ .{ 9, 5 }, .{ 0, 9 }, .{ 200, 9 }, .{ 0, 9 }, .{ 200, 9 } });
+    try body.appendSlice(gpa, rect[0..6]);
+    try body.appendSlice(gpa, &.{ 1, 0x00, colour[0], colour[1], colour[2], 0, 0x11 });
+    var rec: [32]u8 = @splat(0);
+    const neg200: u32 = @as(u32, @bitCast(@as(i32, -200))) & 0x1FF;
+    packBits(&rec, &.{
+        .{ 0b00101, 6 },     .{ 0, 5 },      .{ 1, 1 },
+        .{ 0b11_0111_1, 7 }, .{ 200, 9 },    .{ 0, 9 },
+        .{ 0b11_0111_1, 7 }, .{ 0, 9 },      .{ 200, 9 },
+        .{ 0b11_0111_1, 7 }, .{ neg200, 9 }, .{ 0, 9 },
+        .{ 0b11_0111_1, 7 }, .{ 0, 9 },      .{ neg200, 9 },
+        .{ 0, 6 },
+    });
+    try body.appendSlice(gpa, &rec);
+    return body;
+}
+
+/// A MATRIX record carrying nothing but a translation, in twips.
+fn translateMatrix(tx: i32, ty: i32) [4]u8 {
+    var buf: [4]u8 = @splat(0);
+    const ux: u32 = @as(u32, @bitCast(tx)) & 0x3FF;
+    const uy: u32 = @as(u32, @bitCast(ty)) & 0x3FF;
+    packBits(&buf, &.{ .{ 0, 1 }, .{ 0, 1 }, .{ 10, 5 }, .{ ux, 10 }, .{ uy, 10 } });
+    return buf;
+}
+
+/// Wrap a tag payload in a 10x10-px SWF 8 header and load it.
+fn loadTestMovie(gpa: std.mem.Allocator, payload: []const u8) !swf.movie.Movie {
+    var file: std.ArrayList(u8) = .empty;
+    defer file.deinit(gpa);
+    try file.appendSlice(gpa, "FWS\x08");
+    var len4: [4]u8 = undefined;
+    std.mem.writeInt(u32, &len4, @intCast(payload.len + 8), .little);
+    try file.appendSlice(gpa, &len4);
+    try file.appendSlice(gpa, payload);
+    return swf.movie.load(gpa, file.items);
+}
+
+/// The stage header every one of these movies shares: a 10x10-px rect,
+/// 12 fps, one frame.
+fn testStageHeader(gpa: std.mem.Allocator, payload: *std.ArrayList(u8)) !void {
+    var rect: [6]u8 = @splat(0);
+    packBits(&rect, &.{ .{ 9, 5 }, .{ 0, 9 }, .{ 200, 9 }, .{ 0, 9 }, .{ 200, 9 } });
+    try payload.appendSlice(gpa, rect[0..6]);
+    try payload.appendSlice(gpa, &.{ 0, 12, 1, 0 });
+}
+
+/// Render a built movie onto a 10x10 canvas over a WHITE stage and hand
+/// back the pixels. `display_gpa` is what the layer path needs; without
+/// it the renderer draws directly and the test would prove nothing.
+fn renderTestMovie(gpa: std.mem.Allocator, payload: []const u8, out: *canvas_mod.Canvas) !void {
+    var movie = try loadTestMovie(gpa, payload);
+    defer movie.deinit();
+    var counter: u32 = 0;
+    var ctx_: movie_clip.Context = .{ .gpa = gpa, .movie = &movie, .root_movie = &movie, .instance_counter = &counter };
+    defer ctx_.deinit(gpa);
+    var root = movie_clip.MovieClip.init(movie.frames);
+    defer root.deinit(gpa);
+    try root.runFrame(&ctx_);
+
+    var renderer = Renderer.init(movie.allocator());
+    renderer.lib = &movie.lib;
+    renderer.display_gpa = gpa;
+    const stage: Transform = .{ .a = 1.0 / 20.0, .d = 1.0 / 20.0 };
+    var root_placement: display_object.DisplayObject = .{
+        .character_id = 0,
+        .depth = 0,
+        .kind = .{ .clip = &root },
+        .owns_kind = false,
+    };
+    try renderer.renderFrame(out, &root, &root_placement, &.{}, 0x00FFFFFF, stage);
+}
+
+fn channels(px: u32) [4]u8 {
+    return .{
+        @truncate((px >> 16) & 0xFF), // R — the surface is BGRA
+        @truncate((px >> 8) & 0xFF),
+        @truncate(px & 0xFF),
+        @truncate((px >> 24) & 0xFF),
+    };
+}
+
+/// One backdrop square and one square over it placed by PlaceObject3
+/// with `blend`; the pixel at (5,5) comes back.
+fn blendProbe(gpa: std.mem.Allocator, back: [3]u8, front: [3]u8, blend: u8) ![4]u8 {
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(gpa);
+    try testStageHeader(gpa, &payload);
+    var back_shape = try squareShape(gpa, 7, back);
+    defer back_shape.deinit(gpa);
+    try appendTag(gpa, &payload, 2, back_shape.items);
+    var front_shape = try squareShape(gpa, 8, front);
+    defer front_shape.deinit(gpa);
+    try appendTag(gpa, &payload, 2, front_shape.items);
+    try appendTag(gpa, &payload, 26, &.{ 2, 1, 0, 7, 0 }); // PO2: id 7, depth 1
+    // PlaceObject3: flags = has_character (1<<1) | has_blend (1<<9).
+    try appendTag(gpa, &payload, 70, &.{ 0x02, 0x02, 2, 0, 8, 0, blend });
+    try appendTag(gpa, &payload, 1, "");
+    try appendTag(gpa, &payload, 0, "");
+
+    var canvas = try canvas_mod.Canvas.init(gpa, 10, 10);
+    defer canvas.deinit();
+    try renderTestMovie(gpa, payload.items, &canvas);
+    return channels(canvas.pixels()[5 * 10 + 5]);
+}
+
+fn near(actual: u8, want: u8) bool {
+    const a: i32 = actual;
+    const w: i32 = want;
+    return @abs(a - w) <= 2;
+}
+
+test "a PlaceObject3 blend mode reaches the compositor" {
+    const gpa = std.testing.allocator;
+    const back = [3]u8{ 200, 150, 100 };
+
+    // Multiply by WHITE is the identity, and multiply by BLACK is black.
+    // Neither result is reachable if the blend byte is ignored: without
+    // it the answer is the front square's own colour both times.
+    const white = try blendProbe(gpa, back, .{ 255, 255, 255 }, 3);
+    try std.testing.expect(near(white[0], 200) and near(white[1], 150) and near(white[2], 100));
+    const black = try blendProbe(gpa, back, .{ 0, 0, 0 }, 3);
+    try std.testing.expect(near(black[0], 0) and near(black[1], 0) and near(black[2], 0));
+
+    // Difference with the same colour cancels to nothing.
+    const same = try blendProbe(gpa, back, back, 7);
+    try std.testing.expect(near(same[0], 0) and near(same[1], 0) and near(same[2], 0));
+
+    // Add saturates.
+    const added = try blendProbe(gpa, back, .{ 100, 100, 100 }, 8);
+    try std.testing.expect(near(added[0], 255) and near(added[1], 250) and near(added[2], 200));
+
+    // Subtract takes the source AWAY from the backdrop.
+    const sub = try blendProbe(gpa, back, .{ 50, 50, 50 }, 9);
+    try std.testing.expect(near(sub[0], 150) and near(sub[1], 100) and near(sub[2], 50));
+
+    // Invert ignores the source's colour entirely and flips the backdrop.
+    const inv = try blendProbe(gpa, back, .{ 12, 34, 56 }, 10);
+    try std.testing.expect(near(inv[0], 55) and near(inv[1], 105) and near(inv[2], 155));
+
+    // Erase knocks a HOLE: the destination keeps its colour and loses its
+    // alpha. Nothing but a layer composite can produce that.
+    const erased = try blendProbe(gpa, back, .{ 255, 255, 255 }, 12);
+    try std.testing.expectEqual(@as(u8, 0), erased[3]);
+
+    // Mode 2 is "layer": a layer is made, and it composites normally.
+    const layered = try blendProbe(gpa, back, .{ 10, 20, 30 }, 2);
+    try std.testing.expect(near(layered[0], 10) and near(layered[1], 20) and near(layered[2], 30));
+}
+
+test "a blended clip composites as a whole, not child by child" {
+    // THE distinction workstream F exists for. A sprite holding a red
+    // square and a green one over it is multiplied against a grey
+    // backdrop. Inside the overlap the LAYER holds green — the red is
+    // already covered — so the answer is grey x green. Blending each
+    // child against the backdrop in turn would instead multiply twice
+    // and give black.
+    const gpa = std.testing.allocator;
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(gpa);
+    try testStageHeader(gpa, &payload);
+
+    var grey = try squareShape(gpa, 7, .{ 128, 128, 128 });
+    defer grey.deinit(gpa);
+    try appendTag(gpa, &payload, 2, grey.items);
+    var red = try squareShape(gpa, 8, .{ 255, 0, 0 });
+    defer red.deinit(gpa);
+    try appendTag(gpa, &payload, 2, red.items);
+    var green = try squareShape(gpa, 9, .{ 0, 255, 0 });
+    defer green.deinit(gpa);
+    try appendTag(gpa, &payload, 2, green.items);
+
+    // Sprite 10: red at the origin, green shifted right by 5 px so the
+    // right half of the stage is where the two overlap.
+    var sprite: std.ArrayList(u8) = .empty;
+    defer sprite.deinit(gpa);
+    try sprite.appendSlice(gpa, &.{ 10, 0, 1, 0 }); // id 10, one frame
+    try appendTag(gpa, &sprite, 26, &.{ 2, 1, 0, 8, 0 });
+    const m = translateMatrix(100, 0);
+    var place_green: std.ArrayList(u8) = .empty;
+    defer place_green.deinit(gpa);
+    try place_green.appendSlice(gpa, &.{ 0x06, 2, 0, 9, 0 }); // char + matrix, depth 2
+    try place_green.appendSlice(gpa, &m);
+    try appendTag(gpa, &sprite, 26, place_green.items);
+    try appendTag(gpa, &sprite, 1, "");
+    try appendTag(gpa, &sprite, 0, "");
+    try appendTag(gpa, &payload, 39, sprite.items);
+
+    try appendTag(gpa, &payload, 26, &.{ 2, 1, 0, 7, 0 }); // backdrop
+    try appendTag(gpa, &payload, 70, &.{ 0x02, 0x02, 2, 0, 10, 0, 3 }); // sprite, multiply
+    try appendTag(gpa, &payload, 1, "");
+    try appendTag(gpa, &payload, 0, "");
+
+    var canvas = try canvas_mod.Canvas.init(gpa, 10, 10);
+    defer canvas.deinit();
+    try renderTestMovie(gpa, payload.items, &canvas);
+
+    const left = channels(canvas.pixels()[5 * 10 + 2]);
+    try std.testing.expect(near(left[0], 128) and near(left[1], 0) and near(left[2], 0));
+    const overlap = channels(canvas.pixels()[5 * 10 + 7]);
+    try std.testing.expect(near(overlap[0], 0) and near(overlap[1], 128) and near(overlap[2], 0));
+}
+
+test "cacheAsBitmap draws through a layer without changing the picture" {
+    // A cached object with no blend must look the same as an uncached
+    // one — the layer is invisible until something uses it.
+    const gpa = std.testing.allocator;
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(gpa);
+    try testStageHeader(gpa, &payload);
+    var sq = try squareShape(gpa, 7, .{ 40, 90, 160 });
+    defer sq.deinit(gpa);
+    try appendTag(gpa, &payload, 2, sq.items);
+    // flags = has_character | has_cache_as_bitmap (1<<10), byte = 1.
+    try appendTag(gpa, &payload, 70, &.{ 0x02, 0x04, 1, 0, 7, 0, 1 });
+    try appendTag(gpa, &payload, 1, "");
+    try appendTag(gpa, &payload, 0, "");
+
+    var canvas = try canvas_mod.Canvas.init(gpa, 10, 10);
+    defer canvas.deinit();
+    try renderTestMovie(gpa, payload.items, &canvas);
+    const px = channels(canvas.pixels()[5 * 10 + 5]);
+    try std.testing.expect(near(px[0], 40) and near(px[1], 90) and near(px[2], 160));
+}
+
+test "a clipDepth mask limits its run to the masker's shape" {
+    // The other half of workstream F, pinned rather than assumed: a
+    // masker at depth 2 with `clip_depth` 3 shows the square at depth 3
+    // only where the masker itself is. The masker is shifted right by
+    // half the stage, so the left half must keep the backdrop.
+    const gpa = std.testing.allocator;
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(gpa);
+    try testStageHeader(gpa, &payload);
+
+    var grey = try squareShape(gpa, 7, .{ 128, 128, 128 });
+    defer grey.deinit(gpa);
+    try appendTag(gpa, &payload, 2, grey.items);
+    var masker = try squareShape(gpa, 8, .{ 0, 0, 0 });
+    defer masker.deinit(gpa);
+    try appendTag(gpa, &payload, 2, masker.items);
+    var red = try squareShape(gpa, 9, .{ 255, 0, 0 });
+    defer red.deinit(gpa);
+    try appendTag(gpa, &payload, 2, red.items);
+
+    try appendTag(gpa, &payload, 26, &.{ 2, 1, 0, 7, 0 });
+    // char + matrix + clip_depth, depth 2, shifted right 5 px, masking
+    // everything down to depth 3.
+    var place_mask: std.ArrayList(u8) = .empty;
+    defer place_mask.deinit(gpa);
+    try place_mask.appendSlice(gpa, &.{ 0x46, 2, 0, 8, 0 });
+    try place_mask.appendSlice(gpa, &translateMatrix(100, 0));
+    try place_mask.appendSlice(gpa, &.{ 3, 0 });
+    try appendTag(gpa, &payload, 26, place_mask.items);
+    try appendTag(gpa, &payload, 26, &.{ 2, 3, 0, 9, 0 });
+    try appendTag(gpa, &payload, 1, "");
+    try appendTag(gpa, &payload, 0, "");
+
+    var canvas = try canvas_mod.Canvas.init(gpa, 10, 10);
+    defer canvas.deinit();
+    try renderTestMovie(gpa, payload.items, &canvas);
+
+    const outside = channels(canvas.pixels()[5 * 10 + 2]);
+    try std.testing.expect(near(outside[0], 128) and near(outside[1], 128));
+    const inside = channels(canvas.pixels()[5 * 10 + 7]);
+    try std.testing.expect(near(inside[0], 255) and near(inside[1], 0) and near(inside[2], 0));
+}

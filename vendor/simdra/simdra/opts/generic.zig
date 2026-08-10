@@ -1132,11 +1132,14 @@ pub fn sampleImageNearestRow(
         const px_v = @as(Vd, @splat(x_start_f)) + i_v + lane_offsets;
         const sx_v = inv_a_v * px_v + inv_c_v * py_v + inv_e_v;
         const sy_v = inv_b_v * px_v + inv_d_v * py_v + inv_f_v;
-        // Per-lane scalar gather + bounds check.
+        // Per-lane scalar gather + bounds check. The lanes are read out
+        // as ARRAYS: a vector cannot be indexed by a runtime value.
+        const sx_lanes: [N]f64 = sx_v;
+        const sy_lanes: [N]f64 = sy_v;
         var lane: usize = 0;
         while (lane < N) : (lane += 1) {
-            const sx_f = sx_v[lane];
-            const sy_f = sy_v[lane];
+            const sx_f = sx_lanes[lane];
+            const sy_f = sy_lanes[lane];
             if (sx_f < src_rect_x or sx_f >= src_rect_x1 or
                 sy_f < src_rect_y or sy_f >= src_rect_y1) continue;
             const sx_int: i32 = @intFromFloat(@floor(sx_f));

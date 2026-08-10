@@ -1215,6 +1215,7 @@ fn applyPlacement(ctx: *Context, obj: *DisplayObject, po: swf.place.PlaceObject,
         if (po.color_transform) |t| obj.color_transform = t;
         if (po.ratio) |x| obj.ratio = x;
         if (po.blend_mode) |m| obj.blend_mode = m;
+        if (po.is_bitmap_cached) |v| obj.cache_as_bitmap = v;
         if (po.had_filters) obj.tag_filters = po.filter_list;
         // PlaceObject's visibility flag is honoured only from SWF 11 on.
         if (po.is_visible) |v| {

@@ -55,6 +55,11 @@ pub const DisplayObject = struct {
     visible: bool = true,
     /// PlaceObject3 blend byte (0/1 = normal).
     blend_mode: u8 = 0,
+    /// PlaceObject3's `cacheAsBitmap`, or a script's. It draws the object
+    /// through an offscreen layer, which is visible in one way even with
+    /// no blend and no filter: the layer's origin is a WHOLE pixel, so a
+    /// cached object loses sub-pixel positioning.
+    cache_as_bitmap: bool = false,
     /// The filters the PLACEMENT carried. Not owned — a slice into the
     /// movie arena — and read back by `MovieClip.filters` until a script
     /// assigns its own list.

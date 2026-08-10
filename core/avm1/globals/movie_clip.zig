@@ -101,7 +101,7 @@ pub fn install(vm: *Vm) !void {
     try decl.value(vm, proto, "hitArea", .undefined_value, ver(hidden, decl.V6));
     try decl.value(vm, proto, "_accProps", .undefined_value, ver(hidden, decl.V6));
     try decl.value(vm, proto, "forceSmoothing", .undefined_value, ver(hidden, decl.V8));
-    try decl.value(vm, proto, "cacheAsBitmap", .{ .boolean = false }, ver(hidden, decl.V8));
+    try decl.property(vm, proto, "cacheAsBitmap", getCacheAsBitmap, setCacheAsBitmap, ver(hidden, decl.V8));
     try decl.value(vm, proto, "opaqueBackground", .undefined_value, ver(hidden, decl.V8));
     try decl.value(vm, proto, "scrollRect", .undefined_value, ver(hidden, decl.V8));
     try decl.value(vm, proto, "scale9Grid", .undefined_value, ver(hidden, decl.V8));
@@ -470,6 +470,23 @@ const BLEND_NAMES = [_][]const u16{
     S("lighten"), S("darken"), S("difference"), S("add"),      S("subtract"),
     S("invert"),  S("alpha"),  S("erase"),      S("overlay"),  S("hardlight"),
 };
+
+/// `cacheAsBitmap` reads back what was WRITTEN, not what the renderer
+/// decided — a clip whose filters force a cache still reports whatever
+/// the script last set (ruffle `is_bitmap_cached_preference`).
+pub fn getCacheAsBitmap(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    return .{ .boolean = t.obj.cache_as_bitmap };
+}
+
+pub fn setCacheAsBitmap(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const t = stage.targetOfValue(vm, this) orelse return .undefined_value;
+    t.obj.cache_as_bitmap = value_mod.toBoolean(arg(args, 0), vm.swf_version);
+    return .undefined_value;
+}
 
 pub fn getBlendMode(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;

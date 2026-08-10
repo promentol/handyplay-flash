@@ -801,7 +801,15 @@ inline fn endCompositeLayer(self: *SmCanvas, layer: ?CompositeLayer) void {
     const l = layer orelse return;
     // Scratch (current self.pixels) is the rendered shape on a transparent
     // background; composite it onto the real canvas using the user's mode.
-    SmBlitter.blitFull(l.real_pixels, self.pixels, l.real_blend, self.surface.color_type);
+    // MASKED: these modes write every pixel, so an active clip has to be
+    // honoured here or it does not reach them at all.
+    SmBlitter.blitFullMasked(
+        l.real_pixels,
+        self.pixels,
+        l.real_blend,
+        self.surface.color_type,
+        self.clip_mask,
+    );
     self.pixels = l.real_pixels;
     self.blendMode = l.real_blend;
 }
