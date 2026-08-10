@@ -104,6 +104,10 @@ pub const DisplayObject = struct {
     /// The other end of the same link: the object THIS one masks. A mask
     /// is hit even while invisible, and is never hit as itself.
     maskee: ?*DisplayObject = null,
+    /// `Video.attachVideo(netStream)` — the stream whose decoded frame
+    /// this object shows. Opaque: the display list has no business
+    /// knowing what a NetStream is.
+    video_source: ?*anyopaque = null,
     /// Off the display list but possibly still script-referenced. Clips
     /// carry the same flag on their MovieClip; buttons and text fields
     /// need it here or a removed one keeps reading as a live object.

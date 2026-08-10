@@ -517,7 +517,13 @@ pub const Renderer = struct {
             .bitmap => |b| try self.renderBitmap(ctx, .{ .character = b.id }, false, t, cx),
             .attached_bitmap => |b| try self.renderBitmap(ctx, .{ .live = b.data }, b.smoothing, t, cx),
             .morph_shape => {}, // M7
-            .video => {}, // no decoder yet
+            // A video shows whatever its stream last decoded, at one
+            // twip-scaled pixel per texel like any other bitmap.
+            .video => {
+                const src = obj.video_source orelse return;
+                const frame = @import("../avm1/globals/net_stream.zig").frameOf(src) orelse return;
+                try self.renderBitmap(ctx, .{ .live = frame }, false, t, cx);
+            },
         }
     }
 

@@ -2474,4 +2474,5 @@ test {
     _ = @import("text/html.zig");
     _ = @import("avm1/globals/movie_clip.zig");
     _ = @import("avm1/globals/globals.zig");
+    _ = @import("codecs/screen_video.zig");
 }

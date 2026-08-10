@@ -22,6 +22,9 @@ const value_mod = @import("../value.zig");
 const runtime = @import("../runtime.zig");
 const decl = @import("decl.zig");
 const flv = @import("../../flv.zig");
+const screen_video = @import("../../codecs/screen_video.zig");
+const bitmap_data = @import("../../bitmap/data.zig");
+const pixels = @import("../../bitmap/pixels.zig");
 const amf = @import("../amf.zig");
 
 const Value = value_mod.Value;
@@ -51,7 +54,26 @@ pub const Stream = struct {
     /// Milliseconds of stream consumed.
     stream_time: f64 = 0,
     queued_seek: ?f64 = null,
+    /// The most recent decoded video frame, as a pixel buffer the
+    /// renderer can blit. Owned with the player's gpa and replaced on
+    /// every frame that decodes.
+    frame: ?*bitmap_data.BitmapData = null,
+    /// The raw frame behind it, kept because an inter-frame is a DELTA
+    /// against the previous one.
+    raw: ?screen_video.Frame = null,
 };
+
+/// The stream a value names, as an opaque pointer for the display list.
+pub fn streamPtrOf(vm: *Vm, v: Value) ?*anyopaque {
+    const s = streamOf(vm, v) orelse return null;
+    return @ptrCast(s);
+}
+
+/// The frame a video display object should be showing, or null.
+pub fn frameOf(source: *anyopaque) ?*const bitmap_data.BitmapData {
+    const s: *Stream = @ptrCast(@alignCast(source));
+    return s.frame;
+}
 
 pub fn install(vm: *Vm) !void {
     const proto = try vm.objects.create();
@@ -210,7 +232,11 @@ fn tickOne(vm: *Vm, s: *Stream, dt_ms: f64) !void {
         // count as running dry.
         if (@as(f64, @floatFromInt(tag.timestamp)) >= max_time) break;
         s.offset = tag.end;
-        if (tag.kind == .script) try dispatchScript(vm, s, tag.data);
+        switch (tag.kind) {
+            .script => try dispatchScript(vm, s, tag.data),
+            .video => decodeVideo(vm, s, tag.data),
+            else => {},
+        }
     }
     s.stream_time = max_time;
     if (!underrun) return;
@@ -251,6 +277,38 @@ fn dispatchScript(vm: *Vm, s: *Stream, data: []const u8) !void {
     _ = vm.callFunction(fn_value, .{ .object = s.obj }, &.{payload}) catch {
         vm.pending_throw = .undefined_value;
     };
+}
+
+/// One video tag. The first byte is the frame type and the codec; only
+/// SCREEN VIDEO (3) decodes today, and anything else leaves the last
+/// frame standing rather than blanking the picture.
+fn decodeVideo(vm: *Vm, s: *Stream, data: []const u8) void {
+    if (data.len < 2) return;
+    const codec = data[0] & 0x0F;
+    if (codec != 3) return;
+    const decoded = screen_video.decode(vm.gpa, data[1..], s.raw) catch return;
+    if (s.raw) |*old| old.deinit(vm.gpa);
+    s.raw = decoded;
+    // The renderer wants premultiplied pixels; a decoded frame is opaque,
+    // so the conversion is a repack.
+    const bd = s.frame orelse blk: {
+        const fresh = vm.gpa.create(bitmap_data.BitmapData) catch return;
+        fresh.* = bitmap_data.BitmapData.init(vm.gpa, decoded.width, decoded.height, false, 0) catch {
+            vm.gpa.destroy(fresh);
+            return;
+        };
+        s.frame = fresh;
+        break :blk fresh;
+    };
+    if (bd.width != decoded.width or bd.height != decoded.height) return;
+    for (bd.data, 0..) |*px, i| {
+        px.* = pixels.Color.rgba(
+            decoded.rgba[i * 4 + 0],
+            decoded.rgba[i * 4 + 1],
+            decoded.rgba[i * 4 + 2],
+            255,
+        );
+    }
 }
 
 // --- status events ---------------------------------------------------------

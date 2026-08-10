@@ -86,6 +86,7 @@ pub fn displayObject(vm: *Vm, obj: *DisplayObject) !ObjectHandle {
     const proto: ObjectHandle = switch (obj.kind) {
         .button => vm.button_proto,
         .edit_text => vm.textfield_proto,
+        .video => vm.video_proto,
         else => 0,
     };
     vm.objects.get(h).proto = .{ .object = if (proto != 0) proto else vm.object_proto };

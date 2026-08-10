@@ -614,6 +614,10 @@ pub const Vm = struct {
     filter_protos: [10]ObjectHandle = @splat(0),
     /// `TextSnapshot.prototype`.
     textsnapshot_proto: ObjectHandle = 0,
+    /// `Video.prototype`. A DefineVideoStream instance needs it the way a
+    /// button needs `Button.prototype` — that is where `attachVideo`
+    /// lives.
+    video_proto: ObjectHandle = 0,
     /// Is the focus HIGHLIGHT active? It follows the focus, and any mouse
     /// activity below SWF9 clears it. Key handlers (`btn.onKeyDown`) only
     /// fire for a focused object whose highlight is active — ruffle
