@@ -368,7 +368,8 @@ fn getWidth(vm: *Vm, t: Target) !Value {
         const b = t.obj.matrix.transformRect(t.obj.kind.edit_text.bounds);
         return .{ .number = pixelsFromTwips(b.width()) };
     }
-    const b = bounds_mod.localBounds(t.obj) orelse return .{ .number = 0 };
+    const b = bounds_mod.boundsWithTransformIn(t.obj, t.obj.matrix, libOf(vm)) orelse
+        return .{ .number = 0 };
     return .{ .number = pixelsFromTwips(b.width()) };
 }
 
@@ -378,7 +379,8 @@ fn getHeight(vm: *Vm, t: Target) !Value {
         const b = t.obj.matrix.transformRect(t.obj.kind.edit_text.bounds);
         return .{ .number = pixelsFromTwips(b.height()) };
     }
-    const b = bounds_mod.localBounds(t.obj) orelse return .{ .number = 0 };
+    const b = bounds_mod.boundsWithTransformIn(t.obj, t.obj.matrix, libOf(vm)) orelse
+        return .{ .number = 0 };
     return .{ .number = pixelsFromTwips(b.height()) };
 }
 
@@ -397,7 +399,7 @@ fn setWidth(vm: *Vm, t: Target, v: Value) !void {
         t.obj.transformed_by_script = true;
         return;
     }
-    setSizeAlong(t, n, .width);
+    setSizeAlong(t, n, .width, libOf(vm));
 }
 
 fn setHeight(vm: *Vm, t: Target, v: Value) !void {
@@ -410,15 +412,20 @@ fn setHeight(vm: *Vm, t: Target, v: Value) !void {
         t.obj.transformed_by_script = true;
         return;
     }
-    setSizeAlong(t, n, .height);
+    setSizeAlong(t, n, .height, libOf(vm));
 }
 
 /// Ruffle's set_width/set_height (display_object.rs:1681-1762). The
 /// formula is empirical — it solves for the scales that give a rotated
 /// object's AABB the requested side length, and its own comment admits it
 /// was found by trial and error. Both axes move, even for `_width`.
-fn setSizeAlong(t: Target, target_len: f64, axis: enum { width, height }) void {
-    const b = bounds_mod.ownBounds(t.obj) orelse swf.reader.Rectangle{};
+fn setSizeAlong(
+    t: Target,
+    target_len: f64,
+    axis: enum { width, height },
+    lib: ?*const @import("../display/library.zig").Library,
+) void {
+    const b = bounds_mod.ownBoundsIn(t.obj, lib) orelse swf.reader.Rectangle{};
     const obj_w = pixelsFromTwips(b.width());
     const obj_h = pixelsFromTwips(b.height());
     const aspect = if (axis == .width) obj_h / obj_w else obj_w / obj_h;

@@ -517,12 +517,21 @@ pub const Renderer = struct {
             .bitmap => |b| try self.renderBitmap(ctx, .{ .character = b.id }, false, t, cx),
             .attached_bitmap => |b| try self.renderBitmap(ctx, .{ .live = b.data }, b.smoothing, t, cx),
             .morph_shape => {}, // M7
-            // A video shows whatever its stream last decoded, at one
-            // twip-scaled pixel per texel like any other bitmap.
-            .video => {
+            // A video shows whatever its stream last decoded, STRETCHED
+            // into the box the stream tag declared: an FLV is free to
+            // carry frames of a different size than the SWF advertised,
+            // and Flash scales rather than crops.
+            .video => |id| {
                 const src = obj.video_source orelse return;
                 const frame = @import("../avm1/globals/net_stream.zig").frameOf(src) orelse return;
-                try self.renderBitmap(ctx, .{ .live = frame }, false, t, cx);
+                if (frame.width == 0 or frame.height == 0) return;
+                const box = bounds_mod.videoBox(self.lib, id) orelse return;
+                const sx = @as(f32, @floatFromInt(box.xmax - box.xmin)) /
+                    (@as(f32, @floatFromInt(frame.width)) * 20.0);
+                const sy = @as(f32, @floatFromInt(box.ymax - box.ymin)) /
+                    (@as(f32, @floatFromInt(frame.height)) * 20.0);
+                const fit = t.concat(.{ .a = sx, .b = 0, .c = 0, .d = sy, .tx = 0, .ty = 0 });
+                try self.renderBitmap(ctx, .{ .live = frame }, false, fit, cx);
             },
         }
     }

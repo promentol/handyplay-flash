@@ -120,14 +120,30 @@ pub fn selfBoundsIn(obj: *const DisplayObject, lib: ?*const library.Library) ?Re
         // came from a tag or from script.
         .bitmap => |b| pixelBox(b.width, b.height),
         .attached_bitmap => |b| pixelBox(b.data.width, b.data.height),
+        // A video's box is the size its STREAM DECLARED, not the size of
+        // whatever frame happens to be decoded — the tag is authoritative
+        // and the frames are scaled into it. Without this a component
+        // that sizes itself from `_width` divides by zero and lands on a
+        // degenerate matrix, so nothing draws at all.
+        .video => |id| videoBox(lib, id),
         // A button's geometry is entirely its state children, like a
         // clip's is its own. Morph shapes stay undecoded until M7 —
         // ruffle reports the start shape for a morph under
         // BoundsMode::Script, a known gap.
-        .button, .morph_shape, .video => null,
+        .button, .morph_shape => null,
         // A clip's own geometry is whatever the drawing API put there
         // (ruffle MovieClip::self_bounds -> drawing.self_bounds).
         .clip => |mc| if (mc.drawing) |d| d.bounds else null,
+    };
+}
+
+/// The declared frame size of a `DefineVideoStream`, in twips.
+pub fn videoBox(lib: ?*const library.Library, id: u16) ?Rectangle {
+    const l = lib orelse return null;
+    const ch = l.getConstPtr(id) orelse return null;
+    return switch (ch.*) {
+        .video => |v| pixelBox(v.width, v.height),
+        else => null,
     };
 }
 
