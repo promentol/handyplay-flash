@@ -135,7 +135,25 @@ pub fn blendSrcOverCovU32(dst: []u32, src_color: u32, coverage: []const u8) void
         const g: u32 = g_eff + mul255(dg, inv_a);
         const b: u32 = b_eff + mul255(db, inv_a);
         const a: u32 = a_eff + mul255(da, inv_a);
-        dst[i] = r | (g << 8) | (b << 16) | (a << 24);
+        if (da == 0xFF) {
+            // Opaque destination: the output alpha is 255, so the
+            // premultiplied sum above IS the straight colour.
+            dst[i] = r | (g << 8) | (b << 16) | (a << 24);
+            continue;
+        }
+        // TRANSPARENT or partial destination — a composite layer's
+        // scratch. Surfaces here hold STRAIGHT colour (see
+        // `blendSrcOverU32`, which was already fixed this way), so the
+        // premultiplied sum has to be divided back out. Leaving it
+        // premultiplied writes a colour darkened toward black, and the
+        // next blend to read that layer sees the wrong thing: a white
+        // gradient with a zero-alpha stop came out solid white under
+        // `add` because of it.
+        if (a == 0) {
+            dst[i] = 0;
+            continue;
+        }
+        dst[i] = (r * 255 / a) | ((g * 255 / a) << 8) | ((b * 255 / a) << 16) | (a << 24);
     }
 }
 
@@ -158,9 +176,10 @@ pub fn blendAddU32(dst: []u32, src_color: u32) void {
 
     // Build per-channel src vector (R, G, B, A repeated N times).
     var src_arr: [components]u8 = undefined;
-    const sR: u8 = @intCast(src_color & 0xFF);
-    const sG: u8 = @intCast((src_color >> 8) & 0xFF);
-    const sB: u8 = @intCast((src_color >> 16) & 0xFF);
+    // Weighted by the source's own alpha — see `blendAddScalar`.
+    const sR: u8 = @intCast(mul255(src_color & 0xFF, sa));
+    const sG: u8 = @intCast(mul255((src_color >> 8) & 0xFF, sa));
+    const sB: u8 = @intCast(mul255((src_color >> 16) & 0xFF, sa));
     const sA: u8 = @intCast(sa);
     {
         var k: usize = 0;
@@ -189,10 +208,14 @@ pub fn blendAddU32(dst: []u32, src_color: u32) void {
 }
 
 inline fn blendAddScalar(src: u32, dst: u32) u32 {
-    const sr = src & 0xFF;
-    const sg = (src >> 8) & 0xFF;
-    const sb = (src >> 16) & 0xFF;
+    // The source is STRAIGHT here, as everywhere else in this file (the
+    // Flash kernels below all weight by `sa`), so a translucent white
+    // contributes a translucent white's worth. Adding the raw channels
+    // made a nearly TRANSPARENT white paint solid white.
     const sa = (src >> 24) & 0xFF;
+    const sr = mul255(src & 0xFF, sa);
+    const sg = mul255((src >> 8) & 0xFF, sa);
+    const sb = mul255((src >> 16) & 0xFF, sa);
     const dr = dst & 0xFF;
     const dg = (dst >> 8) & 0xFF;
     const db = (dst >> 16) & 0xFF;
