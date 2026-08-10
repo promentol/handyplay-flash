@@ -23,6 +23,7 @@ const runtime = @import("../runtime.zig");
 const decl = @import("decl.zig");
 const flv = @import("../../flv.zig");
 const screen_video = @import("../../codecs/screen_video.zig");
+const h263 = @import("../../codecs/h263.zig");
 const bitmap_data = @import("../../bitmap/data.zig");
 const pixels = @import("../../bitmap/pixels.zig");
 const amf = @import("../amf.zig");
@@ -63,6 +64,9 @@ pub const Stream = struct {
     /// The raw frame behind it, kept because an inter-frame is a DELTA
     /// against the previous one.
     raw: ?screen_video.Frame = null,
+    /// Sorenson's decoder carries the reference picture its P-frames
+    /// predict from, so it lives as long as the stream does.
+    h263: ?h263.Decoder = null,
 };
 
 /// The stream a value names, as an opaque pointer for the display list.
@@ -330,14 +334,22 @@ fn dispatchScript(vm: *Vm, s: *Stream, data: []const u8) !void {
     };
 }
 
-/// One video tag. The first byte is the frame type and the codec; only
-/// SCREEN VIDEO (3) decodes today, and anything else leaves the last
-/// frame standing rather than blanking the picture.
+/// One video tag. The first byte is the frame type and the codec.
+/// SORENSON SPARK (2) and SCREEN VIDEO (3) decode; VP6 does not yet.
 fn decodeVideo(vm: *Vm, s: *Stream, data: []const u8) void {
     if (data.len < 2) return;
     const codec = data[0] & 0x0F;
-    if (codec != 3) return;
-    const decoded = screen_video.decode(vm.gpa, data[1..], s.raw) catch return;
+    const decoded: screen_video.Frame = switch (codec) {
+        2 => blk: {
+            if (s.h263 == null) s.h263 = h263.Decoder.init(vm.gpa);
+            const f = s.h263.?.decode(data[1..]) catch return;
+            break :blk .{ .width = f.width, .height = f.height, .rgba = f.rgba };
+        },
+        3 => screen_video.decode(vm.gpa, data[1..], s.raw) catch return,
+        // Anything else leaves the last frame standing rather than
+        // blanking the picture.
+        else => return,
+    };
     if (s.raw) |*old| old.deinit(vm.gpa);
     s.raw = decoded;
     // The renderer wants premultiplied pixels; a decoded frame is opaque,

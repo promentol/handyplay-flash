@@ -2475,4 +2475,5 @@ test {
     _ = @import("avm1/globals/movie_clip.zig");
     _ = @import("avm1/globals/globals.zig");
     _ = @import("codecs/screen_video.zig");
+    _ = @import("codecs/h263.zig");
 }

@@ -45,6 +45,8 @@ contracts are in each stub's `//!` header; ADRs in docs/DECISIONS.md.
 - Interpreter/timeline behavior: `reference/ruffle/core/src/avm1/`,
   `display_object/movie_clip.rs`, `player.rs`
 - Shape records → paths: `reference/ruffle/render/src/shape_utils.rs`
+- Sorenson Spark (FLV codec 2): `reference/h263-rs/` (ruffle's own decoder;
+  clone of github.com/ruffle-rs/h263-rs) — VLC tables, IDCT rounding, Annex J
 - Corpora: `reference/ruffle/swf/tests/swfs/` (117 parser),
   `reference/ruffle/tests/tests/swfs/avm1/` (697 trace conformance)
 - Samples: `reference/openflash/domu-player/src/static/*.swf`

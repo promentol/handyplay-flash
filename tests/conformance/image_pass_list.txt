@@ -17,4 +17,5 @@ mcl_target_png
 mouse_events_visible_enabled
 movieclip_methods_with_loaded_image
 movieclip_setmask
+netstream_play_flv
 netstream_play_flv_screen
