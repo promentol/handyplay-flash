@@ -15,3 +15,4 @@ mcl_target_gif89a
 mcl_target_jpg
 mcl_target_png
 movieclip_methods_with_loaded_image
+movieclip_setmask

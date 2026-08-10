@@ -1711,6 +1711,7 @@ fn strokeInternal(self: *SmCanvas, path: *const SmPath) void {
     // strokePath takes a fill-shaped paint (it inflates the outline polygon
     // and fills it through the same scan pipeline as fillPath).
     var paint = paintFromShader(self.strokeStyle, .fill, 0, self.alpha, self.blendMode, self.cxform, self.surface.color_type);
+    paint.antialias = self.antialias;
     const clip_mask: ?[]const u8 = if (self.clip_mask) |m| m else null;
     const aa = self.ensureAaScratch() orelse return;
     SmScan.strokePath(
@@ -1867,6 +1868,7 @@ pub fn strokeTriangle(
     // strokePath takes a fill-shaped paint (it inflates the outline polygon
     // and fills it through the same scan pipeline as fillPath).
     var paint = paintFromShader(self.strokeStyle, .fill, 0, self.alpha, self.blendMode, self.cxform, self.surface.color_type);
+    paint.antialias = self.antialias;
     const aa = self.ensureAaScratch() orelse return;
     const clip_mask: ?[]const u8 = if (self.clip_mask) |m| m else null;
     SmScan.strokePath(

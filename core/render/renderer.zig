@@ -1100,7 +1100,15 @@ pub const Renderer = struct {
                     });
                 },
                 .stroke => |s| {
-                    buildPath(ctx, s.commands);
+                    // A stroke that returns to its start is a LOOP, and
+                    // its seam is a JOIN. The final edge has to come from
+                    // `closePath` rather than from a `lineTo` back to the
+                    // start: an explicit return leaves a ZERO-LENGTH
+                    // closing segment, and a degenerate segment falls back
+                    // to a miter — which squares off a corner that should
+                    // be round.
+                    buildPath(ctx, if (s.is_closed) s.commands[0 .. s.commands.len - 1] else s.commands);
+                    if (s.is_closed) ctx.closePath();
                     // Stroke geometry is in twips under the CTM, but line
                     // width is in DEVICE px for simdra — convert, honoring
                     // Flash's 1px hairline minimum.

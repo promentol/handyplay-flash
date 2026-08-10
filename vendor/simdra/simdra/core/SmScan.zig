@@ -521,6 +521,20 @@ const aa_sub_weight: f32 = 1.0 / @as(f32, @floatFromInt(aa_sub_count));
 /// the analytic overlap length (analytic-x partial coverage). After all 8
 /// sub-samples the accumulator holds the box-filtered pixel coverage in
 /// `[0, 1]` — quantized to a u8 row before being fed to `SmBlitter.blitRow`.
+/// depositSpanPoint — the ONE-SAMPLE rule: a pixel is in or out by
+/// whether its CENTRE lies in the span. Flash's "low" quality rasterizes
+/// this way, and a reference image taken that way has no partial pixels
+/// at all — approximating it by thresholding area coverage is not the
+/// same thing, because the area is itself quantized to the sub-sample
+/// grid.
+inline fn depositSpanPoint(accum: []f32, x_lo: f64, x_hi: f64, cw: i32) void {
+    const first_f = @ceil(x_lo - 0.5);
+    const last_f = @ceil(x_hi - 0.5) - 1.0;
+    var i: i32 = @max(0, @as(i32, @intFromFloat(first_f)));
+    const last: i32 = @min(cw - 1, @as(i32, @intFromFloat(last_f)));
+    while (i <= last) : (i += 1) accum[@intCast(i)] = 1.0;
+}
+
 inline fn depositSpan(accum: []f32, x_lo: f64, x_hi: f64, weight: f32, cw: i32) void {
     const cw_f: f64 = @floatFromInt(cw);
     const x_lo_c: f64 = @max(0.0, x_lo);
@@ -641,10 +655,13 @@ fn sweepEdges(
         var row_x_max: i32 = 0;
 
         // 4. Sub-y supersample sweep.
+        const sub_count: u32 = if (paint.antialias) aa_sub_count else 1;
         var s: u32 = 0;
-        while (s < aa_sub_count) : (s += 1) {
-            const y_sub: f64 = y_top + (@as(f64, @floatFromInt(s)) + 0.5) /
-                @as(f64, @floatFromInt(aa_sub_count));
+        while (s < sub_count) : (s += 1) {
+            const y_sub: f64 = if (paint.antialias)
+                y_top + (@as(f64, @floatFromInt(s)) + 0.5) / @as(f64, @floatFromInt(aa_sub_count))
+            else
+                y_top + 0.5;
 
             // Build (x, dir) list of edges live at this sub-y.
             sub_list.len = 0;
@@ -666,7 +683,10 @@ fn sweepEdges(
                 if (!prev_inside and new_inside) {
                     span_lo = se.x;
                 } else if (prev_inside and !new_inside) {
-                    depositSpan(aa_accum, span_lo, se.x, aa_sub_weight, cw_i);
+                    if (paint.antialias)
+                        depositSpan(aa_accum, span_lo, se.x, aa_sub_weight, cw_i)
+                    else
+                        depositSpanPoint(aa_accum, span_lo, se.x, cw_i);
                     const lo_i: i32 = @max(0, @as(i32, @intFromFloat(@floor(span_lo))));
                     const hi_i: i32 = @min(cw_i, @as(i32, @intFromFloat(@ceil(se.x))));
                     if (lo_i < row_x_min) row_x_min = lo_i;
