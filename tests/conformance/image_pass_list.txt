@@ -14,5 +14,6 @@ mcl_target_gif87a
 mcl_target_gif89a
 mcl_target_jpg
 mcl_target_png
+mouse_events_visible_enabled
 movieclip_methods_with_loaded_image
 movieclip_setmask

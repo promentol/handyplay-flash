@@ -1099,22 +1099,26 @@ fn strokePolyline(
                 const sum = v2add(np, nn);
                 const miter = v2scale(sum, 1.0 / safe_denom);
 
-                if (cross > 0) {
-                    // CCW turn → outer = left.
+                // Which side is OUTER follows the turn: with
+                // `perp(d) = (-d.y, d.x)`, the +perp ('left') side is the
+                // outer one when the cross product is NEGATIVE. The arc
+                // has to sweep the SHORT way round, so its direction
+                // flips with the side — getting one without the other
+                // spirals the outline and the polygon stops closing.
+                if (cross < 0) {
                     try left_pts.append(allocator, v2add(pts[i], np));
                     if (line_join == .round) {
-                        try emitArcFan(&left_pts, allocator, pts[i], np, nn, half_w, 1.0);
+                        try emitArcFan(&left_pts, allocator, pts[i], np, nn, half_w, -1.0);
                     }
                     try left_pts.append(allocator, v2add(pts[i], nn));
                     try right_pts.append(allocator, v2add(pts[i], v2scale(miter, -1)));
                 } else {
-                    // CW turn → outer = right.
                     try left_pts.append(allocator, v2add(pts[i], miter));
                     const np_neg: Vec2 = .{ .x = -np.x, .y = -np.y };
                     const nn_neg: Vec2 = .{ .x = -nn.x, .y = -nn.y };
                     try right_pts.append(allocator, v2add(pts[i], np_neg));
                     if (line_join == .round) {
-                        try emitArcFan(&right_pts, allocator, pts[i], np_neg, nn_neg, half_w, -1.0);
+                        try emitArcFan(&right_pts, allocator, pts[i], np_neg, nn_neg, half_w, 1.0);
                     }
                     try right_pts.append(allocator, v2add(pts[i], nn_neg));
                 }

@@ -1554,3 +1554,4 @@ fn packBits(buf: []u8, fields: []const struct { u32, u6 }) void {
         }
     }
 }
+
