@@ -55,13 +55,36 @@ Lite's own "command not supported". Nothing crashes and nothing happens.
 | `'5'` | 65 | 12 | centre of the keypad, an alias for select |
 | `'0'`-`'9'`, `'*'`, `'#'` | | 5-12 each | the keypad |
 
-Feeding that set blind — soft keys, select, D-pad, keypad — moves **16 of
-the 35** past their menus into real gameplay: a Sudoku board with a
-running clock, Snapper at level 1, a Tetrix piece falling, KCLY Diamond
-reaching GAME OVER.
+Feeding that set blind — soft keys, select, D-pad, keypad, and mouse
+clicks scaled to each stage — moves **29 of the 35** past their menus:
+a Sudoku board with a running clock, Snapper at level 1, a Tetrix piece
+falling, KCLY Diamond reaching GAME OVER.
 
-The remaining 19 are not known to be broken; they simply need a
-navigation sequence a blind script does not stumble into.
+Three details decided most of it, and each cost a round of testing:
+
+- **The soft keys are PageUp and PageDown.** Arrows alone move almost
+  nothing.
+- **Six games are POINTER-driven** with no key bindings at all (`IQ test`
+  has 1070 mouse conditions), and their stages are 240x320 to 800x600 —
+  clicks aimed at a 176x208 centre miss entirely.
+- **Some want the key before their menu exists.** `AntiMosquito` only
+  moves if keys arrive from the FIRST tick; `Remember` places its
+  keyPress button on the title frames and then replaces it at the same
+  depth, so a script that waits has already missed it.
+
+### The six that still do not advance
+
+| game | what it shows | what is known |
+|---|---|---|
+| `Copter` | "CLICK TO START" | its button IS being hit — clicking at (202,178) changes 250 pixels, a rollover — but the press does not start the game |
+| `Remember` | title with MENU / EXIT soft keys | its keyPress button lives only on the title frames and is replaced at the same depth |
+| `superTORCH` | icon grid, "move around with navi key" | binds Up/Down/Left/Right through buttons; unexplained |
+| `Tank Commander` | START GAME / INSTRUCTIONS / CREDITS | binds only arrows through buttons and drives selection through `Key.getCode`/`isDown`/`onKeyDown` |
+| `MiniPet`, `Photo Rave` | still animating an attract loop | keypad-bound (`1`-`5`), 34 and 133 mouse conditions respectively |
+
+None of them is a parse or render failure: all six draw correctly and
+`MiniPet` and `Photo Rave` are still animating. What they need next is
+one at a time, with the disassembler open.
 
 ## What is worth doing next
 
