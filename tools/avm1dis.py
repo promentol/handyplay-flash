@@ -34,7 +34,12 @@ OPN = {
  0x1c:'GetVariable',0x1d:'SetVariable',0x20:'SetTarget2',0x21:'StringAdd',
  0x22:'GetProperty',0x23:'SetProperty',0x24:'CloneSprite',0x25:'RemoveSprite',
  0x26:'Trace',0x27:'StartDrag',0x28:'EndDrag',0x29:'StringLess',0x2a:'Throw',
- 0x2b:'CastOp',0x2c:'ImplementsOp',0x30:'RandomNumber',0x31:'MBStringLength',
+ 0x2b:'CastOp',0x2c:'ImplementsOp',
+ # Flash Lite's device call. Not in the SWF spec's action list and not
+ # in ruffle's opcode table either: the stack is the arg COUNT on top,
+ # then the command name, then that many arguments.
+ 0x2d:'FSCommand2',
+ 0x30:'RandomNumber',0x31:'MBStringLength',
  0x32:'CharToAscii',0x33:'AsciiToChar',0x34:'GetTime',0x35:'MBStringExtract',
  0x36:'MBCharToAscii',0x37:'MBAsciiToChar',0x3a:'Delete',0x3b:'Delete2',
  0x3c:'DefineLocal',0x3d:'CallFunction',0x3e:'Return',0x3f:'Modulo',
