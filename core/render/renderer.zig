@@ -1361,71 +1361,157 @@ fn buildGradient(
     // across it. The stops themselves are exact either way, so the mode
     // is all that has to change.
     grad.straight_alpha = true;
-    const linear = g.interpolation == .linear_rgb;
-    for (g.records, 0..) |stop, i| {
-        // `interpolationMethod = "linearRGB"` is a LOSSY round trip
-        // through linear light applied per stop, which is why it shifts
-        // even a flat colour: a green of 20 comes back as 13.
-        try addStop(
-            &grad,
-            @as(f64, @floatFromInt(stop.ratio)) / 255.0,
-            if (linear) toLinearRoundTrip(stop.color) else stop.color,
-        );
-        // The linear-light ramp is interpolated BEFORE the trip back, so
-        // the curve between two stops is not the one you get by joining
-        // their converted ends. Sampling it and handing the samples over
-        // as stops is the only way to say that in a canvas gradient.
-        if (!linear or i + 1 >= g.records.len) continue;
-        const next = g.records[i + 1];
-        if (next.ratio <= stop.ratio) continue;
-        var k: u32 = 1;
-        while (k < LINEAR_RAMP_SAMPLES) : (k += 1) {
-            const frac = @as(f64, @floatFromInt(k)) / LINEAR_RAMP_SAMPLES;
-            const pos = (@as(f64, @floatFromInt(stop.ratio)) * (1 - frac) +
-                @as(f64, @floatFromInt(next.ratio)) * frac) / 255.0;
-            try addStop(&grad, pos, lerpLinearRgb(stop.color, next.color, frac));
+    if (g.interpolation == .linear_rgb) {
+        // A `"linearRGB"` ramp cannot be described by its two ends. The
+        // reference bakes a 256-TEXEL table, converts each texel to
+        // linear light as a BYTE, and its shader then puts the sample
+        // through a round trip that only makes sense for premultiplied
+        // data — see `linearRampTexel`. Both the quantisation and the
+        // round trip are per-texel and neither survives being collapsed
+        // to endpoints, so the table is what we hand over.
+        var k: u32 = 0;
+        while (k < RAMP_TEXELS) : (k += 1) {
+            // Texel CENTRES: sampling `t` maps to `t * 256 - 0.5`, so
+            // the ends pad rather than reach past the table.
+            const at: f64 = @floatFromInt(k);
+            try addStop(&grad, texelPos(at), sampleLinearRamp(g.records, at));
+            // BETWEEN two texels the reference blends the stored linear
+            // bytes and converts afterwards; a stop list can only blend
+            // what it was given, which is the converted colour. The two
+            // agree wherever the ramp is gentle and part company at a
+            // hard edge, so the gap is closed by subdividing until the
+            // chord is within a level of the curve.
+            if (k + 1 < RAMP_TEXELS) try refineTexel(&grad, g.records, at, at + 1, 0);
         }
+        return grad;
+    }
+    for (g.records) |stop| {
+        try addStop(&grad, @as(f64, @floatFromInt(stop.ratio)) / 255.0, stop.color);
     }
     return grad;
 }
 
-/// How finely a linear-light ramp is resampled between two stops.
-const LINEAR_RAMP_SAMPLES = 32;
+/// The reference's gradient ramp is a one-dimensional texture this wide,
+/// indexed by RATIO — so texel `k` is the colour at ratio `k`.
+const RAMP_TEXELS = 256;
 
-/// One point on that ramp: interpolate the linear-light BYTES, then read
-/// the result back as linear light. Alpha stays straight and is left to
-/// the gradient's own interpolation.
-fn lerpLinearRgb(lo: swf.reader.Color, hi: swf.reader.Color, t: f64) swf.reader.Color {
-    var out: u32 = 0;
+/// Where a texel's centre sits in the [0,1] the stop list speaks.
+fn texelPos(at: f64) f64 {
+    return (at + 0.5) / RAMP_TEXELS;
+}
+
+/// One STORED texel of a `"linearRGB"` ramp: the channels converted to
+/// linear light as BYTES and interpolated there — lossy on purpose,
+/// which is why a flat green of 20 comes back as 13 — with a straight
+/// alpha beside them.
+const RampTexel = struct { lin: [3]f64, alpha: f64 };
+
+fn storedTexel(records: []const swf.shape.GradientRecord, k: u32) RampTexel {
+    var last: usize = 0;
+    while (last + 1 < records.len and k > records[last + 1].ratio) last += 1;
+    const next = @min(last + 1, records.len - 1);
+    const lo = records[last];
+    const hi = records[next];
+    // Equal ratios are a hard edge: the texel belongs wholly to the
+    // earlier stop, not to a division by zero.
+    const t: f64 = if (k <= lo.ratio or lo.ratio == hi.ratio)
+        0.0
+    else if (k > hi.ratio)
+        1.0
+    else
+        @as(f64, @floatFromInt(k - lo.ratio)) /
+            @as(f64, @floatFromInt(hi.ratio - lo.ratio));
+
+    var out: RampTexel = .{ .lin = @splat(0), .alpha = 0 };
+    const lo_a: f64 = @floatFromInt((lo.color >> 24) & 0xFF);
+    const hi_a: f64 = @floatFromInt((hi.color >> 24) & 0xFF);
+    out.alpha = @trunc(lo_a * (1 - t) + hi_a * t);
     inline for (0..3) |ch| {
         const shift: u5 = @intCast(ch * 8);
-        const a = srgbToLinear(@as(f64, @floatFromInt((lo >> shift) & 0xFF)) / 255.0) * 255.0;
-        const b = srgbToLinear(@as(f64, @floatFromInt((hi >> shift) & 0xFF)) / 255.0) * 255.0;
-        const mixed = @trunc(std.math.clamp(a * (1 - t) + b * t, 0, 255));
-        const back = linearToSrgb(mixed / 255.0) * 255.0;
-        out |= @as(u32, @intFromFloat(@round(std.math.clamp(back, 0, 255)))) << shift;
+        const a = srgbToLinear(@as(f64, @floatFromInt((lo.color >> shift) & 0xFF)) / 255.0) * 255.0;
+        const b = srgbToLinear(@as(f64, @floatFromInt((hi.color >> shift) & 0xFF)) / 255.0) * 255.0;
+        out.lin[ch] = @trunc(a * (1 - t) + b * t);
     }
-    const la: f64 = @floatFromInt((lo >> 24) & 0xFF);
-    const ha: f64 = @floatFromInt((hi >> 24) & 0xFF);
-    out |= @as(u32, @intFromFloat(@round(std.math.clamp(la * (1 - t) + ha * t, 0, 255)))) << 24;
     return out;
 }
 
-/// The linear-light round trip a `"linearRGB"` gradient puts each stop
-/// through, exactly as the reference renderer does it — and lossy on
-/// purpose. The channel becomes a linear-light BYTE
-/// (`srgb_to_linear(c) * 255`, truncated) and is read back as linear
-/// light on the way to an sRGB screen.
-fn toLinearRoundTrip(color: swf.reader.Color) swf.reader.Color {
-    var out: u32 = color & 0xFF000000; // alpha never goes through it
+/// The ramp sampled at a FRACTIONAL texel, as the colour our
+/// straight-alpha compositor has to be given to land where the
+/// reference does.
+///
+/// After the blend comes the reference shader's `linear_to_srgb`, which
+/// is written for PREMULTIPLIED colour: it divides by alpha, converts,
+/// multiplies by alpha — and the fragment's own premultiply multiplies
+/// by alpha a SECOND time. With an opaque stop that is invisible, which
+/// is why only gradients whose alpha varies show it at all. We emit
+/// `saturate(linear_to_srgb(c / a) * a)` and let the ordinary composite
+/// supply the second `* a`.
+fn sampleLinearRamp(records: []const swf.shape.GradientRecord, at: f64) swf.reader.Color {
+    if (records.len == 0) return 0;
+    const clamped = std.math.clamp(at, 0, RAMP_TEXELS - 1);
+    const low: u32 = @intFromFloat(@floor(clamped));
+    const high: u32 = @min(low + 1, RAMP_TEXELS - 1);
+    const frac = clamped - @floor(clamped);
+    const a = storedTexel(records, low);
+    const b = storedTexel(records, high);
+
+    const alpha_byte = a.alpha * (1 - frac) + b.alpha * frac;
+    const alpha = alpha_byte / 255.0;
+    var out: u32 = @as(u32, @intFromFloat(@round(alpha_byte))) << 24;
     inline for (0..3) |ch| {
         const shift: u5 = @intCast(ch * 8);
-        const c = @as(f64, @floatFromInt((color >> shift) & 0xFF)) / 255.0;
-        const lin = @trunc(srgbToLinear(c) * 255.0);
-        const back = linearToSrgb(lin / 255.0) * 255.0;
-        out |= @as(u32, @intFromFloat(@round(std.math.clamp(back, 0, 255)))) << shift;
+        const lin = (a.lin[ch] * (1 - frac) + b.lin[ch] * frac) / 255.0;
+        // The un-premultiply can push the value ABOVE one; the curve is
+        // evaluated there and only the product is clamped.
+        const unpremul = if (alpha > 0) lin / alpha else 0;
+        const back = std.math.clamp(linearToSrgb(unpremul) * alpha, 0, 1) * 255.0;
+        out |= @as(u32, @intFromFloat(@round(back))) << shift;
     }
     return out;
+}
+
+/// Subdivide between two ramp positions until a straight line joining
+/// them is within a level of the curve everywhere. Gentle ramps stop at
+/// once; a hard edge inside one texel is where the levels are spent.
+fn refineTexel(
+    grad: *simdra.SmGradient,
+    records: []const swf.shape.GradientRecord,
+    lo: f64,
+    hi: f64,
+    depth: u8,
+) Error!void {
+    if (depth >= MAX_RAMP_REFINE) return;
+    const mid = (lo + hi) / 2;
+    const want = sampleLinearRamp(records, mid);
+    const chord = midpointColor(sampleLinearRamp(records, lo), sampleLinearRamp(records, hi));
+    if (channelDistance(want, chord) <= 1) return;
+    try refineTexel(grad, records, lo, mid, depth + 1);
+    try addStop(grad, texelPos(mid), want);
+    try refineTexel(grad, records, mid, hi, depth + 1);
+}
+
+const MAX_RAMP_REFINE = 6;
+
+fn midpointColor(a: swf.reader.Color, b: swf.reader.Color) swf.reader.Color {
+    var out: u32 = 0;
+    inline for (0..4) |ch| {
+        const shift: u5 = @intCast(ch * 8);
+        const av: u32 = (a >> shift) & 0xFF;
+        const bv: u32 = (b >> shift) & 0xFF;
+        out |= ((av + bv) / 2) << shift;
+    }
+    return out;
+}
+
+fn channelDistance(a: swf.reader.Color, b: swf.reader.Color) u32 {
+    var worst: u32 = 0;
+    inline for (0..4) |ch| {
+        const shift: u5 = @intCast(ch * 8);
+        const av: i32 = @intCast((a >> shift) & 0xFF);
+        const bv: i32 = @intCast((b >> shift) & 0xFF);
+        worst = @max(worst, @abs(av - bv));
+    }
+    return worst;
 }
 
 fn srgbToLinear(c: f64) f64 {
