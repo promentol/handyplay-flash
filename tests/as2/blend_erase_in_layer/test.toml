@@ -1,0 +1,8 @@
+width = 130
+height = 130
+fps = 30
+swf_version = 8
+tolerance = 2
+# The divergence described in Test.as: the reference drops the whole
+# erased box (100x50 minus the 60x30 hole = 3200 pixels, three channels).
+max_outliers = 10500

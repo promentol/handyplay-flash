@@ -1,0 +1,9 @@
+width = 300
+height = 110
+fps = 30
+swf_version = 8
+# Curves, a hole and a self-intersecting star: total ink per shape agrees
+# with the reference to within 0.07%, so the fill rule and the geometry
+# are the same and the budget is only for antialiasing along the edges.
+tolerance = 64
+max_outliers = 100

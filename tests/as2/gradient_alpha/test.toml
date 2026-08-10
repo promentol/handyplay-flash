@@ -1,0 +1,8 @@
+width = 550
+height = 190
+fps = 30
+swf_version = 8
+# A smooth ramp will differ by a level or two between rasterisers; what
+# this test is watching for is a whole cell going the wrong colour.
+tolerance = 6
+max_outliers = 200

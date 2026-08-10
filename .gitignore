@@ -14,3 +14,5 @@ samples/*.swf
 
 # os
 .DS_Store
+tests/as2/*/hf.png
+tests/as2/*/hf.txt

@@ -1,0 +1,6 @@
+width = 300
+height = 100
+fps = 30
+swf_version = 8
+tolerance = 4
+max_outliers = 100

@@ -1,0 +1,12 @@
+width = 400
+height = 210
+fps = 30
+swf_version = 8
+# MEASURED, not guessed. Total ink per cell agrees with the reference to
+# within 0.2% on the 9px strokes and 3.5% on the hairlines, so the
+# geometry — every cap, every join, the closed-ring seam — is the same
+# shape; what differs is the antialiasing filter along a diagonal edge,
+# and no pixel differs by more than 56 of 255. A missing cap or a join on
+# the wrong side would blow straight past this.
+tolerance = 64
+max_outliers = 200

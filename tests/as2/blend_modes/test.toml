@@ -1,0 +1,9 @@
+# Stage is 7 cells across, 2 down.
+width = 560
+height = 160
+fps = 30
+swf_version = 8
+# Every mode is a flat fill over a flat fill: the only softness is the
+# square edges, so the tolerance is for antialiasing, not for the blend.
+tolerance = 2
+max_outliers = 0

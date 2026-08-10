@@ -1,0 +1,6 @@
+width = 200
+height = 150
+fps = 30
+swf_version = 8
+# Trace-only: no image comparison for this one.
+image = false

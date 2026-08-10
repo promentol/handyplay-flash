@@ -1,0 +1,8 @@
+width = 280
+height = 110
+fps = 30
+swf_version = 8
+# The divergence described in Test.as. The evenly-scaled chevron on the
+# left agrees; the two squashed ones are where the pen shape shows.
+tolerance = 64
+max_outliers = 3000

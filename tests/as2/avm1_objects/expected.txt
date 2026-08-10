@@ -1,0 +1,14 @@
+for-in order = third,second,first,
+after delete = third,first,
+delete missing = false
+own method = Rex barks
+instanceof = true
+constructor name = function
+arguments = 3:10,20
+call = T 12
+apply = U 34
+typeof array = object
+array to string = 1,2,3,4
+object to string = [object Object]
+null to string = null
+nested access = 7

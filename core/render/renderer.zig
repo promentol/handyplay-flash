@@ -86,6 +86,9 @@ pub const Renderer = struct {
     focused_field: ?*const edit_text.EditText = null,
     /// Milliseconds since the movie started, for the caret's blink.
     now_ms: f64 = 0,
+    /// How many LAYERS deep the current draw is. `alpha` and `erase`
+    /// need one to act on, and at zero they do nothing at all.
+    layer_depth: u32 = 0,
     /// Text layout is version-dependent (wrapping, alignment), so the
     /// renderer needs the movie's version to rebuild a stale one.
     swf_version: u8 = 8,
@@ -513,6 +516,14 @@ pub const Renderer = struct {
         t: Transform,
         cx: swf.reader.ColorTransform,
     ) Error!void {
+        // `alpha` and `erase` change the DESTINATION's alpha and leave its
+        // colour alone, which only means anything when the destination is
+        // a layer of its own. Against the stage there is nothing to knock
+        // a hole in — the stage is opaque — and Flash draws NOTHING
+        // rather than making the movie see-through. The reference agrees:
+        // outside a layer these two are a no-op there too.
+        if ((obj.blend_mode == 11 or obj.blend_mode == 12) and self.layer_depth == 0) return;
+
         // Blend 0 and 1 are both "normal"; 2 is "layer", which composites
         // normally but still needs the layer, because the modes that
         // reach INTO their backdrop only make sense inside one.
@@ -536,10 +547,20 @@ pub const Renderer = struct {
         self: *Renderer,
         ctx: *simdra.SmCanvas,
         obj: *const display_object.DisplayObject,
-        t: Transform,
+        raw_t: Transform,
         cx: swf.reader.ColorTransform,
     ) Error!bool {
         const gpa = self.display_gpa orelse return false;
+        // A CACHED object is drawn at a whole-pixel position: that is what
+        // "cacheAsBitmap" costs and how you can tell it is on, because a
+        // clip sitting at x.5 stops being antialiased along its edges and
+        // jumps to x+1 instead. A blend mode alone does NOT snap.
+        const t = if (obj.cache_as_bitmap) snapped: {
+            var s = raw_t;
+            s.tx = @round(raw_t.tx);
+            s.ty = @round(raw_t.ty);
+            break :snapped s;
+        } else raw_t;
         // The object's own box, in its own twips, children included; the
         // render transform then takes its corners to device pixels.
         const box = bounds_mod.ownBoundsIn(obj, self.lib) orelse return false;
@@ -586,7 +607,9 @@ pub const Renderer = struct {
             .tx = t.tx - @as(f32, @floatFromInt(x0)),
             .ty = t.ty - @as(f32, @floatFromInt(y0)),
         };
+        self.layer_depth += 1;
         try self.renderObjectInner(layer_ctx, obj, shifted, cx);
+        self.layer_depth -= 1;
 
         // `drawImage` reads its source as RGBA and swizzles into the
         // surface's own BGRA order, so the layer has to be handed over
@@ -1931,10 +1954,13 @@ test "a PlaceObject3 blend mode reaches the compositor" {
     const inv = try blendProbe(gpa, back, .{ 12, 34, 56 }, 10);
     try std.testing.expect(near(inv[0], 55) and near(inv[1], 105) and near(inv[2], 155));
 
-    // Erase knocks a HOLE: the destination keeps its colour and loses its
-    // alpha. Nothing but a layer composite can produce that.
+    // Erase against the STAGE does nothing — there is no layer to knock a
+    // hole in, and Flash will not make the movie see-through. Both the
+    // colour and the alpha of the backdrop survive, and the erasing
+    // square is not drawn either.
     const erased = try blendProbe(gpa, back, .{ 255, 255, 255 }, 12);
-    try std.testing.expectEqual(@as(u8, 0), erased[3]);
+    try std.testing.expectEqual(@as(u8, 255), erased[3]);
+    try std.testing.expect(near(erased[0], 200) and near(erased[1], 150) and near(erased[2], 100));
 
     // Mode 2 is "layer": a layer is made, and it composites normally.
     const layered = try blendProbe(gpa, back, .{ 10, 20, 30 }, 2);

@@ -1,0 +1,9 @@
+width = 200
+height = 100
+fps = 30
+swf_version = 8
+# The uncached row matches the reference exactly. The cached row snaps to
+# whole pixels in both players, and the budget covers the handful of edge
+# pixels where the two disagree about which way a half-pixel rounds.
+tolerance = 8
+max_outliers = 200
