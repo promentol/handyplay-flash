@@ -1,0 +1,8 @@
+width = 460
+height = 110
+fps = 30
+swf_version = 8
+# Rotated edges everywhere; the budget is for the antialiasing along
+# them, and a wrong matrix moves a whole shape.
+tolerance = 64
+max_outliers = 300

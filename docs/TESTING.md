@@ -1,7 +1,8 @@
 # Testing
 
-Three harness layers + unit tests. All corpora live under git-ignored
-`reference/` (see SPEC.md); nothing is vendored.
+Four harness layers + unit tests. Three read corpora that live under
+git-ignored `reference/` (see SPEC.md); the fourth is ours, and it is
+the only one that can test something ruffle's corpus does not cover.
 
 ## 1. Parser corpus (M1) — `tests/parse_corpus.sh`
 
@@ -54,3 +55,57 @@ ruffle's `swf/src/test_data.rs` (raw bytes ↔ expected struct pairs).
 Every milestone ends by updating `docs/TAGS.md` + `docs/AVM1.md` statuses and
 `tests/conformance/pass_list.txt`. The matrices + pass count are the public
 progress report (linked from README).
+
+
+## 4. Our own AS2 corpus — `tools/as2/as2.sh`
+
+**What it is for.** Ruffle's corpus is large but it is not OURS: nothing in
+it places an object with a blend mode, so workstream F shipped with no
+test able to see it. This layer closes that hole — we write the
+ActionScript, compile it, and run the result in BOTH players.
+
+    sh tools/as2/as2.sh build              # the two images, once
+    sh tools/as2/as2.sh record [case...]   # run RUFFLE, save expectations
+    sh tools/as2/as2.sh check  [case...]   # run ours against them
+    sh tools/as2/as2.sh run    [case...]   # record then check
+
+A case is `tests/as2/<name>/` holding `Test.as` and `test.toml`. The
+recorded `expected.png` / `expected.txt` are CHECKED IN, so `check` needs
+neither Docker nor a network; `record` is the deliberate step.
+
+**Two images, on purpose.** `tools/as2/compiler` is mtasc — the AS2
+compiler ruffle's own CONTRIBUTING recommends — built from source,
+because there is no Debian package and the 2007 binaries are 32-bit x86.
+141 MB, offline. `tools/as2/runner` is ruffle's PREBUILT web bundle in
+headless Chromium; building ruffle's native exporter would mean the whole
+Rust workspace, and the wasm is a 10 MB download running the same core.
+
+**Two things about the runner that are not obvious:**
+
+- **Ruffle loads PAUSED.** Its own selfhosted tests call `resume()` after
+  attaching the trace observer. Without it the movie never runs a frame.
+- **The renderer must be WEBGPU.** Ruffle's plain WebGL backend implements
+  Normal, Add and Subtract and silently falls back to Normal for
+  everything else (`render/webgl/src/lib.rs`, "TODO: Unsupported blend
+  mode"). A comparison run on it agrees about nothing while appearing to
+  agree about everything.
+
+Traces come from the console rather than `traceObserver`, which never
+fires here; `trace()` also goes through `tracing` from
+`web/src/log_adapter.rs`, and that channel works.
+
+**Writing a case.** mtasc type-checks, so mixed-type arithmetic — half
+the point of a coercion test — has to be laundered through an untyped
+helper (`dyn()` in `avm1_core`). `on` is a keyword and cannot be a
+variable. Ruffle is driven on a WALL CLOCK, so a case should settle on
+its first frame and hold still.
+
+**What the thresholds mean.** `tolerance` is per channel and
+`max_outliers` counts channel differences over it. They are set from
+MEASUREMENT, not taste, and each case says what was measured — total ink
+per shape, which cells agree, what the worst pixel is. Two cases are
+KNOWN DIVERGENCES and say so in their own source: `erase` inside a layer
+(the reference drops the whole box where we knock a hole) and a stroke
+under a non-uniform scale (Flash carries an elliptical pen through the
+transform; we stroke in device space with a round one and lay down ~30%
+more ink on a diagonal).

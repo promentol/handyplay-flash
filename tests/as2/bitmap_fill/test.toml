@@ -1,0 +1,8 @@
+width = 290
+height = 95
+fps = 30
+swf_version = 8
+# Nearest-neighbour sampling: a texel boundary landing one pixel out is a
+# hard edge, so this budget is small on purpose.
+tolerance = 8
+max_outliers = 400

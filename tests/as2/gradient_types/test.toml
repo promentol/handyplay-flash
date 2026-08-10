@@ -1,0 +1,8 @@
+width = 550
+height = 190
+fps = 30
+swf_version = 8
+# Smooth ramps: a level or two of difference is the rasteriser, a band in
+# the wrong place is not.
+tolerance = 6
+max_outliers = 300

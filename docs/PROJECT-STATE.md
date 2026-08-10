@@ -532,6 +532,16 @@ The other three are close and specific:
 | `movieclip_begin_gradient_fill`, `movieclip_line_gradient_style` | 113 pixels between them, down from 13022. Twenty-two of the twenty-four cells are exact. What is left is 37 pixels of the cell whose two ratios are both 50 — a hard step in a REFLECTED radial, where the two renderers place the sample three hundredths of a pixel apart and the step turns that into a colour — and 8 pixels at the singularity of a focal gradient, whose formula is algebraically the two-circle one we tessellate but is not evaluated the same way near the focus. |
 | `edittext_stylesheet` | two pixels, both the bottom-right corner of a field's border. Flash draws that border as FOUR SEPARATE LINES and the bottom-right corner is missing entirely (`edit_text.rs:2841`); the reference draws them as GPU line primitives, and the corner ends up 5/8 covered by two overlapping partial samples. No whole-pixel model produces 5/8: fully drawn is 95 away and fully missing is 160, against a tolerance of 64. |
 
+**A fourth harness layer: our own AS2 corpus.** `tools/as2/` compiles
+ActionScript 2 we write (mtasc, built from source in a container) and
+runs it in BOTH ruffle's prebuilt wasm and this player, comparing traces
+and pixels. 18 cases today, all passing. It exists because ruffle's
+corpus cannot see everything: no dir there places an object with a blend
+mode, which is why workstream F shipped blind. The first run of it found
+two real bugs — `alpha`/`erase` punching a hole through the stage, and
+`cacheAsBitmap` not snapping — and recorded two divergences with
+measurements rather than guesses. See docs/TESTING.md §4.
+
 **Two harness gaps closed along the way**: `images.sh` now replays
 `input.json` (the SDL frontend gained `--input`, shared with the trace
 runner) and honours `quality = "low"`, and `pngdiff` reads palette,
