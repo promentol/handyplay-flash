@@ -54,6 +54,8 @@ pub const Stream = struct {
     /// Milliseconds of stream consumed.
     stream_time: f64 = 0,
     queued_seek: ?f64 = null,
+    /// `bufferTime`, in seconds. Flash's default is a tenth of a second.
+    buffer_time: f64 = 0.1,
     /// The most recent decoded video frame, as a pixel buffer the
     /// renderer can blit. Owned with the player's gpa and replaced on
     /// every frame that decodes.
@@ -96,6 +98,13 @@ pub fn install(vm: *Vm) !void {
     }) |name| {
         try method(vm, proto, name, noop, hidden);
     }
+    // The properties a player component polls to decide whether it has
+    // anything to show (ruffle avm1/globals/netstream.rs).
+    try decl.property(vm, proto, "bytesLoaded", getBytesLoaded, null, .{});
+    try decl.property(vm, proto, "bytesTotal", getBytesTotal, null, .{});
+    try decl.property(vm, proto, "time", getTime, null, .{});
+    try decl.property(vm, proto, "bufferLength", getBufferLength, null, .{});
+    try decl.property(vm, proto, "bufferTime", getBufferTime, setBufferTime, .{});
     _ = try decl.class(vm, "NetStream", ctor, proto, .{ .dont_enum = true });
 }
 
@@ -107,6 +116,48 @@ fn ctor(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     s.* = .{ .obj = this.object };
     vm.objects.get(this.object).native = .{ .net_stream = @ptrCast(s) };
     try vm.net_streams.append(vm.gpa, s);
+    return .undefined_value;
+}
+
+fn getBytesLoaded(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const s = streamOf(vmOf(p), this) orelse return .undefined_value;
+    return .{ .number = @floatFromInt(s.buffer.len) };
+}
+
+/// The total is what the DOWNLOAD promised. Until it finishes there is
+/// nothing better than what has arrived, which is also what ruffle
+/// reports for a stream with no declared length.
+fn getBytesTotal(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const s = streamOf(vmOf(p), this) orelse return .undefined_value;
+    return .{ .number = @floatFromInt(s.buffer.len) };
+}
+
+/// Seconds, not milliseconds — the only place the stream clock is
+/// exposed in the units a script expects.
+fn getTime(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const s = streamOf(vmOf(p), this) orelse return .undefined_value;
+    return .{ .number = s.stream_time / 1000.0 };
+}
+
+fn getBufferLength(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const s = streamOf(vmOf(p), this) orelse return .undefined_value;
+    return .{ .number = s.buffer_time };
+}
+
+fn getBufferTime(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    _ = args;
+    const s = streamOf(vmOf(p), this) orelse return .undefined_value;
+    return .{ .number = s.buffer_time };
+}
+
+fn setBufferTime(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+    const vm = vmOf(p);
+    const s = streamOf(vm, this) orelse return .undefined_value;
+    s.buffer_time = try vm.toNumber(arg(args, 0));
     return .undefined_value;
 }
 

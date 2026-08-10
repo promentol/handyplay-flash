@@ -504,10 +504,19 @@ Feistel round function is not ruffle's (ruffle's is a stated guess), and
 eleven recorded return values are not enough to recover the real one.
 
 **The IMAGE score is 17 of 26, and the nine that remain are each one
-thing.** Two of them are not ours to fix:
-`define_font_glyph_table_order` and `_overlap` are AS3 movies sitting in
-the AVM1 corpus — we reject AVM2 by charter, so there are no pixels to
-compare. `netstream_play_flv` and `_screen` need a video decoder.
+thing.** Two of them are not ours to fix: `define_font_glyph_table_order` and
+`_overlap` render their content entirely from ActionScript 3 — five
+DoABC blocks and nothing on the timeline — so they need an AVM2
+interpreter, which this player does not have and is not going to grow.
+
+`netstream_play_flv` needs a Sorenson H.263 decoder (codec 2).
+`netstream_play_flv_screen` no longer needs a decoder: screen video
+(codec 3) decodes, `Video.attachVideo` links a stream to a display
+object and the renderer draws the frame. It fails for a different
+reason now — its movie drives everything through Adobe's FLVPlayback
+component, whose VideoPlayer sits in state "loading" and keeps itself
+invisible. The FLV loads and its keyframe decodes; what never happens
+is the component deciding it is connected.
 
 The other five are close and specific:
 
