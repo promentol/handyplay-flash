@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**679/679** traces, images **17/26**); F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**679/679** traces, images **19/26**); F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -484,7 +484,7 @@ Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
 **Workstreams A, B, C, D, E and L are CLOSED, and the trace corpus is
-GREEN: 679 of 679** (images 17/26). Pick up F (PlaceObject3 blend modes
+GREEN: 679 of 679** (images 19/26). Pick up F (PlaceObject3 blend modes
 and clipDepth masks) next — `Renderer.blendModeFromSwf` already has the
 mapping F needs, because `BitmapData.draw` takes the same numbering.
 `docs/M4-SPEC.md` §4, §5, §6 and §7 name, by dir and cause, everything
@@ -503,7 +503,7 @@ undefined, `{}` or a negative where a seed or a count belongs. Flash's
 Feistel round function is not ruffle's (ruffle's is a stated guess), and
 eleven recorded return values are not enough to recover the real one.
 
-**The IMAGE score is 17 of 26, and the nine that remain are each one
+**The IMAGE score is 19 of 26, and the seven that remain are each one
 thing.** Two of them are not ours to fix: `define_font_glyph_table_order` and
 `_overlap` render their content entirely from ActionScript 3 — five
 DoABC blocks and nothing on the timeline — so they need an AVM2
@@ -522,9 +522,7 @@ The other five are close and specific:
 
 | dir | what is left |
 |---|---|
-| `movieclip_begin_gradient_fill`, `movieclip_line_gradient_style` | three cells of twenty-four, the ones BOTH translucent and linearRGB. Every other cell matches to within a unit or two, and the largest remaining error is in the cell with `"repeat"` spread, where the ramp wraps. It is NOT linear-light compositing: the green channel's range across the cell rules that out, and matches an ordinary sRGB composite of the linearRGB'd stop. |
-| `mouse_events_visible_enabled` | 1808 pixels along one button shape's edges. Its left edge lands on x=12.5 and the reference resolves it hard where we still soften it — the `--quality low` switch fixed the right edge and not this one. |
-| `movieclip_setmask` | four corner pixels, each the junction of a stroked square drawn TWICE. Flash's corner is solid there; a round join drawn twice gets to 242/255 and a closed miter join to 192. |
+| `movieclip_begin_gradient_fill`, `movieclip_line_gradient_style` | three cells of twenty-four, the ones BOTH translucent and linearRGB. Every other cell matches to within a unit or two. The green channel's range across the failing cell rules out linear-light compositing — it matches an ordinary sRGB composite of the linearRGB'd stop — and the largest error is where the spread is `"repeat"` and the ramp wraps. |
 | `edittext_stylesheet` | two pixels, both the bottom-right corner of a field's border, where Flash is 63% covered and we are 100%. The dir's tolerance is 64 and the difference is 95. |
 
 **Two harness gaps closed along the way**: `images.sh` now replays
