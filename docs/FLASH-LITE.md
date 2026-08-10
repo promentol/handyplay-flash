@@ -56,7 +56,7 @@ Lite's own "command not supported". Nothing crashes and nothing happens.
 | `'0'`-`'9'`, `'*'`, `'#'` | | 5-12 each | the keypad |
 
 Feeding that set blind — soft keys, select, D-pad, keypad, and mouse
-clicks scaled to each stage — moves **29 of the 35** past their menus:
+clicks scaled to each stage — moves **33 of the 35** past their menus:
 a Sudoku board with a running clock, Snapper at level 1, a Tetrix piece
 falling, KCLY Diamond reaching GAME OVER.
 
@@ -72,19 +72,35 @@ Three details decided most of it, and each cost a round of testing:
   keyPress button on the title frames and then replaces it at the same
   depth, so a script that waits has already missed it.
 
-### The six that still do not advance
+### 33 of 35 advance
+
+The count only got there because the disassembler learned where AVM1
+actually hides. `tools/avm1dis.py` now walks BUTTON condition actions and
+PlaceObject2 CLIP EVENTS as well as DoAction, and prints both with their
+trigger — `on(keyPress <PageUp/SoftL>)`, `onClipEvent(keyDown)`. Without
+that, four games looked broken and were merely being asked the wrong
+question:
+
+- **Copter** says "CLICK TO START" and is driven by
+  `onClipEvent(keyDown) { this.nextFrame() }` — ANY KEY. Its only two
+  buttons are `getURL` adverts. It had been given nothing but clicks.
+- **superTORCH** says "move around with navi key", and its navi-key
+  button is real — but it lives inside the GAME, not the menu. The menu
+  is a grid of MOUSE buttons.
+- **Remember** and **MiniPet** likewise want the pointer for the menu and
+  the keys afterwards.
+
+Feeding keys and a stage-scaled click grid together, from the first tick,
+moves all four.
+
+### The two that still do not
 
 | game | what it shows | what is known |
 |---|---|---|
-| `Copter` | "CLICK TO START" | its button IS being hit — clicking at (202,178) changes 250 pixels, a rollover — but the press does not start the game |
-| `Remember` | title with MENU / EXIT soft keys | its keyPress button lives only on the title frames and is replaced at the same depth |
-| `superTORCH` | icon grid, "move around with navi key" | binds Up/Down/Left/Right through buttons; unexplained |
-| `Tank Commander` | START GAME / INSTRUCTIONS / CREDITS | binds only arrows through buttons and drives selection through `Key.getCode`/`isDown`/`onKeyDown` |
-| `MiniPet`, `Photo Rave` | still animating an attract loop | keypad-bound (`1`-`5`), 34 and 133 mouse conditions respectively |
+| `Tank Commander` | START GAME / INSTRUCTIONS / CREDITS | its `onClipEvent(keyDown)` is the in-GAME firing handler (`Key.isDown(13)` and `mode == "FIRING"`); the menu's own button binds arrows but is never offered a key, so it is not on the display list when the menu is up |
+| `Photo Rave` | an attract loop, still animating | keypad-bound with 133 mouse conditions across 168 sprites |
 
-None of them is a parse or render failure: all six draw correctly and
-`MiniPet` and `Photo Rave` are still animating. What they need next is
-one at a time, with the disassembler open.
+Neither is a parse or render failure.
 
 ## What is worth doing next
 

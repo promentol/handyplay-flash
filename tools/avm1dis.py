@@ -149,8 +149,131 @@ def dis(b, ind='  '):
         i = nxt
 
 
-for code, body in tags(d, p, len(d)):
-    if code in (12, 59):
-        off = 2 if code == 59 else 0
-        print('== tag %d DoAction len=%d' % (code, len(body) - off))
-        dis(body[off:])
+# Where AVM1 hides: not only DoAction. A Flash Lite game keeps ALL of its
+# input handling in button condition actions and clip events, and a
+# sprite's timeline has its own DoActions.
+KEYPRESS = {1:'<Left>',2:'<Right>',3:'<Home>',4:'<End>',5:'<Insert>',6:'<Delete>',
+            8:'<Backspace>',13:'<Enter>',14:'<Up>',15:'<Down>',16:'<PageUp/SoftL>',
+            17:'<PageDown/SoftR>',18:'<Tab>',19:'<Escape>'}
+MOUSE_COND = ['idleToOverUp','outDownToIdle','outDownToOverDown','overDownToOutDown',
+              'overDownToOverUp','overUpToOverDown','overUpToIdle','idleToOverDown',
+              'overDownToIdle']
+
+def condname(cond):
+    key = (cond >> 9) & 0x7F
+    bits = [MOUSE_COND[i] for i in range(9) if cond & (1 << i)]
+    if key:
+        bits.append('keyPress ' + (KEYPRESS.get(key) or repr(chr(key)) if 32 < key < 127 else KEYPRESS.get(key, '#%d' % key)))
+    return ', '.join(bits) or 'none'
+
+def button2(body, label):
+    """DefineButton2: skip the character records, then walk the cond actions."""
+    if len(body) < 6: return
+    bid = struct.unpack_from('<H', body, 0)[0]
+    off = struct.unpack_from('<H', body, 3)[0]
+    if off == 0:
+        print('== %s button id=%d (no actions)' % (label, bid)); return
+    q = 3 + off
+    while q + 4 <= len(body):
+        size = struct.unpack_from('<H', body, q)[0]
+        cond = struct.unpack_from('<H', body, q + 2)[0]
+        end = q + size if size else len(body)
+        print('== %s button id=%d on(%s)' % (label, bid, condname(cond)))
+        dis(body[q + 4:end])
+        if size == 0: break
+        q = end
+
+def button1(body, label):
+    """DefineButton: one implicit `on(press, release…)` action block."""
+    bid = struct.unpack_from('<H', body, 0)[0]
+    i = 2
+    while i < len(body) and body[i] != 0:      # BUTTONRECORDs
+        flags = body[i]
+        i += 1 + 2 + 2                          # flags, char id, depth
+        i = skip_matrix(body, i)
+    i += 1
+    print('== %s button id=%d on(press/release)' % (label, bid))
+    dis(body[i:])
+
+def skip_matrix(b, i):
+    bit = i * 8
+    def u(n):
+        nonlocal bit
+        v = 0
+        for _ in range(n):
+            v = (v << 1) | ((b[bit >> 3] >> (7 - (bit & 7))) & 1); bit += 1
+        return v
+    if u(1): n = u(5); u(n); u(n)
+    if u(1): n = u(5); u(n); u(n)
+    n = u(5); u(n); u(n)
+    return (bit + 7) // 8
+
+CLIP_EVENTS = ['load','enterFrame','unload','mouseMove','mouseDown','mouseUp',
+               'keyDown','keyUp','data','initialize','press','release',
+               'releaseOutside','rollOver','rollOut','dragOver','dragOut',
+               'keyPress','construct']
+
+def place_clip_actions(body, label, swf_version):
+    """PlaceObject2's ClipActions — where a clip keeps its own handlers.
+
+    Reaching them means stepping over every optional field first, which is
+    the only reason this is fiddly."""
+    if len(body) < 3: return
+    flags = body[0]
+    if not (flags & 0x80): return
+    i = 3                                        # flags + depth
+    if flags & 0x02: i += 2                      # character id
+    if flags & 0x04: i = skip_matrix(body, i)    # matrix
+    if flags & 0x08: i = skip_cxform(body, i)    # colour transform
+    if flags & 0x10: i += 2                      # ratio
+    if flags & 0x20:                             # name
+        while i < len(body) and body[i]: i += 1
+        i += 1
+    if flags & 0x40: i += 2                      # clip depth
+    wide = swf_version >= 6
+    i += 2 + (4 if wide else 2)                  # reserved + AllEventFlags
+    while i + (4 if wide else 2) + 4 <= len(body):
+        ev = struct.unpack_from('<I' if wide else '<H', body, i)[0]
+        i += 4 if wide else 2
+        if ev == 0: break
+        size = struct.unpack_from('<I', body, i)[0]; i += 4
+        key = ''
+        if ev & (1 << 17):                       # keyPress carries a code
+            key = ' ' + (KEYPRESS.get(body[i]) or repr(chr(body[i])) if 32 < body[i] < 127 else KEYPRESS.get(body[i], '#%d' % body[i]))
+            i += 1; size -= 1
+        names = [CLIP_EVENTS[b] for b in range(19) if ev & (1 << b)]
+        print('== %sonClipEvent(%s%s)' % (label, ', '.join(names), key))
+        dis(body[i:i + size])
+        i += size
+
+def skip_cxform(b, i):
+    bit = i * 8
+    def u(n):
+        nonlocal bit
+        v = 0
+        for _ in range(n):
+            v = (v << 1) | ((b[bit >> 3] >> (7 - (bit & 7))) & 1); bit += 1
+        return v
+    has_add, has_mult = u(1), u(1)
+    n = u(4)
+    if has_mult: [u(n) for _ in range(4)]
+    if has_add: [u(n) for _ in range(4)]
+    return (bit + 7) // 8
+
+def walk(data, start, end, label=''):
+    for code, body in tags(data, start, end):
+        if code in (12, 59):
+            off = 2 if code == 59 else 0
+            print('== %stag %d DoAction len=%d' % (label, code, len(body) - off))
+            dis(body[off:])
+        elif code == 34:
+            button2(body, label)
+        elif code == 7:
+            button1(body, label)
+        elif code == 26:                        # PlaceObject2
+            place_clip_actions(body, label, d[3])
+        elif code == 39 and len(body) > 4:      # DefineSprite
+            sid = struct.unpack_from('<H', body, 0)[0]
+            walk(body, 4, len(body), '%ssprite %d ' % (label, sid))
+
+walk(d, p, len(d))
