@@ -644,7 +644,19 @@ pub const Activation = struct {
         var bottom = self.scopeObject(self.scope);
         while (cur != 0) {
             const node = self.scopeObject(cur);
-            if (self.vm.objects.hasOwn(node, name, cs)) return self.storeInScope(node, name, v);
+            // The scope chain is searched with a full HAS-PROPERTY, not an
+            // own-property test: ruffle's `Scope::set` asks
+            // `has_property`, so a name whose accessor lives on the
+            // object's PROTOTYPE is set on that object through the
+            // setter. A component whose class declares `contentPath` as
+            // an addProperty pair depends on it — a bare
+            // `contentPath = "x"` in an onClipEvent(construct) has to
+            // reach the setter, not shadow it with a plain property.
+            if (self.vm.objects.hasOwn(node, name, cs) or
+                self.vm.objects.findChainedForWriteLocated(node, name, cs) != null)
+            {
+                return self.storeInScope(node, name, v);
+            }
             if (try stage.assignMember(self.vm, node, name, v)) return;
             bottom = node;
             cur = self.vm.objects.get(cur).scope_parent;
@@ -659,9 +671,10 @@ pub const Activation = struct {
         // A scope write is a full `set`, so a VIRTUAL property on the
         // scope object runs its setter: `with (o) { prop = 2 }` where
         // `o.prop` is an addProperty pair calls that setter (corpus with).
-        const virtual = if (self.vm.objects.get(node).find(name, self.vm.case_sensitive)) |i|
-            self.vm.objects.get(node).props.items[i].setter != 0 or
-                self.vm.objects.get(node).props.items[i].getter != 0
+        // …and the accessor may be inherited, which is the same reason
+        // `scopeAssign` walks the prototype chain.
+        const virtual = if (self.vm.objects.findChainedForWriteLocated(node, name, self.vm.case_sensitive)) |loc|
+            loc.prop.setter != 0 or loc.prop.getter != 0
         else
             false;
         if (self.vm.objects.get(node).watchers.len == 0 and !virtual) {
