@@ -76,3 +76,23 @@ is rejected (`error.Avm2Unsupported`).
 | 60/61 | DefineVideoStream/VideoFrame | 6 | — | oos | video. The CONTAINER is not: `core/flv.zig` frames an FLV for `NetStream`, whose script tags reach AVM1 as `onMetaData` |
 | 78 | DefineScalingGrid | 8 | — | oos | 9-slice |
 | 87 | DefineBinaryData | 9 | — | oos | AVM2 |
+
+## FLV video codecs (M4-L, `core/codecs/`)
+
+`DefineVideoStream` (60) declares the size the frames are STRETCHED into
+and the codec; `NetStream` supplies the frames. A video's self-bounds
+come from this tag, not from the decoded frame — a component that sizes
+itself by dividing by `_width` gets a zero matrix without it.
+
+| codec | name | state |
+|---|---|---|
+| 2 | Sorenson Spark (H.263) | decodes — I and P frames, Annex J deblocking |
+| 3 | Screen video | decodes |
+| 4 | VP6 | not implemented |
+| 5 | VP6 with alpha | not implemented |
+| 6 | Screen video 2 | not implemented |
+
+Sorenson's picture header is H.263's with the GOB number reused as a
+version field, a picture size that may be custom in 8 or 16 bits, and a
+deblocking flag. Its version 1 also picks the escape-coefficient width
+with a flag (7 or 11 bits) where plain H.263 always spends 8.

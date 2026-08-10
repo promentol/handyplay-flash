@@ -30,7 +30,7 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2.0 | vendor simdra | ✅ |
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
-| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**679/679** traces, images **19/26**); F open |
+| M4 | objects/stage/buttons/text/bitmaps | 🔶 workstreams A, B, C, D, E and L complete (**679/679** traces, images **21/26**); F open |
 | M5 | libretro core + save-states | ⬜ |
 | M6 | audio | ⬜ |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
@@ -484,7 +484,7 @@ Ruffle reference file, plus the M3 failure clusters and a near-miss hit
 list. Gate: **≥300/697 — cleared.**
 
 **Workstreams A, B, C, D, E and L are CLOSED, and the trace corpus is
-GREEN: 679 of 679** (images 19/26). Pick up F (PlaceObject3 blend modes
+GREEN: 679 of 679** (images 21/26). Pick up F (PlaceObject3 blend modes
 and clipDepth masks) next — `Renderer.blendModeFromSwf` already has the
 mapping F needs, because `BitmapData.draw` takes the same numbering.
 `docs/M4-SPEC.md` §4, §5, §6 and §7 name, by dir and cause, everything
@@ -503,27 +503,25 @@ undefined, `{}` or a negative where a seed or a count belongs. Flash's
 Feistel round function is not ruffle's (ruffle's is a stated guess), and
 eleven recorded return values are not enough to recover the real one.
 
-**The IMAGE score is 19 of 26, and the seven that remain are each one
+**The IMAGE score is 21 of 26, and the five that remain are each one
 thing.** Two of them are not ours to fix: `define_font_glyph_table_order` and
 `_overlap` render their content entirely from ActionScript 3 — five
 DoABC blocks and nothing on the timeline — so they need an AVM2
 interpreter, which this player does not have and is not going to grow.
 
-`netstream_play_flv` needs a Sorenson H.263 decoder (codec 2).
-`netstream_play_flv_screen` no longer needs a decoder: screen video
-(codec 3) decodes, `Video.attachVideo` links a stream to a display
-object and the renderer draws the frame. It fails for a different
-reason now — its movie drives everything through Adobe's FLVPlayback
-component, whose VideoPlayer sits in state "loading" and keeps itself
-invisible. The FLV loads and its keyframe decodes; what never happens
-is the component deciding it is connected.
+Both video dirs now pass. `netstream_play_flv_screen` was never a
+decoder problem: the frame decoded on all sixty ticks and was scaled to
+nothing, because a `Video` had no self-bounds and the FLVPlayback
+component sizes itself by dividing by them. `netstream_play_flv` needed
+a real Sorenson H.263 decoder, which `core/codecs/h263.zig` now is —
+I-frames and P-frames, deblocking filter included.
 
-The other five are close and specific:
+The other three are close and specific:
 
 | dir | what is left |
 |---|---|
-| `movieclip_begin_gradient_fill`, `movieclip_line_gradient_style` | three cells of twenty-four, the ones BOTH translucent and linearRGB. Every other cell matches to within a unit or two. The green channel's range across the failing cell rules out linear-light compositing — it matches an ordinary sRGB composite of the linearRGB'd stop — and the largest error is where the spread is `"repeat"` and the ramp wraps. |
-| `edittext_stylesheet` | two pixels, both the bottom-right corner of a field's border, where Flash is 63% covered and we are 100%. The dir's tolerance is 64 and the difference is 95. |
+| `movieclip_begin_gradient_fill`, `movieclip_line_gradient_style` | 113 pixels between them, down from 13022. Twenty-two of the twenty-four cells are exact. What is left is 37 pixels of the cell whose two ratios are both 50 — a hard step in a REFLECTED radial, where the two renderers place the sample three hundredths of a pixel apart and the step turns that into a colour — and 8 pixels at the singularity of a focal gradient, whose formula is algebraically the two-circle one we tessellate but is not evaluated the same way near the focus. |
+| `edittext_stylesheet` | two pixels, both the bottom-right corner of a field's border. Flash draws that border as FOUR SEPARATE LINES and the bottom-right corner is missing entirely (`edit_text.rs:2841`); the reference draws them as GPU line primitives, and the corner ends up 5/8 covered by two overlapping partial samples. No whole-pixel model produces 5/8: fully drawn is 95 away and fully missing is 160, against a tolerance of 64. |
 
 **Two harness gaps closed along the way**: `images.sh` now replays
 `input.json` (the SDL frontend gained `--input`, shared with the trace
