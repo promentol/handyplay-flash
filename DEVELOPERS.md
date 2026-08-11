@@ -219,7 +219,7 @@ everything except Bionic, so it needs the NDK's sysroot —
 
 ```sh
 NDK=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/sysroot
-zig build libretro -Dtarget=aarch64-linux-android -Dandroid-api=29 --sysroot "$NDK"
+zig build libretro -Dtarget=aarch64-linux-android -Dandroid-ndk="$NDK" -Dandroid-api=29
 ```
 
 ### Releases

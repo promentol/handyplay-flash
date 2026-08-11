@@ -166,7 +166,7 @@ jobs:
         run: |
           zig build libretro -Doptimize=ReleaseFast -Dstrip=true \
             -Dtarget=${{ matrix.target }} ${{ matrix.cpu }} \
-            -Dandroid-api="$API" --sysroot "$SYSROOT"
+            -Dandroid-ndk="$SYSROOT" -Dandroid-api="$API"
       - name: Package
         # RetroArch's Android build looks for the `_android` suffix.
         run: |

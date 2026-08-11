@@ -17,10 +17,15 @@ pub fn build(b: *std.Build) void {
     // Release artifacts ship stripped: the debug info is a third of a
     // Linux `.so` and nothing on a player's machine reads it.
     const want_strip = b.option(bool, "strip", "Strip debug info from the binaries");
-    // Android needs the NDK's Bionic — zig has no libc for it. Point
-    // `--sysroot` at
-    // `$NDK/toolchains/llvm/prebuilt/<host>/sysroot` and the API level
-    // has to match a directory under its `usr/lib/<triple>/`.
+    // Android needs the NDK's Bionic — zig has no libc for it. Give
+    // `-Dandroid-ndk=$NDK/toolchains/llvm/prebuilt/<host>/sysroot` and an
+    // API level that exists under its `usr/lib/<triple>/`.
+    //
+    // NOT `--sysroot`: zig resolves library directories RELATIVE to a
+    // sysroot, so passing one alongside absolute `-L` paths asks it to
+    // open `<sysroot><sysroot>/usr/lib/...`, which is exactly the
+    // "unable to open library directory" warning that follows.
+    const android_ndk = b.option([]const u8, "android-ndk", "NDK sysroot directory (Android only)");
     const android_api = b.option(u32, "android-api", "Android API level (NDK sysroot)") orelse 29;
 
     // Vendored simdra drawing core (vendor/simdra, MIT — see its LICENSE).
@@ -42,7 +47,7 @@ pub fn build(b: *std.Build) void {
         "vendor/simdra/simdra/utils/stb_image.c",
         "vendor/simdra/simdra/utils/stb_truetype.c",
     } });
-    androidSysroot(b, simdra_mod, target, android_api);
+    androidSysroot(b, simdra_mod, target, android_ndk, android_api);
 
     // Core module rooted at the umbrella (re-exports swf/ + display/;
     // grows the host seam in M2).
@@ -62,6 +67,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     flash_mod.addImport("statefmt", statefmt_mod);
+    // It compiles minimp3's C, so it needs the NDK's headers too — the
+    // arch directory in particular, for `asm/types.h`.
+    androidSysroot(b, flash_mod, target, android_ndk, android_api);
 
     // --- MP3 (M6) ----------------------------------------------------------
     // The vendored minimp3 (vendor/minimp3, CC0) behind the flat shim in
@@ -168,7 +176,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("vendor/fonts/Poppins-Medium.ttf"),
         });
         lr_mod.strip = want_strip;
-        androidSysroot(b, lr_mod, target, android_api);
+        androidSysroot(b, lr_mod, target, android_ndk, android_api);
         const lrlib = b.addLibrary(.{
             .name = "flash_libretro",
             .root_module = lr_mod,
@@ -178,7 +186,7 @@ pub fn build(b: *std.Build) void {
         // zig want to PROVIDE a libc, and for android it cannot ("unable
         // to provide libc for target ...-android"). Declaring an external
         // libc installation is the documented way out.
-        if (androidLibcFile(b, target, android_api)) |f| lrlib.setLibCFile(f);
+        if (androidLibcFile(b, target, android_ndk, android_api)) |f| lrlib.setLibCFile(f);
         const ext = switch (target.result.os.tag) {
             .windows => "dll",
             .macos, .ios, .tvos, .watchos => "dylib",
@@ -219,21 +227,27 @@ pub fn build(b: *std.Build) void {
 fn androidLibcFile(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
+    ndk: ?[]const u8,
     api: u32,
 ) ?std.Build.LazyPath {
     const t = target.result;
     if (t.abi != .android and t.abi != .androideabi) return null;
-    const sysroot = b.sysroot orelse return null; // androidSysroot already complained
+    const sysroot = ndk orelse return null; // androidSysroot already complained
     const triple = androidTriple(t);
+    // `sys_include_dir` is the ARCH directory, not a second copy of
+    // `usr/include`: `asm/types.h` lives only there, and every C file in
+    // the build reaches it through `linux/types.h`. Putting it here
+    // rather than on one module covers modules that compile C without
+    // anyone remembering to wire them up.
     const txt = b.fmt(
         \\include_dir={s}/usr/include
-        \\sys_include_dir={s}/usr/include
+        \\sys_include_dir={s}/usr/include/{s}
         \\crt_dir={s}/usr/lib/{s}/{d}
         \\msvc_lib_dir=
         \\kernel32_lib_dir=
         \\gcc_dir=
         \\
-    , .{ sysroot, sysroot, sysroot, triple, api });
+    , .{ sysroot, sysroot, triple, sysroot, triple, api });
     return b.addWriteFiles().add("android-libc.txt", txt);
 }
 
@@ -260,13 +274,14 @@ fn androidSysroot(
     b: *std.Build,
     mod: *std.Build.Module,
     target: std.Build.ResolvedTarget,
+    ndk: ?[]const u8,
     api: u32,
 ) void {
     const t = target.result;
     if (t.abi != .android and t.abi != .androideabi) return;
-    const sysroot = b.sysroot orelse {
+    const sysroot = ndk orelse {
         std.debug.print(
-            "android: pass --sysroot $NDK/toolchains/llvm/prebuilt/<host>/sysroot\n",
+            "android: pass -Dandroid-ndk=$NDK/toolchains/llvm/prebuilt/<host>/sysroot\n",
             .{},
         );
         std.process.exit(1);
@@ -276,4 +291,12 @@ fn androidSysroot(
     mod.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include/{s}", .{ sysroot, triple }) });
     mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/usr/lib/{s}/{d}", .{ sysroot, triple, api }) });
     mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/usr/lib/{s}", .{ sysroot, triple }) });
+    // Bionic annotates array parameters — `unsigned short __xsubi[_Nonnull
+    // 3]` in stdlib.h — and translate-c cannot parse a nullability
+    // qualifier there, so every `@cImport` that reaches stdlib.h fails.
+    // Defining the three keywords to nothing is the only lever a module
+    // has over translate-c, and it costs nothing: they are annotations.
+    mod.addCMacro("_Nonnull", "");
+    mod.addCMacro("_Nullable", "");
+    mod.addCMacro("_Null_unspecified", "");
 }

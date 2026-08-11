@@ -67,7 +67,7 @@ echo "$MATRIX" | while read -r plat target extra lib; do
                 api=29
                 [ -d "$libdir/$api" ] || api=$(ls "$libdir" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1)
                 [ -n "$api" ] || { echo "skip $plat (no API dirs under $libdir)"; continue; }
-                sysroot_arg="--sysroot $s -Dandroid-api=$api"
+                sysroot_arg="-Dandroid-ndk=$s -Dandroid-api=$api"
             else
                 echo "skip $plat (no NDK: set ANDROID_NDK_HOME)"
                 continue
