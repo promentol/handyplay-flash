@@ -1,6 +1,6 @@
 //! handyflash's vendored simdra root — the pure-Zig drawing core only.
 //! Vendored from github.com/promentol/simdra (MIT, see LICENSE) at 0.2.0+
-//! (commit 256b243). Differences from upstream's zig/simdra.zig entry:
+//! (commit 93b61db). Differences from upstream's zig/simdra.zig entry:
 //! no zigar/JS bindings, no async encode workers, no embedded default
 //! font (handyflash renders SWF-embedded glyphs as shapes; SmFont/stb
 //! remain available for a future device-font fallback).

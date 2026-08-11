@@ -303,6 +303,33 @@ fn nowMs(vm: *Vm) Date {
     return vm.epoch_ms + vm.now_ms;
 }
 
+/// The wall clock broken into local fields, for anything outside `Date`
+/// that needs them — Flash Lite's `GetTimeHours` and friends. Sharing
+/// the decomposition keeps those answers on the SAME deterministic clock
+/// the conformance runner pins.
+pub const LocalNow = struct {
+    year: i32,
+    month: i32,
+    date: i32,
+    weekday: i32,
+    hours: i32,
+    minutes: i32,
+    seconds: i32,
+};
+
+pub fn localNow(vm: *Vm) LocalNow {
+    const t = toLocal(vm, nowMs(vm));
+    return .{
+        .year = yearOf(t),
+        .month = monthOf(t),
+        .date = dateOf(t),
+        .weekday = weekDay(t),
+        .hours = hoursOf(t),
+        .minutes = minutesOf(t),
+        .seconds = secondsOf(t),
+    };
+}
+
 // --- formatting ------------------------------------------------------------------
 
 /// `Sat Feb 3 04:05:06 GMT+0545 2001`. The offset sign is INVERTED relative

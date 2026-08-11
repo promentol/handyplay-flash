@@ -1,10 +1,10 @@
-// "Hello Handyflash" — a one-frame movie that animates itself from
+// "Hello Handyplay Flash" — a one-frame movie that animates itself from
 // onEnterFrame, which is how AS2 does motion without a timeline.
 //
 // Everything on screen is drawn by script: a gradient sky, a ring of
 // orbiting discs that ADD into each other, a pulsing logo mark under a
 // blend mode, and a highlight that sweeps across the title through a
-// mask. Compiled with tools/as2 (mtasc), rendered by handyflash.
+// mask. Compiled with tools/as2 (mtasc), rendered by handyplay-flash.
 class Test {
 	static var W:Number = 640;
 	static var H:Number = 360;
@@ -97,7 +97,7 @@ class Test {
 		titleClip.createTextField("label", 1, 0, 0, W, 60);
 		var tf:TextField = titleClip.label;
 		tf.selectable = false;
-		tf.text = "Hello Handyflash";
+		tf.text = "Hello Handyplay Flash";
 		var fmt:TextFormat = new TextFormat();
 		fmt.font = "_sans";
 		fmt.size = 44;

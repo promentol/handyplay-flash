@@ -1,0 +1,8 @@
+width = 200
+height = 150
+fps = 30
+swf_version = 8
+# Trace-only: the movie draws nothing. What it measures is that a device
+# command produces no output and does not stop the movie — in BOTH
+# players.
+image = false

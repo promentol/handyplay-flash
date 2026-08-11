@@ -28,6 +28,7 @@ const value_mod = @import("../value.zig");
 const runtime = @import("../runtime.zig");
 const object_mod = @import("../object.zig");
 const stage = @import("../stage_object.zig");
+const mp3 = @import("../../codecs/mp3.zig");
 const decl = @import("decl.zig");
 
 const Value = value_mod.Value;
@@ -58,6 +59,9 @@ const QUEUED = "_snd_queued";
 /// `loadSound(url, true)`. A streaming sound auto-plays as soon as it has
 /// loaded, without anyone calling `start`.
 const STREAMING = "_snd_streaming";
+/// The character id `attachSound` resolved, or the handle the Player gave
+/// back for a `loadSound`. Zero means nothing to play.
+const HANDLE = "_snd_handle";
 
 pub fn install(vm: *Vm) !void {
     const proto = try vm.objects.create();
@@ -173,10 +177,18 @@ fn transformOf(vm: *Vm, this: Value) ?runtime.SoundTransform {
 fn setTransformOf(vm: *Vm, this: Value, st: runtime.SoundTransform) void {
     if (targetPath(vm, this) == null) {
         vm.global_sound_transform = st;
-        return;
+    } else if (owner(vm, this)) |t| {
+        t.obj.sound_transform = st;
+    } else return;
+    // A volume change during playback is heard immediately — Flash does
+    // not wait for the next `start()`.
+    if (this == .object) {
+        if (vm.host.sound_transform) |f| {
+            if (vm.host.ctx) |c| {
+                f(c, this.object, @floatFromInt(st.volume), @floatFromInt(st.pan()));
+            }
+        }
     }
-    const t = owner(vm, this) orelse return;
-    t.obj.sound_transform = st;
 }
 
 fn getVolume(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
@@ -263,6 +275,7 @@ fn attachSound(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const id = try stage.exportedCharacter(vm, clip, name) orelse return .undefined_value;
     const ms = stage.soundDurationMs(vm, clip, id) orelse return .undefined_value;
     try vm.objects.putWithAttrs(this.object, S(DURATION), .{ .number = ms }, decl.hidden, false);
+    try vm.objects.putWithAttrs(this.object, S(HANDLE), .{ .number = @floatFromInt(id) }, decl.hidden, false);
     try vm.objects.putWithAttrs(this.object, S(POSITION), .{ .number = 0 }, decl.hidden, false);
     try vm.objects.putWithAttrs(this.object, S(LOADED), .{ .boolean = true }, decl.hidden, false);
     try defineLiveProps(vm, this.object);
@@ -285,7 +298,7 @@ fn defineLiveProps(vm: *Vm, obj: ObjectHandle) !void {
     try decl.property(vm, obj, "position", getPosition, null, decl.hidden);
 }
 
-fn getDuration(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+pub fn getDuration(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     if (!isSound(vm, this)) return .undefined_value;
@@ -293,21 +306,28 @@ fn getDuration(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     return vm.objects.getOwn(this.object, S(DURATION), false) orelse .undefined_value;
 }
 
-fn getPosition(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
+pub fn getPosition(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     _ = args;
     const vm = vmOf(p);
     if (!isSound(vm, this)) return .undefined_value;
     if (!hasOwner(vm, this)) return .undefined_value;
     // Unlike `duration`, position needs a sound actually attached.
     if (!flag(vm, this.object, LOADED)) return .undefined_value;
+    // While something is playing the mixer knows; once it has stopped the
+    // stored value is the last thing anyone saw.
+    if (vm.host.sound_position) |f| {
+        if (vm.host.ctx) |c| {
+            const ms = f(c, this.object);
+            if (ms >= 0) return .{ .number = @round(ms) };
+        }
+    }
     return vm.objects.getOwn(this.object, S(POSITION), false) orelse .undefined_value;
 }
 
-/// Playback is M6. What survives without it is the COMPLETION: with no
-/// audio device the sound is over as soon as it starts, so `onSoundComplete`
-/// fires on the next tick — which is what the corpus records.
+/// `start(offset, loops)`. The mixer does the playing; what happens here
+/// is only the bookkeeping — which sound, from where, how many times, and
+/// under whose name the completion will come back.
 fn start(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = args;
     const vm = vmOf(p);
     if (!isSound(vm, this)) return .undefined_value;
     if (!hasOwner(vm, this)) return .undefined_value;
@@ -326,15 +346,56 @@ fn start(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
         }
         return .undefined_value;
     }
-    const h = vm.host;
-    if (h.sound_complete) |f| f(h.ctx orelse return .undefined_value, this.object);
+    const offset = if (args.len > 0) try vm.toNumber(args[0]) else 0;
+    const total = if (args.len > 1) try vm.toNumber(args[1]) else 1;
+    try playNow(vm, this.object, offset, total);
     return .undefined_value;
 }
 
+/// Ask the Player for an instance. Shared by `start` and by the queued
+/// plays a `loadSound` releases.
+fn playNow(vm: *Vm, obj: ObjectHandle, offset_secs: f64, total_plays: f64) !void {
+    const h = vm.host;
+    const f = h.sound_play orelse return;
+    const ctx = h.ctx orelse return;
+    const handle = handleOf(vm, obj);
+    if (handle == 0) return;
+    const st = transformOfHandle(vm, obj);
+    // Flash counts TOTAL plays and treats anything under one as one.
+    const repeats: f64 = if (std.math.isNan(total_plays) or total_plays <= 1) 0 else total_plays - 1;
+    f(ctx, .{
+        .owner = obj,
+        .handle = handle,
+        .offset_secs = if (std.math.isFinite(offset_secs) and offset_secs > 0) offset_secs else 0,
+        .loops = @intFromFloat(@min(repeats, 65535)),
+        .volume = st[0],
+        .pan = st[1],
+    });
+}
+
+fn handleOf(vm: *Vm, obj: ObjectHandle) u32 {
+    const v = vm.objects.getOwn(obj, S(HANDLE), false) orelse return 0;
+    if (v != .number or !std.math.isFinite(v.number) or v.number < 0) return 0;
+    return @intFromFloat(v.number);
+}
+
+/// The object's volume and pan as plain numbers, for the mixer.
+fn transformOfHandle(vm: *Vm, obj: ObjectHandle) [2]f64 {
+    const st = transformOf(vm, .{ .object = obj }) orelse return .{ 100, 0 };
+    return .{ @floatFromInt(st.volume), @floatFromInt(st.pan()) };
+}
+
+/// `stop()` — with no argument, everything this object started; with a
+/// linkage name, that sound wherever it is playing. A stopped sound does
+/// NOT report completion (corpus sound_start_stop expects silence).
 fn stop(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
-    _ = args;
     const vm = vmOf(p);
     if (!isSound(vm, this)) return .undefined_value;
+    const h = vm.host;
+    const f = h.sound_stop orelse return .undefined_value;
+    const ctx = h.ctx orelse return .undefined_value;
+    _ = args;
+    f(ctx, this.object);
     return .undefined_value;
 }
 
@@ -371,6 +432,15 @@ pub fn completeLoad(vm: *Vm, obj: ObjectHandle, data: ?[]const u8) !void {
         return;
     };
     try setFlag(vm, obj, LOADED, true);
+    // The mixer takes the bytes now; an MP3 it cannot decode still counts
+    // as loaded, because the corpus reads the duration and the ID3 frames
+    // back either way.
+    if (vm.host.sound_register) |reg| {
+        if (vm.host.ctx) |c| {
+            const handle = reg(c, bytes);
+            try vm.objects.putWithAttrs(obj, S(HANDLE), .{ .number = @floatFromInt(handle) }, decl.hidden, false);
+        }
+    }
     try vm.objects.putWithAttrs(obj, S(POSITION), .{ .number = 0 }, decl.hidden, false);
     try defineLiveProps(vm, obj);
     // The order is ruffle's `load_sound_avm1` and it is observable: the
@@ -378,7 +448,7 @@ pub fn completeLoad(vm: *Vm, obj: ObjectHandle, data: ?[]const u8) !void {
     // `onLoad`, so a handler that prints both sees 0 and then 1045.
     try vm.objects.putWithAttrs(obj, S(DURATION), .{ .number = 0 }, decl.hidden, false);
     try loadId3(vm, obj, bytes);
-    if (mp3DurationMs(bytes)) |ms| {
+    if (mp3.durationMs(bytes)) |ms| {
         try vm.objects.putWithAttrs(obj, S(DURATION), .{ .number = ms }, decl.hidden, false);
     }
     // A play that arrived while the bytes were still coming runs now.
@@ -386,16 +456,11 @@ pub fn completeLoad(vm: *Vm, obj: ObjectHandle, data: ?[]const u8) !void {
     try vm.objects.putWithAttrs(obj, S(QUEUED), .{ .number = 0 }, decl.hidden, false);
     try setFlag(vm, obj, LOADING, false);
     try l.callMethod(vm, obj, S("onLoad"), &.{.{ .boolean = true }});
-    const h = vm.host;
     // A streaming sound starts itself, AFTER onLoad.
     var plays = queued;
     if (flag(vm, obj, STREAMING)) plays += 1;
     var k: f64 = 0;
-    while (k < plays) : (k += 1) {
-        if (h.sound_complete) |f| {
-            if (h.ctx) |c| f(c, obj);
-        }
-    }
+    while (k < plays) : (k += 1) try playNow(vm, obj, 0, 1);
 }
 
 /// The sound has finished: its position is now its whole duration, and
@@ -405,66 +470,6 @@ pub fn finishPlay(vm: *Vm, obj: ObjectHandle) !void {
         try vm.objects.putWithAttrs(obj, S(POSITION), d, decl.hidden, false);
     }
     try @import("loader.zig").callMethod(vm, obj, S("onSoundComplete"), &.{});
-}
-
-/// An MP3's length, by walking its frame headers. Only the fields the
-/// duration needs are decoded — bitrate and sample rate per frame, since
-/// a VBR file changes both.
-fn mp3DurationMs(bytes: []const u8) ?f64 {
-    const BITRATES_V1_L3 = [_]u32{ 0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0 };
-    const BITRATES_V2_L3 = [_]u32{ 0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0 };
-    const RATES_V1 = [_]u32{ 44100, 48000, 32000, 0 };
-    const RATES_V2 = [_]u32{ 22050, 24000, 16000, 0 };
-    const RATES_V25 = [_]u32{ 11025, 12000, 8000, 0 };
-
-    var i: usize = skipId3(bytes);
-    var samples: f64 = 0;
-    var rate: u32 = 0;
-    var frames: u32 = 0;
-    while (i + 4 <= bytes.len) {
-        if (bytes[i] != 0xFF or (bytes[i + 1] & 0xE0) != 0xE0) {
-            i += 1;
-            continue;
-        }
-        const ver_bits = (bytes[i + 1] >> 3) & 0b11;
-        const layer_bits = (bytes[i + 1] >> 1) & 0b11;
-        if (ver_bits == 1 or layer_bits == 0) {
-            i += 1;
-            continue;
-        }
-        const bitrate_idx = (bytes[i + 2] >> 4) & 0xF;
-        const rate_idx = (bytes[i + 2] >> 2) & 0b11;
-        const is_v1 = ver_bits == 3;
-        const bitrate = 1000 * (if (is_v1) BITRATES_V1_L3[bitrate_idx] else BITRATES_V2_L3[bitrate_idx]);
-        rate = switch (ver_bits) {
-            3 => RATES_V1[rate_idx],
-            2 => RATES_V2[rate_idx],
-            else => RATES_V25[rate_idx],
-        };
-        if (bitrate == 0 or rate == 0) {
-            i += 1;
-            continue;
-        }
-        const per_frame: u32 = if (is_v1) 1152 else 576;
-        const padding: u32 = (bytes[i + 2] >> 1) & 1;
-        const len = per_frame / 8 * bitrate / rate + padding;
-        if (len == 0) break;
-        samples += @floatFromInt(per_frame);
-        frames += 1;
-        i += len;
-    }
-    if (frames == 0 or rate == 0) return null;
-    return @round(samples * 1000.0 / @as(f64, @floatFromInt(rate)));
-}
-
-fn skipId3(bytes: []const u8) usize {
-    if (bytes.len < 10 or !std.mem.eql(u8, bytes[0..3], "ID3")) return 0;
-    // A syncsafe 28-bit size, seven bits per byte.
-    const size: usize = (@as(usize, bytes[6] & 0x7F) << 21) |
-        (@as(usize, bytes[7] & 0x7F) << 14) |
-        (@as(usize, bytes[8] & 0x7F) << 7) |
-        @as(usize, bytes[9] & 0x7F);
-    return @min(10 + size, bytes.len);
 }
 
 /// Build the `id3` bag and hand it to `onID3`.
@@ -481,7 +486,7 @@ fn loadId3(vm: *Vm, sound: ObjectHandle, bytes: []const u8) !void {
     const l = @import("loader.zig");
     if (bytes.len < 10 or !std.mem.eql(u8, bytes[0..3], "ID3")) return;
     const version = bytes[3];
-    const end = skipId3(bytes);
+    const end = mp3.skipId3(bytes);
     // Bare: `vm.objects.create()` leaves the prototype unset, which is
     // exactly `Object::new_without_proto`.
     const id3 = try vm.objects.create();

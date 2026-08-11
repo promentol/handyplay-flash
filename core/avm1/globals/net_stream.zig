@@ -57,6 +57,9 @@ pub const Stream = struct {
     queued_seek: ?f64 = null,
     /// `bufferTime`, in seconds. Flash's default is a tenth of a second.
     buffer_time: f64 = 0.1,
+    /// The mixer handle this stream's audio is appended to, once a first
+    /// audio tag has arrived. Zero means no audio (or none we decode).
+    audio_handle: u32 = 0,
     /// The most recent decoded video frame, as a pixel buffer the
     /// renderer can blit. Owned with the player's gpa and replaced on
     /// every frame that decodes.
@@ -290,6 +293,7 @@ fn tickOne(vm: *Vm, s: *Stream, dt_ms: f64) !void {
         switch (tag.kind) {
             .script => try dispatchScript(vm, s, tag.data),
             .video => decodeVideo(vm, s, tag.data),
+            .audio => decodeAudio(vm, s, tag.data),
             else => {},
         }
     }
@@ -336,6 +340,25 @@ fn dispatchScript(vm: *Vm, s: *Stream, data: []const u8) !void {
 
 /// One video tag. The first byte is the frame type and the codec.
 /// SORENSON SPARK (2) and SCREEN VIDEO (3) decode; VP6 does not yet.
+/// One FLV audio tag. **MP3 only**: the format nibble also allows AAC,
+/// Nellymoser and PCM, but nothing this project has to play uses them and
+/// AAC would mean a second vendored decoder. The rest are silent, which
+/// leaves the video running rather than failing the stream.
+///
+/// The mixer's clock does the syncing: the samples go into a growing
+/// source that plays as the frame loop advances, and the video is decoded
+/// off the same tag timeline, so the two cannot drift by more than the
+/// buffer this pass just consumed.
+fn decodeAudio(vm: *Vm, s: *Stream, data: []const u8) void {
+    if (data.len < 2) return;
+    const format = data[0] >> 4;
+    if (format != 2 and format != 14) return; // 2 and 14 are both MP3
+    const h = vm.host;
+    const feed = h.stream_audio orelse return;
+    const ctx = h.ctx orelse return;
+    s.audio_handle = feed(ctx, s.audio_handle, data[1..]);
+}
+
 fn decodeVideo(vm: *Vm, s: *Stream, data: []const u8) void {
     if (data.len < 2) return;
     const codec = data[0] & 0x0F;

@@ -5,8 +5,8 @@
 # so it is built from source — see build-mtasc.sh for what the 2015
 # sources need doing to them to compile against a 2023 OCaml.
 #
-#   docker build -t handyflash-as2c tools/as2/compiler
-#   docker run --rm -v "$PWD:/work" handyflash-as2c as2-compile Test.as test.swf
+#   docker build -t handyplay-flash-as2c tools/as2/compiler
+#   docker run --rm -v "$PWD:/work" handyplay-flash-as2c as2-compile Test.as test.swf
 #
 # Kept apart from the runner image on purpose: compiling is fast, pure and
 # offline, while running needs a browser. Neither should wait on the other.

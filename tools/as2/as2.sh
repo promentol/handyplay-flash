@@ -6,7 +6,13 @@
 #   sh tools/as2/as2.sh check  [case...]  # run ours against the saved ones
 #   sh tools/as2/as2.sh run    [case...]  # record then check
 #
-# A case is a directory under tests/as2 holding `Test.as` and `test.toml`.
+# A case is a directory under tests/as2 holding `test.toml` and either
+# `Test.as` (compiled by mtasc) or a `generator = "..."` line naming a
+# script that writes `test.swf` directly. A generated case exists for the
+# one thing no compiler here can emit: Flash Lite's opcode 0x2D. Such a
+# case sets `ruffle = false`, since ruffle has no 0x2D either and there is
+# nothing to record an expectation from.
+#
 # Everything else in the directory is generated:
 #
 #   test.swf       compiled by mtasc in the compiler image
@@ -25,11 +31,11 @@ set -eu
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 CASES_DIR="$ROOT/tests/as2"
-COMPILER_IMAGE=${COMPILER_IMAGE:-handyflash-as2c}
-RUNNER_IMAGE=${RUNNER_IMAGE:-handyflash-ruffle}
-ASSETS_IMAGE=${ASSETS_IMAGE:-handyflash-swfassets}
+COMPILER_IMAGE=${COMPILER_IMAGE:-handyplay-flash-as2c}
+RUNNER_IMAGE=${RUNNER_IMAGE:-handyplay-flash-ruffle}
+ASSETS_IMAGE=${ASSETS_IMAGE:-handyplay-flash-swfassets}
 TRACE_BIN="$ROOT/zig-out/bin/trace_runner"
-SDL_BIN="$ROOT/zig-out/bin/handyflash-sdl"
+SDL_BIN="$ROOT/zig-out/bin/handyplay-flash-sdl"
 # How long ruffle is left running before the screenshot. It has no "tick
 # N frames" API, so a case meant for comparison should settle on its
 # first frame and then hold still.
@@ -42,7 +48,11 @@ cases() {
         for c in "$@"; do echo "$c"; done
     else
         for d in "$CASES_DIR"/*/; do
-            [ -f "$d/Test.as" ] && basename "$d"
+            if [ -f "$d/Test.as" ]; then
+                basename "$d"
+            elif [ -f "$d/test.toml" ] && [ -n "$(toml "${d%/}" generator)" ]; then
+                basename "$d"
+            fi
         done
     fi
 }
@@ -58,6 +68,14 @@ do_build() {
 do_compile() {
     for c in $(cases "$@"); do
         d="$CASES_DIR/$c"
+        gen=$(toml "$d" generator)
+        if [ -n "$gen" ]; then
+            # A case whose SWF is written, not compiled — no Docker in
+            # sight, and the bytes are checked in beside the script.
+            python3 "$ROOT/$gen" >/dev/null
+            printf '  generated %-17s %s bytes\n' "$c" "$(wc -c <"$d/test.swf" | tr -d ' ')"
+            continue
+        fi
         w=$(toml "$d" width);   [ -n "$w" ] || w=200
         h=$(toml "$d" height);  [ -n "$h" ] || h=150
         f=$(toml "$d" fps);     [ -n "$f" ] || f=30
@@ -86,6 +104,10 @@ do_record() {
     do_compile "$@"
     for c in $(cases "$@"); do
         d="$CASES_DIR/$c"
+        if [ "$(toml "$d" ruffle)" = "false" ]; then
+            printf '  %s: self-referential, expectation kept\n' "$c"
+            continue
+        fi
         # The reference: ruffle's own wasm, in a browser, in the runner.
         docker run --rm -v "$d:/work" "$RUNNER_IMAGE" \
             node /opt/ruffle-run.mjs test.swf expected.png expected.txt "$SETTLE_MS" 2>/dev/null

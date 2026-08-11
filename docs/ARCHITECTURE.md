@@ -1,4 +1,4 @@
-# handyflash architecture
+# handyplay-flash architecture
 
 A from-scratch Flash Player in Zig 0.16. **AVM1 only** (SWF v4–v8; AVM2 files are
 rejected at load). Software rasterizer, SDL3 + libretro frontends. Shaped like the

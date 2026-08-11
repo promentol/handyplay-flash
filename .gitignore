@@ -12,8 +12,17 @@ CLAUDE.local.md
 # large local samples (curated ones are listed in samples/README.md)
 samples/*.swf
 
+# The test corpus of real Flash games. Third-party commercial content —
+# kept locally for tests/conformance/games.sh, never redistributed here.
+games/
+
 # os
 .DS_Store
 tests/as2/*/hf.png
 tests/as2/*/hf.txt
 tests/as2/*/template.swf
+__pycache__/
+
+# release packaging (tools/build-release.sh, .github/workflows/release.yml)
+dist/
+.release/

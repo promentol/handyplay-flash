@@ -12,8 +12,8 @@
 # arm64 anywhere, so the image is AMD64 and runs under emulation. That is
 # fine: it is a build-time step over tiny files.
 #
-#   docker build --platform linux/amd64 -t handyflash-swfassets tools/as2/assets
-#   docker run --rm --platform linux/amd64 -v "$PWD:/work" handyflash-swfassets \
+#   docker build --platform linux/amd64 -t handyplay-flash-swfassets tools/as2/assets
+#   docker run --rm --platform linux/amd64 -v "$PWD:/work" handyplay-flash-swfassets \
 #       swfmill simple assets.xml assets.swf
 #
 # What is in here:

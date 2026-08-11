@@ -50,6 +50,71 @@ ES3 coercion tables (value.zig), matrix/cxform math, rasterizer scanline
 fixtures (known polygon → known coverage), ADPCM known-vectors (M6). Model:
 ruffle's `swf/src/test_data.rs` (raw bytes ↔ expected struct pairs).
 
+## 5. The libretro core — `zig build libretro-test`
+
+    ./zig-out/bin/libretro_test_host zig-out/libretro/flash_libretro.dylib \
+        game.swf --frames 210 --hold a        # or --point 0.5,0.8
+
+`frontends/libretro/test_host.zig` dlopens the core and drives it through
+the real C ABI, so a wrong `callconv`, a missing export or a crash in
+`retro_run` is caught without installing RetroArch. It runs the movie
+twice — untouched, then pressed — and reports how many pixels differ.
+`--hold` PULSES rather than holds, because a movie sees key events and a
+button held from frame 1 gives exactly one edge (docs/LIBRETRO.md).
+`--point x,y` drives the absolute pointer, `--reset-at N` exercises
+RetroArch's Restart, and `--shell` keeps the intro and controls legend.
+
+## 6. Audio
+
+Two flags make silence testable without listening:
+
+    trace_runner test.swf --frames N --audio        # pull the mixed samples
+    handyplay-flash-sdl game.swf --headless-frames 300   # prints energy + sounds started
+
+`--audio` on the trace runner must not change a single traced line — the
+mixer's clock rule (docs/AUDIO.md) under test rather than asserted, and
+it holds across all 694 corpus dirs. The headless SDL line reports the
+sum of |sample| and how many `StartSound` tags were reached versus
+played, which is what tells "never got there" from "decoded to nothing".
+
+## 7. Save-states — three gates
+
+    sh tests/conformance/savestate.sh  /tmp/ss.txt 8      # 195 of 195 dirs
+    sh tests/conformance/games.sh      /tmp/games.txt 60  # 36 of 36 games
+    sh tests/conformance/statebytes.sh /tmp/bytes.txt 8   # 655 of 659 dirs
+
+`savestate.sh` runs every scorable multi-frame corpus dir twice —
+straight through, and with a serialize/restore spliced in at the halfway
+frame — and demands the traces match. `trace_runner --save-at N` is the
+mechanism; it restores into a FRESH player, so anything the state forgot
+shows up as diverging script output.
+
+Build BOTH halves first — `zig build libretro` makes the core, and
+`zig build libretro-test` makes the host that dlopens it. They are
+separate steps, so building only the first leaves a stale host behind and
+its measurements silently describe an older build.
+
+`games.sh` and `statebytes.sh` both run `libretro_test_host --state N`,
+which adds the four container gates: two saves byte-identical, the size
+stable across a run, a re-save after a restore reproducing the blob, and
+the one-frame delta a rewind layer would store. The re-save is the
+strictest of the four and found nearly every bug in that work — it
+catches a payload the state dropped even when the movie never reads it
+back. The two differ only in what they run over: `games.sh` takes
+`games/*.swf` (and prints each state's size and per-frame delta),
+`statebytes.sh` takes the whole AVM1 corpus.
+
+Four `statebytes` dirs fail for host reasons, not state reasons — see
+docs/SAVESTATE.md.
+
+## Static analysis helpers
+
+`tools/avm1dis.py <file.swf>` disassembles every action blob, including
+button condition actions and clip events. `tools/keymap.py <file.swf>`
+answers "which keys does this movie handle?" without running it — the
+same four sources `core/key_survey.zig` walks at load, so the two are
+each other's check. `--sites` prints where each binding was found.
+
 ## Progress reporting
 
 Every milestone ends by updating `docs/TAGS.md` + `docs/AVM1.md` statuses and
@@ -72,6 +137,14 @@ ActionScript, compile it, and run the result in BOTH players.
 A case is `tests/as2/<name>/` holding `Test.as` and `test.toml`. The
 recorded `expected.png` / `expected.txt` are CHECKED IN, so `check` needs
 neither Docker nor a network; `record` is the deliberate step.
+
+**A case with no ActionScript.** Some things no compiler here can emit —
+Flash Lite's opcode `0x2D` is the first. Such a case names a
+`generator = "tools/…py"` in its `test.toml` instead of shipping a
+`Test.as`, and the script writes `test.swf` directly. It also sets
+`ruffle = false`, because ruffle has no 0x2D either: `record` skips it and
+keeps the checked-in expectation, which is OURS and says so in the case's
+own comments. `tests/as2/fscommand2` is the example.
 
 **Two images, on purpose.** `tools/as2/compiler` is mtasc — the AS2
 compiler ruffle's own CONTRIBUTING recommends — built from source,

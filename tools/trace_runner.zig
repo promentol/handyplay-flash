@@ -1,5 +1,7 @@
 //! trace_runner — headless conformance driver.
 //! Usage: trace_runner <test.swf> [--frames N] [--input input.json]
+//!        [--audio]  — also PULL the mixed audio, which must not change
+//!                     a single traced line (the mixer's clock rule)
 //!        [--external-interface]
 //!
 //! Loads the movie, runs N timeline frames, prints accumulated trace()
@@ -34,6 +36,13 @@ pub fn main(init: std.process.Init) !u8 {
     var input_path: ?[]const u8 = null;
     var socket_path: ?[]const u8 = null;
     var frames: u32 = 1;
+    var pull_audio = false;
+    // `--save-at N`: serialize after N frames, restore into a FRESH
+    // player, and finish the run there. The trace must come out the same
+    // as an uninterrupted run — the sharpest save-state test there is,
+    // because a state that restores WRONG diverges in script output long
+    // before it diverges in pixels.
+    var save_at: ?u32 = null;
     var device_font_path: ?[]const u8 = null;
     var viewport_w: u32 = 0;
     var viewport_h: u32 = 0;
@@ -42,6 +51,20 @@ pub fn main(init: std.process.Init) !u8 {
     var external_interface = false;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--save-at")) {
+            i += 1;
+            if (i >= args.len) return 2;
+            save_at = try std.fmt.parseInt(u32, args[i], 10);
+            continue;
+        }
+        if (std.mem.eql(u8, args[i], "--audio")) {
+            // PULL the mixed samples every tick, the way a frontend with
+            // a sound card does. The traces must come out identical to a
+            // run without it — that is the mixer's clock rule under test
+            // rather than asserted (core/audio/mixer.zig).
+            pull_audio = true;
+            continue;
+        }
         if (std.mem.eql(u8, args[i], "--log-fetch")) {
             log_fetch = true;
             continue;
@@ -130,7 +153,7 @@ pub fn main(init: std.process.Init) !u8 {
     }
     var ei: ExternalTest = .{ .store = std.heap.ArenaAllocator.init(gpa) };
     defer ei.store.deinit();
-    const player = flash.Player.createWith(gpa, bytes, .{
+    const base_opts: flash.Player.Options = .{
         .url = url,
         .device_font = device_font,
         .viewport_width = viewport_w,
@@ -149,7 +172,8 @@ pub fn main(init: std.process.Init) !u8 {
         .save_dialog = Dialogs.save,
         .external_call = if (external_interface) ExternalTest.call else null,
         .external_user = @ptrCast(&ei),
-    }) catch {
+    };
+    const player = flash.Player.createWith(gpa, bytes, base_opts) catch {
         // A movie we can't run produces no trace output (several corpus
         // dirs are AVM2/image-comparison tests whose expected stdout is
         // empty). Diagnostics go to stderr, never stdout.
@@ -183,12 +207,48 @@ pub fn main(init: std.process.Init) !u8 {
     if (external_interface) ei.drive(player);
     cursor = replay.feedUntilWait(player, events, cursor);
     var f: u32 = 1;
+    var sink: [4096]i16 = undefined;
+    var live = player;
+    var carried: []u8 = &.{};
+    defer if (carried.len != 0) gpa.free(carried);
+    var restored: ?*flash.Player = null;
+    defer if (restored) |rp| rp.destroy();
+
     while (f < frames) : (f += 1) {
-        _ = player.tick(1000.0 / player.fps()) catch break;
-        cursor = replay.feedUntilWait(player, events, cursor);
+        _ = live.tick(1000.0 / live.fps()) catch break;
+        if (pull_audio) {
+            const want: usize = @min(sink.len / 2, @as(usize, @intFromFloat(44100.0 / live.fps())));
+            live.renderAudio(sink[0 .. want * 2], want);
+        }
+        cursor = replay.feedUntilWait(live, events, cursor);
+
+        if (save_at) |at| {
+            if (f == at and restored == null) {
+                // Keep what has been traced so far: the restored player
+                // starts with an empty buffer, and the two halves
+                // together are what an uninterrupted run prints.
+                carried = try gpa.dupe(u8, live.takeTrace());
+                const blob = try gpa.alloc(u8, live.stateUpperBound());
+                defer gpa.free(blob);
+                const used = live.saveState(blob) catch break;
+                @memset(blob[used..], 0);
+
+                var opts = base_opts;
+                opts.skip_first_frame = true;
+                const fresh = flash.Player.createWith(gpa, bytes, opts) catch break;
+                fresh.loadState(blob) catch |e| {
+                    std.debug.print("[restore] failed: {s}\n", .{@errorName(e)});
+                    fresh.destroy();
+                    break;
+                };
+                restored = fresh;
+                live = fresh;
+            }
+        }
     }
 
-    try out.writeAll(player.takeTrace());
+    if (carried.len != 0) try out.writeAll(carried);
+    try out.writeAll(live.takeTrace());
     try out.flush();
     return 0;
 }

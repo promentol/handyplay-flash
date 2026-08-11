@@ -1769,7 +1769,7 @@ fn globalAsSetPropFlags(p: *anyopaque, this: Value, args: []const Value) anyerro
 /// callable whether or not anything is defined there. An unknown
 /// CATEGORY is undefined; an unknown index within a known category is a
 /// live function that answers undefined (or, for Math, NaN).
-fn nativeCategory(cat: u32) ?object_mod.TableNativeFn {
+pub fn nativeCategory(cat: u32) ?object_mod.TableNativeFn {
     return switch (cat) {
         2 => asNewMethod,
         4 => asSetNativeMethod,

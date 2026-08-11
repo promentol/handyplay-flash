@@ -252,7 +252,12 @@ fn getUrl(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     if (args.len == 0) return .undefined_value;
     const l = @import("loader.zig");
     const url = try vm.toStringValue(args[0]);
-    if (l.fsCommandOf(url) != null) return .undefined_value;
+    if (l.fsCommandOf(url)) |cmd| {
+        // `MovieClip.getURL` reaches the same table as the action does.
+        const window_str = if (args.len > 1) try vm.toStringValue(args[1]) else S("");
+        try activation.Activation.fsCommandFromNative(vm, cmd, window_str);
+        return .undefined_value;
+    }
     const window = if (args.len > 1) try vm.toStringValue(args[1]) else S("");
     const m: runtime.FetchRequest.Method = if (args.len > 2 and args[2] == .string)
         runtime.FetchRequest.Method.fromName(args[2].string) orelse .none

@@ -1,7 +1,7 @@
 # M4 Specification — Objects, Stage, Buttons, Text, Bitmaps
 
 **Handover document.** Self-contained spec for executing milestone M4 of
-handyflash (Flash Player in Zig 0.16, AVM1 only). Written at the close of
+handyplay-flash (Flash Player in Zig 0.16, AVM1 only). Written at the close of
 M3 (full interpreter). Read this top to bottom before writing code.
 
 **Status: workstreams A and B closed, 205/680.** C (events/buttons),
@@ -19,7 +19,7 @@ visually correct.
 
 - **Zig 0.16 only**: `~/.zvm/0.16.0/zig`. Plain `zig` on PATH is 0.15.2 —
   wrong for this repo. `zig build` / `zig build test` / `zig build sdl`.
-- Repo: `/Users/narekh/Projects/notconsole/handyflash` (standalone git,
+- Repo: `/Users/narekh/Projects/notconsole/handyplay-flash` (standalone git,
   commit directly on `main` — user convention).
 - References on disk (git-ignored `reference/`):
   - `reference/ruffle/` — full Ruffle clone. **The behavior authority.**
@@ -867,7 +867,7 @@ Unit tests: every new module gets in-module `test` blocks AND an entry in
 must stay green.
 
 Visual gates: `zig build sdl` then
-`./zig-out/bin/handyflash-sdl <swf> --headless-frames N --out x.png` and
+`./zig-out/bin/handyplay-flash-sdl <swf> --headless-frames N --out x.png` and
 LOOK at the PNG (the Read tool renders it). Check: homestuck-beta.swf
 (regression), a DefineText corpus SWF (text), DefineBitsLossless.swf +
 DefineBitsJPEG2 corpus files (bitmaps), a button SWF interactively via

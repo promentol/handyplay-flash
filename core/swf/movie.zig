@@ -136,6 +136,7 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error!libra
     var pending_label: ?[]const u8 = null;
     var shown: u16 = 0;
     var has_end = false;
+    var sprite_stream_head: ?sound_tags.StreamHead = null;
 
     var it = tags.TagIterator.init(stream);
     while (it.next()) |tag| {
@@ -211,6 +212,12 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error!libra
             }),
             .sound_stream_block => try controls.append(a, .{ .sound_stream_block = tag.body }),
             .sound_stream_head, .sound_stream_head2 => {
+                // A SPRITE's head belongs to the sprite: keeping only the
+                // root's dropped the music of any game that streamed from
+                // inside a clip.
+                if (!is_root and sprite_stream_head == null) {
+                    sprite_stream_head = sound_tags.parseStreamHead(tag.body) catch null;
+                }
                 if (is_root and movie.stream_head == null) {
                     movie.stream_head = try sound_tags.parseStreamHead(tag.body);
                 }
@@ -286,6 +293,7 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error!libra
                     .frames = sprite_timeline.frames,
                     .frames_loaded = sprite_timeline.frames_loaded,
                     .has_end = sprite_timeline.has_end,
+                    .stream_head = sprite_timeline.stream_head,
                     // A sprite's getBytesTotal is the length of its OWN tag
                     // stream (ruffle MovieClip::tag_stream_len).
                     .tag_stream_len = tag.body.len -| 4,
@@ -403,6 +411,7 @@ fn preloadTimeline(movie: *Movie, stream: []const u8, is_root: bool) Error!libra
         .frames = try frames.toOwnedSlice(a),
         .frames_loaded = shown,
         .has_end = has_end,
+        .stream_head = sprite_stream_head,
     };
 }
 

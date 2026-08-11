@@ -1,6 +1,6 @@
-# handyflash — Project State & Handover
+# handyplay-flash — Project State & Handover
 
-**Authoritative snapshot. Last updated: 2026-08-09 (workstream L close, then a long semantics sweep — closures, coercions, SWF4 rules, the ASnative tables and the missing global classes — and then the last 54 dirs, one at a time: 679/679, the whole scorable corpus.)**
+**Authoritative snapshot. Last updated: 2026-08-10 (workstream L close, then a long semantics sweep — closures, coercions, SWF4 rules, the ASnative tables and the missing global classes — and then the last 54 dirs, one at a time: 679/679, the whole scorable corpus. Then the AS2 authoring pipeline, and Flash Lite: `fscommand`, `fscommand2`, the player profile and the soft-key strip.)**
 Read this first if you are picking up the project with no prior context.
 For executing the next milestone, then read `docs/M4-SPEC.md`.
 
@@ -10,7 +10,7 @@ For executing the next milestone, then read `docs/M4-SPEC.md`.
 
 A **Flash Player written from scratch in Zig 0.16**, AVM1 only (SWF v4–v8,
 ActionScript 1/2). AVM2/AS3 files are detected and rejected by design.
-Standalone git repo at `/Users/narekh/Projects/notconsole/handyflash`
+Standalone git repo at `/Users/narekh/Projects/notconsole/handyplay-flash`
 (`main` branch, commit directly — user convention, no feature branches).
 
 It is shaped like the user's other emulator cores in
@@ -31,8 +31,8 @@ monorepo is pinned to zig **0.15.2** while this project uses **0.16**.
 | M2 | display list + timeline + renderer + SDL3 | ✅ **first pixels** |
 | M3 | full AVM1 interpreter + conformance harness | ✅ `d12cb3a` (**76/697**) |
 | M4 | objects/stage/buttons/text/bitmaps | ✅ every workstream closed — A, B, C, D, E, F, L (**679/679** traces, images **21/26**) |
-| M5 | libretro core + save-states | ⬜ |
-| M6 | audio | ⬜ |
+| M5 | libretro core + save-states | ✅ **core PLAYING in RetroArch** (universal macOS dylib, pad bound by the key survey, per-movie bindings as core options) and **save-states + rewind ON by default**: 36/36 games, 195/195 multi-frame corpus dirs, 655/659 byte gates (docs/SAVESTATE.md) |
+| M6 | audio | 🔶 **event sounds, streams, PCM/ADPCM/MP3 and FLV audio play**; Nellymoser/Speex deliberately silent |
 | M7 | polish (morph/masks/EditText/filters) | ⬜ |
 
 **Visually working today**: `squares.swf`, `homestuck-beta.swf`,
@@ -131,7 +131,7 @@ to that list.**
 ## 2. Repository map
 
 ```
-handyflash/
+handyplay-flash/
 ├── build.zig                 modules: flash (core) + simdra (vendored); steps: tools/test/sdl
 ├── core/
 │   ├── flash.zig             UMBRELLA + Player (host seam) + the root test-import list
@@ -144,7 +144,7 @@ handyflash/
 │   │   ├── font_text.zig     DefineFont1-3, FontInfo, DefineText1-2, DefineEditText
 │   │   ├── button.zig        DefineButton1-2 + ButtonCondActions
 │   │   ├── bitmap_tags.zig   raw payload capture (decode is M4)
-│   │   ├── sound_tags.zig    DefineSound/StartSound/SoundStreamHead (playback M6)
+│   │   ├── sound_tags.zig    DefineSound/StartSound/SoundStreamHead (played, M6)
 │   │   ├── place.zig         PlaceObject1-3 + ClipActions, RemoveObject1-2
 │   │   ├── filters.zig       FILTERLIST exact skipping
 │   │   └── movie.zig         two-pass preload → Movie{lib, frames[]}
@@ -262,7 +262,7 @@ installed by `Player.installHost`.
 |---|---|---|
 | D0 | **Ruffle-style linear interpreter**, not open-flash's CFG | battle-tested, far simpler; open-flash's per-action docs still drive semantics |
 | D1 | Runtime strings are **[]u16 UCS-2** | `String.length`/`charCodeAt` are code-unit based; corpus has non-ASCII |
-| D2 | Objects in a **handle table** (u32), arena-allocated, no GC yet | save-states become a table walk; no pointer invalidation |
+| D2 | Objects in a **handle table** (u32), arena-allocated; **mark-sweep GC** at frame boundaries (`core/avm1/gc.zig`) | save-states are a table walk; no pointer invalidation. The collector landed when a state measured 36 MB: nothing had ever been freed, and `AntiMosquito` held 448,996 slots after sixty frames |
 | D3 | JPEG via **simdra's stb** (amended from pure-Zig) | also gets PNG/GIF (legal in DefineBitsJPEG2 v8+); we still own SWF stream surgery |
 | D4 | **LZMA/ZWS deferred** | SWF ≥13 only, outside AVM1-era scope; std has lzma when wanted |
 | D5 | Save-states: own **HFS0 TLV**, LSO excluded | rewind must not un-write persistence |
@@ -321,7 +321,7 @@ sh tests/parse_corpus.sh              # M1 gate: 56/56 clean
 
 # render
 zig build run-sdl -- file.swf                          # windowed
-./zig-out/bin/handyflash-sdl file.swf --headless-frames 30 --out x.png
+./zig-out/bin/handyplay-flash-sdl file.swf --headless-frames 30 --out x.png
 
 # AVM1 conformance
 sh tests/conformance/run_avm1.sh              # full run (SLOW serially)
@@ -379,7 +379,7 @@ seems to have had no effect.
 
 ```sh
 ~/.zvm/0.16.0/zig build sdl -Doptimize=ReleaseFast
-./zig-out/bin/handyflash-sdl <file.swf> --headless-frames N --out after.png
+./zig-out/bin/handyplay-flash-sdl <file.swf> --headless-frames N --out after.png
 python3 tools/pngdiff.py before.png after.png
 ```
 
@@ -467,6 +467,81 @@ easy to undo, beyond the five in §8:
 - a freed display object keeps a `removed_display` native marker so a
   retained reference stops receiving broadcasts and timer callbacks.
 
+**Flash Lite** — `core/avm1/fscommand.zig` is one command table with two
+entry points: opcode `0x2D` (`fscommand2`, which no compiler emits and
+ruffle does not implement) and plain `fscommand`, which arrives as
+`getURL("FSCommand:cmd","arg")` and used to be recognised and dropped at
+three sites. The core NEVER acts on a command — it answers the script and
+reports the call to the host, because ruffle's 679 corpus movies all end
+with `fscommand("quit")` and a core that quit would truncate every one of
+them. The Player owns the acting part (soft-key labels, the quality
+switch, a `quit_requested` flag the trace runner never reads), and
+`Player.profile` (`avm1`/`lite`/`avm2`) is detected by an opcode walk for
+`fscommand2` and decides only how a frontend maps the keyboard. The SDL
+frontend adds `--profile`, a handset key map and the soft-key strip.
+See `docs/FLASH-LITE.md`; tests are `tests/as2/fscommand` (checked against
+ruffle) and `tests/as2/fscommand2` (self-referential, SWF bytes written by
+`tools/make_fscommand2_test.py`).
+
+**libretro core** — `frontends/libretro/core.zig` exports the `retro_*`
+C ABI over the same `core/` the SDL player uses; `zig build libretro`
+installs `zig-out/libretro/flash_libretro.dylib`. The screen is the
+movie's own stage box at 1:1, the clock is a fixed per-frame timestep
+(not host elapsed time), and the framebuffer is presented zero-copy. The
+PAD IS BOUND BY THE MOVIE — every button asks the key survey for the
+code that answers its action, and the resolved map is published as input
+descriptors. `frontends/libretro/test_host.zig` (`zig build
+libretro-test`) dlopens the core and drives it through the real ABI, so
+none of this needs RetroArch to be tested: 30 of the 36 games in
+`games/` react to a pad button and five of the remaining six react to a
+click. Save-states are live — `retro_serialize_size` measures itself once
+and the three state gates run from the same harness — and audio plays
+through `audio_batch_cb`. See `docs/LIBRETRO.md` and `docs/SAVESTATE.md`.
+
+**Audio (M6)** — `core/audio/mixer.zig` + `core/codecs/{pcm,adpcm,mp3}.zig`,
+with minimp3 vendored (CC0) behind a flat C shim and `-Dmp3=false` to
+compile it out. The rule that makes it safe: everything a script can
+observe moves by exactly one frame's worth of samples per FRAME, never by
+what a sink consumed, so `Mixer.render` and `Mixer.advance` reach
+identical positions and completions — all 694 corpus dirs trace
+identically with `trace_runner --audio` and without. That is also ruffle's
+own test-backend rule, which is why the 17 scored sound dirs survived
+completion going from instant to real. Streams belong to a timeline (a
+sprite may stream over the root's), FLV carries MP3 audio into the same
+mixer, and both frontends are pure PCM sinks. See `docs/AUDIO.md`.
+
+**Playing it on macOS** — `sh tools/build-libretro-mac.sh install`. Two
+things cost a debugging round each and are worth knowing: the macOS
+RetroArch cask is **x86_64** (so the core must be universal or it never
+appears in the list), and per-movie core options only survive through
+`SET_CORE_OPTIONS_V2` — the v0 `SET_VARIABLES` is read once and a second
+call is ignored.
+
+**The boot shell** — `frontends/libretro/shell.zig`: an ad, then a
+legend of what the pad became, then the game. Drawn in the project's
+visual language (indigo gradient, the gradient mark, drifting circles,
+anti-aliased Poppins Medium embedded from `vendor/fonts/` under the OFL
+and rasterised through simdra), and laid out by MEASURING the stage — one
+column or two, and the type size, chosen to fit 176x208 as well as
+800x600. Rows are named by RetroPad button, since libretro never exposes
+the physical controller's own labels. It
+deliberately does not EDIT the mapping: RetroArch already remaps physical
+buttons, so the editing is `flash_bind_*` core options whose values are
+re-declared per movie from the survey.
+
+**Key survey / dynamic input** — `core/key_survey.zig` answers, at load,
+which keys a movie can possibly notice: button `keyPress` conditions and
+clip `keyPress` events (already parsed), plus `Key.isDown(<literal>)` and
+`Key.getCode() == <literal>` found with a small abstract stack over the
+bytecode — needed because the method name lives in the CONSTANT POOL, so
+a byte scan finds the pool and misses every call, and because
+`var k = Key.getCode()` has to be followed into a register or a local.
+A frontend binds ACTIONS (`up`, `select`, `soft_left`) and asks
+`key_survey.resolve` for the code THIS movie wants, with the rule that a
+key whose own code the movie already reads is passed through untouched.
+The same walk answers "is this Flash Lite?" (`fs_command2`), so profile
+detection costs nothing extra. `tools/keymap.py` is the offline twin.
+
 **M4 drawing API** — `core/display/drawing.zig` holds one open fill subpath
 and one open stroke subpath per clip and emits the same `DrawPath` IR the
 SWF shape distiller does, so script paths render through the existing
@@ -494,8 +569,26 @@ hand-computed pixel tests and `tools/make_blend_demo.py`.
 workstreams could not reach at the time; the last 54 of those are now
 closed and the tables are history, not a hit list.
 
-**Next is M5** (libretro core + save-states, with the byte-identical
-framebuffer gate the other handyplay cores use), then M6 (audio) and M7
+**M5, save-states**: DONE and on by default. The container (vendored
+`statefmt`, `flash_core = 7`) carries the player and VM scalars, the
+display tree (drawings, buttons, text fields and the mouse anchors
+included), runtime-loaded movies and levels, the timers, the constant
+pools and all three `registerClass` registries, the audio voice table,
+the AVM1 heap with its string pool and closures, and the arena-owned
+natives — BitmapData pixels, TextFormats, XML trees, NetStream buffers.
+**36 of 36 games** and **195 of 195** multi-frame corpus dirs round-trip,
+and 655 of 659 corpus dirs pass the byte-level container gates (the four
+that do not are movies the libretro host cannot load at all).
+`docs/SAVESTATE.md` has the section table, the cost measurements and the
+bug diary.
+
+Two engine defects surfaced there rather than in the interpreter: the
+AVM1 heap **never freed anything** (now `core/avm1/gc.zig`), and constant
+pools were re-decoded per call. Both are fixed.
+
+**M5 is DONE**: the libretro core runs the games through the real C ABI,
+binds a RetroPad from the key survey (`docs/LIBRETRO.md`), plays audio,
+and saves, restores and rewinds. Then M7
 (morph tweening, EditText polish, and the visual FILTER kernels — the
 filter list already decodes, and F's layer machinery is what they draw
 through).
@@ -606,16 +699,18 @@ Eight things to know before you start:
    fallback face into `core/` — see the workstream-D notes in
    `docs/AVM1.md`.
 
-Then: **M5** libretro core + HFS0 save-states (byte-identical
-serialize→restore→re-run gate; copy the ABI from
-`../handyplay-oss/java-core/frontends/libretro/libretro.zig`) ·
-**M6** audio (ADPCM/PCM → minimp3 → SoundStreamBlock sync) ·
-**M7** polish (morph shapes, device fonts, clipDepth masks — simdra's
-`clipPath` is ready — PlaceObject3 filters/blend modes).
+**M5** libretro core + save-states — DONE (the core plays in RetroArch,
+states and rewind are on by default and gated three ways;
+`docs/LIBRETRO.md`, `docs/SAVESTATE.md`) ·
+**M6** audio — DONE (ADPCM/PCM/minimp3, StartSound, the Sound class,
+SoundStreamBlock sync and FLV audio; `docs/AUDIO.md`) ·
+Then **M7** polish (morph shapes, device fonts, clipDepth masks —
+simdra's `clipPath` is ready — PlaceObject3 filters/blend modes).
 
-Afterwards, adoption into handyplay-oss: a `build-cores.sh` entry, the
-libretro-web 6th-core registration, and optionally migrating save-states
-to their `common/statefmt.zig` (`flash_core = 7` is reserved there).
+Afterwards, adoption into handyplay-oss: a `build-cores.sh` entry and the
+libretro-web 6th-core registration. The save-states already use their
+`common/statefmt.zig`, vendored under `vendor/statefmt/` as
+`flash_core = 7`.
 
 ### Open items for the user
 1. **`npm publish` simdra 0.2.0** (code is pushed; publish is not done)

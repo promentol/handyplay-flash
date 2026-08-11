@@ -414,7 +414,11 @@ fn setScroll(p: *anyopaque, this: Value, args: []const Value) anyerror!Value {
     const lines: u32 = if (std.math.isNan(n) or n < 0 or n >= OVERFLOW)
         1
     else
-        @intFromFloat(@trunc(n));
+        // Saturate before narrowing: everything from 2^32 up to the
+        // overflow limit still means "the last line", and an unclamped
+        // `@intFromFloat` is undefined for those (it panics in a safe
+        // build — corpus edittext_scroll sets 767100486418432).
+        @intFromFloat(@min(@trunc(n), 4294967295.0));
     et.scroll = std.math.clamp(lines, 1, maxScrollOf(et));
     return .undefined_value;
 }

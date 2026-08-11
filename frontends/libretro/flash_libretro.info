@@ -1,0 +1,33 @@
+# Software Information
+display_name = "Flash (handyplay-flash)"
+authors = "handyplay-flash"
+supported_extensions = "swf"
+corename = "handyplay-flash"
+categories = "Emulator"
+license = "AGPL-3.0"
+permissions = ""
+display_version = "0.1"
+
+# Hardware Information
+manufacturer = "Macromedia/Adobe"
+systemname = "Flash"
+systemid = "flash"
+
+# Libretro Features
+database = ""
+supports_no_game = "false"
+savestate = "true"
+savestate_features = "serialized"
+cheats = "false"
+input_descriptors = "true"
+memory_descriptors = "false"
+libretro_saves = "false"
+core_options = "true"
+core_options_version = "1.0"
+load_subsystem = "false"
+hw_render = "false"
+needs_fullpath = "false"
+disk_control = "false"
+is_experimental = "false"
+
+description = "A Flash Player written from scratch in Zig: SWF 4-8, ActionScript 1/2 (AVM1), including Flash Lite. The gamepad is bound to each movie's OWN keys, surveyed from its bytecode at load — so the D-pad sends the arrow keys to a game that reads arrows and the phone keypad to one that reads 2/4/6/8. Every binding can be overridden in Core Options, along with playback speed. Sound plays (PCM, ADPCM, MP3 and FLV audio), and save states and rewind work. AVM2/AS3 files are rejected by design."

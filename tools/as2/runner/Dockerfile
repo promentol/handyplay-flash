@@ -5,8 +5,8 @@
 # whole Rust workspace (multiple GB); the web build is a 10 MB download
 # and runs the same core.
 #
-#   docker build -t handyflash-ruffle tools/as2/runner
-#   docker run --rm -v "$PWD:/work" handyflash-ruffle \
+#   docker build -t handyplay-flash-ruffle tools/as2/runner
+#   docker run --rm -v "$PWD:/work" handyplay-flash-ruffle \
 #       node /opt/ruffle-run.mjs test.swf out.png out.txt 600
 
 FROM debian:bookworm-slim

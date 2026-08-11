@@ -15,6 +15,7 @@ const value_mod = @import("value.zig");
 const object_mod = @import("object.zig");
 const opcodes = @import("opcodes.zig");
 const runtime = @import("runtime.zig");
+const fscommand = @import("fscommand.zig");
 const stage = @import("stage_object.zig");
 const movie_clip_mod = @import("../display/movie_clip.zig");
 const loader = @import("globals/loader.zig");
@@ -993,7 +994,10 @@ pub const Activation = struct {
                     }
                     return .next;
                 }
-                if (loader.fsCommandOf(url) != null) return .next;
+                if (loader.fsCommandOf(url)) |cmd| {
+                    _ = try self.fsCommandUrl(cmd, target);
+                    return .next;
+                }
                 try loader.navigate(self.vm, url, target, .none, &.{});
             },
             .get_url2 => |g| try self.getUrl2(g.is_load_vars, g.is_target_sprite, switch (g.send_vars_method) {
@@ -1031,7 +1035,10 @@ pub const Activation = struct {
 
         // `fscommand:` hijacks the URL entirely — the TARGET becomes the
         // command's arguments and nothing is fetched or navigated.
-        if (loader.fsCommandOf(url) != null) return;
+        if (loader.fsCommandOf(url)) |cmd| {
+            _ = try self.fsCommandUrl(cmd, target);
+            return;
+        }
 
         // `_levelN`: a target that names a level bypasses path resolution
         // entirely. A bare "_level" (nothing after it) is level 0; a
@@ -1875,15 +1882,84 @@ pub const Activation = struct {
                 if (self.baseClipGone()) return .{ .return_value = .undefined_value };
             },
             .fs_command2 => {
+                // The COUNT counts the command name too, so `count - 1`
+                // arguments follow it down the stack.
                 const n = try self.popNumber();
-                const count: usize = if (std.math.isNan(n) or n < 0) 0 else @intFromFloat(n);
-                var i: usize = 0;
-                while (i < count) : (i += 1) _ = self.pop();
-                try self.push(.{ .number = -1 });
+                const count: usize = if (std.math.isNan(n) or n < 0) 0 else @intFromFloat(@min(n, 64));
+                if (count == 0) {
+                    try self.push(.{ .number = -1 });
+                    return .next;
+                }
+                const name = try self.vm.toStringValue(self.pop());
+                var args: [63][]const u8 = undefined;
+                const argc = count - 1;
+                for (0..argc) |i| {
+                    args[i] = try strings.toUtf8(self.vm.arena(), try self.vm.toStringValue(self.pop()));
+                }
+                try self.push(try self.runFsCommand(
+                    try strings.toUtf8(self.vm.arena(), name),
+                    args[0..argc],
+                    .command2,
+                ));
             },
             else => {},
         }
         return .next;
+    }
+
+    /// `fscommand("cmd", "args")`, which reaches AVM1 as a `getURL` whose
+    /// URL is `FSCommand:cmd` and whose TARGET is the single argument.
+    fn fsCommandUrl(self: *Activation, cmd: strings.AvmString, target: strings.AvmString) !Value {
+        const a = self.vm.arena();
+        const name = try strings.toUtf8(a, cmd);
+        const arg_utf8 = try strings.toUtf8(a, target);
+        const args = [_][]const u8{arg_utf8};
+        // An EMPTY target is no argument at all, not an empty one: the
+        // corpus's own `fscommand("quit")` has nothing after the comma.
+        return self.runFsCommand(name, if (arg_utf8.len == 0) &.{} else args[0..1], .command);
+    }
+
+    /// The same path, reached from a native method (`MovieClip.getURL`)
+    /// that has no `self`. No activation means no script is running,
+    /// which cannot happen from a method call — but it costs nothing to
+    /// say so.
+    pub fn fsCommandFromNative(vm: *runtime.Vm, cmd: strings.AvmString, target: strings.AvmString) anyerror!void {
+        const p = vm.current_activation orelse return;
+        const act: *Activation = @ptrCast(@alignCast(p));
+        _ = try act.fsCommandUrl(cmd, target);
+    }
+
+    /// One `fscommand` or `fscommand2`, dispatched and then REPORTED to
+    /// the host — which is the only party allowed to act on it. Returns
+    /// what `fscommand2` should push; plain `fscommand` throws it away.
+    fn runFsCommand(
+        self: *Activation,
+        name: []const u8,
+        args: []const []const u8,
+        kind: @TypeOf(@as(fscommand.Call, undefined).kind),
+    ) !Value {
+        const outcome = fscommand.dispatch(self.vm, name, args);
+        const result: f64 = switch (outcome) {
+            .number => |n| n,
+            .variable => |v| blk: {
+                // A string answer goes into the variable the caller
+                // named, through the SAME path `SetVariable` uses, so a
+                // target like `/:device` resolves the way a script
+                // expects.
+                const text = try std.unicode.utf8ToUtf16LeAlloc(self.vm.arena(), v.text);
+                try self.setVariable(v.into, .{ .string = text });
+                break :blk 0;
+            },
+        };
+        if (self.vm.host.fscommand) |f| {
+            if (self.vm.host.ctx) |ctx| f(ctx, .{
+                .name = name,
+                .args = args,
+                .kind = kind,
+                .result = result,
+            });
+        }
+        return .{ .number = result };
     }
 
     // --- op helpers -------------------------------------------------------
@@ -2061,6 +2137,19 @@ pub const Activation = struct {
     }
 
     fn loadConstantPool(self: *Activation, count: u16, raw: []const u8) !void {
+        // The SAME ConstantPool action re-executes every time its frame
+        // does, and decoding it afresh each time grew `vm.pools` (and the
+        // arena behind it) without bound — a game left running for an
+        // hour accumulated hundreds of thousands of identical pools. The
+        // bytes live in the movie buffer and never change, so their
+        // ADDRESS identifies the pool: decode once, reuse after.
+        if (raw.len != 0) {
+            if (self.vm.pool_cache.get(@intFromPtr(raw.ptr))) |idx| {
+                self.vm.active_pool = idx;
+                self.constant_pool = idx;
+                return;
+            }
+        }
         var list = try self.vm.arena().alloc(strings.AvmString, count);
         var r = rdr.Reader.init(raw);
         var i: usize = 0;
@@ -2070,6 +2159,9 @@ pub const Activation = struct {
         }
         try self.vm.pools.append(self.vm.gpa, list);
         const idx: u32 = @intCast(self.vm.pools.items.len - 1);
+        if (raw.len != 0) {
+            try self.vm.pool_cache.put(self.vm.gpa, @intFromPtr(raw.ptr), idx);
+        }
         self.vm.active_pool = idx;
         self.constant_pool = idx;
     }

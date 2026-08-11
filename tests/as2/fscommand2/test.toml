@@ -1,0 +1,13 @@
+# Opcode 0x2D, which no compiler here emits and ruffle does not have.
+# The SWF is written by tools/make_fscommand2_test.py and the expectation
+# is OURS — reviewed against docs/FLASH-LITE.md, not measured against a
+# second player. That is what `ruffle = false` says: `record` will not
+# overwrite expected.txt, because there is nothing to record it from.
+ruffle = false
+generator = "tools/make_fscommand2_test.py"
+width = 200
+height = 150
+fps = 30
+swf_version = 7
+# Trace-only: the movie draws nothing.
+image = false

@@ -23,11 +23,11 @@ is rejected (`error.Avm2Unsupported`).
 | 12 | DoAction | 3 | M1/M3 | parse | queued, not inline |
 | 59 | DoInitAction | 6 | M1/M4 | exec | runs ONCE at PRELOAD, before frame 1 — not on the timeline (ruffle handles it in `preload`), which is what lets an `#initclip` register a class for PlaceObject tags EARLIER in the same frame |
 | 43 | FrameLabel | 3 | M1 | parse | v6+ anchor byte |
-| 15 | StartSound | 1 | M1/M6 | parse | |
+| 15 | StartSound | 1 | M1/M6 | done | plays through the mixer |
 | 89 | StartSound2 | 9 | — | oos | class-name sounds (AVM2-era) |
-| 18 | SoundStreamHead | 1 | M1/M6 | parse | |
-| 45 | SoundStreamHead2 | 3 | M1/M6 | parse | |
-| 19 | SoundStreamBlock | 1 | M1/M6 | parse | frame-synced audio |
+| 18 | SoundStreamHead | 1 | M1/M6 | done | per TIMELINE — a sprite may have its own |
+| 45 | SoundStreamHead2 | 3 | M1/M6 | done | |
+| 19 | SoundStreamBlock | 1 | M1/M6 | done | frame-synced audio; a backwards playhead restarts it |
 | 56 | ExportAssets | 5 | M1/M4 | parse | name → id (attachMovie) |
 | 57 | ImportAssets | 5 | — | oos | multi-movie |
 | 71 | ImportAssets2 | 8 | — | oos | |
@@ -70,7 +70,7 @@ is rejected (`error.Avm2Unsupported`).
 | 11 | DefineText | 1 | M1/M4 | done | sticky TextRecord state; rendered and hit-tested per glyph |
 | 33 | DefineText2 | 3 | M1/M4 | done | RGBA |
 | 37 | DefineEditText | 4 | M1/M4 | done | a full instance: spans, HTML, layout, selection, input, two-way `variable` binding. A face the movie does not embed uses the host's TTF when one is registered, and measures zero otherwise |
-| 14 | DefineSound | 1 | M1/M6 | parse | PCM/ADPCM/MP3 |
+| 14 | DefineSound | 1 | M1/M6 | done | PCM/ADPCM/MP3 decoded on first play; Nellymoser/Speex silent (docs/AUDIO.md) |
 | 46 | DefineMorphShape | 3 | M1/M7 | parse | both style arrays and both edge lists decoded (`swf/morph.zig`); a frame at any ratio is interpolated on demand and HIT-TESTED. Rendering is M7 |
 | 84 | DefineMorphShape2 | 8 | M1/M7 | parse | as above, plus edge bounds and the stroke-scaling flags |
 | 60/61 | DefineVideoStream/VideoFrame | 6 | — | oos | video. The CONTAINER is not: `core/flv.zig` frames an FLV for `NetStream`, whose script tags reach AVM1 as `onMetaData` |

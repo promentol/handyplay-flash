@@ -7,7 +7,7 @@ The VISUAL GATE for renderer/timeline changes, paired with the SDL
 frontend's headless dump:
 
     zig build sdl -Doptimize=ReleaseFast
-    ./zig-out/bin/handyflash-sdl <file.swf> --headless-frames N --out a.png
+    ./zig-out/bin/handyplay-flash-sdl <file.swf> --headless-frames N --out a.png
 
 Dump the same frames before and after a change and diff them. A bounding
 box is far more useful than "differs": a 17x17 box in a 728x90 banner is

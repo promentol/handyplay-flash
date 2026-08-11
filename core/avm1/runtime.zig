@@ -49,12 +49,33 @@ pub const Host = struct {
     /// browser here, so a frontend either ignores it or logs it — which is
     /// exactly what the corpus's `log_fetch` dirs measure.
     navigate: ?*const fn (ctx: *anyopaque, req: NavigateRequest) void = null,
+    /// Every `fscommand` and `fscommand2`, whether or not anything in
+    /// `core/` recognised it. The core NEVER acts on one — ruffle's test
+    /// framework ends all 679 of its movies with `fscommand("quit")`, so
+    /// a player that quit by itself would truncate the corpus. Acting is
+    /// the host's decision.
+    fscommand: ?*const fn (ctx: *anyopaque, call: @import("fscommand.zig").Call) void = null,
     /// `_levelN`, created on demand by `loadMovieNum`. Returns the level
     /// clip's script object, or 0 if that level cannot exist.
     level: ?*const fn (ctx: *anyopaque, id: i32) ObjectHandle = null,
     /// `unloadMovie` and the empty-URL `loadMovie`. Unlike a load this is
     /// immediate: the timeline is gone before the calling script resumes.
     unload_movie: ?*const fn (ctx: *anyopaque, clip: ObjectHandle) void = null,
+    /// M6. The mixer belongs to the Player; AVM1 asks it for instances
+    /// and never touches samples. Every one of these is keyed by the
+    /// `Sound` OBJECT, because that is Flash's unit of ownership: a
+    /// `stop()` silences what this object started and nothing else.
+    sound_play: ?*const fn (ctx: *anyopaque, req: SoundPlay) void = null,
+    sound_stop: ?*const fn (ctx: *anyopaque, owner: ObjectHandle) void = null,
+    /// Where this object's newest instance has got to, in ms.
+    sound_position: ?*const fn (ctx: *anyopaque, owner: ObjectHandle) f64 = null,
+    sound_transform: ?*const fn (ctx: *anyopaque, owner: ObjectHandle, volume: f64, pan: f64) void = null,
+    /// Hand the mixer bytes that came from outside the movie — a
+    /// `loadSound` MP3 — and get the handle to play them with.
+    sound_register: ?*const fn (ctx: *anyopaque, data: []const u8) u32 = null,
+    /// One FLV audio packet (MP3) for a NetStream. Answers the mixer
+    /// handle to keep feeding — zero in, a fresh one out.
+    stream_audio: ?*const fn (ctx: *anyopaque, handle: u32, mp3_frame: []const u8) u32 = null,
     /// A started sound has finished. With no audio device that is
     /// immediate, so the Player fires `onSoundComplete` on the next tick
     /// rather than never.
@@ -81,6 +102,20 @@ pub const Host = struct {
 /// selection on it.
 /// One `ExternalInterface.addCallback` registration: the host calls it
 /// by NAME, and it runs with the `this` the script chose, not the movie.
+/// One `Sound.start()`, as the Player needs it.
+pub const SoundPlay = struct {
+    owner: ObjectHandle,
+    /// A character id for an attached sound, or whatever
+    /// `sound_register` answered for a loaded one.
+    handle: u32,
+    offset_secs: f64 = 0,
+    /// Extra repeats, not total plays — the caller has already taken
+    /// Flash's "1 means once" into account.
+    loops: u16 = 0,
+    volume: f64 = 100,
+    pan: f64 = 0,
+};
+
 pub const ExternalCallback = struct {
     /// UTF-8, owned by the VM arena.
     name: []const u8,
@@ -387,6 +422,10 @@ pub const Vm = struct {
     /// definition time.
     pools: std.ArrayList([]const strings.AvmString) = .empty,
     active_pool: u32 = 0,
+    /// Raw ConstantPool payload address -> the pool index it decoded to.
+    /// Keeps a re-executed action from decoding the same strings again
+    /// (see `Activation.loadConstantPool`).
+    pool_cache: std.AutoHashMapUnmanaged(usize, u32) = .empty,
     swf_version: u8,
     case_sensitive: bool,
     /// _global and the system prototypes.
@@ -432,6 +471,9 @@ pub const Vm = struct {
     /// with no flag. Frontends override both via `Player.setClock`.
     epoch_ms: f64 = MOCK_EPOCH_MS,
     tz_offset_min: i32 = 345,
+    /// What `fscommand2`'s device questions answer. Defaults look like a
+    /// mid-range handset; a frontend can tell the truth instead.
+    device: @import("fscommand.zig").DeviceInfo = .{},
     rng: std.Random.DefaultPrng,
     /// Per-frame action budget (recursion/time guard, ScriptLimits-ish).
     budget: u32 = 5_000_000,
@@ -757,6 +799,7 @@ pub const Vm = struct {
         const gpa = self.gpa;
         self.stack.deinit(gpa);
         self.pools.deinit(gpa);
+        self.pool_cache.deinit(gpa);
         self.property_call_stack.deinit(gpa);
         self.timers.deinit(gpa);
         self.trace_buf.deinit(gpa);

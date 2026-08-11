@@ -19,12 +19,18 @@ pub const Timeline = struct {
     /// ShowFrame tags seen — ruffle's `frames_loaded`.
     frames_loaded: u16 = 0,
     has_end: bool = false,
+    /// This timeline's own SoundStreamHead, if it declared one.
+    stream_head: ?swf.sound_tags.StreamHead = null,
 };
 
 pub const Sprite = struct {
     id: u16,
     frame_count: u16,
     frames: []Frame,
+    /// A sprite may stream its OWN music, on top of whatever the root is
+    /// streaming — the format allows one SoundStreamHead per timeline,
+    /// not one per movie.
+    stream_head: ?swf.sound_tags.StreamHead = null,
     frames_loaded: u16 = 0,
     has_end: bool = false,
     /// Bytes of DefineSprite payload after the id/frame-count header —

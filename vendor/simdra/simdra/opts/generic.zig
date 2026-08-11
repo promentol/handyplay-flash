@@ -153,7 +153,15 @@ pub fn blendSrcOverCovU32(dst: []u32, src_color: u32, coverage: []const u8) void
             dst[i] = 0;
             continue;
         }
-        dst[i] = (r * 255 / a) | ((g * 255 / a) << 8) | ((b * 255 / a) << 16) | (a << 24);
+        // CLAMP: rounding can push a channel above its own alpha, and an
+        // un-clamped quotient does not fit in its byte — it bleeds into
+        // the next channel when packed. Which channel gets hit depends on
+        // the surface byte order, so leaving this off breaks the R/B swap
+        // invariant that every non-lum kernel here is required to hold.
+        const ur: u32 = @min(@as(u32, 255), r * 255 / a);
+        const ug: u32 = @min(@as(u32, 255), g * 255 / a);
+        const ub: u32 = @min(@as(u32, 255), b * 255 / a);
+        dst[i] = ur | (ug << 8) | (ub << 16) | (a << 24);
     }
 }
 

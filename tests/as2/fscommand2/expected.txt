@@ -1,0 +1,67 @@
+-- numbers the handset knows about itself
+GetBatteryLevel = 80
+GetMaxBatteryLevel = 100
+GetSignalLevel = 75
+GetMaxSignalLevel = 100
+GetVolumeLevel = 50
+GetMaxVolumeLevel = 100
+GetPowerSource = 0
+GetTotalPlayerMemory = 8388608
+GetFreePlayerMemory = 4194304
+GetTotalObjectMemory = 8388608
+GetFreeObjectMemory = 4194304
+GetNetworkConnectStatus = 1
+GetNetworkRequestStatus = 0
+GetNetworkStatus = 1
+GetSoftKeyLocation = 0
+GetTimeZoneOffset = 345
+-- the clock
+GetDateYear = 2001
+GetDateMonth = 2
+GetDateDay = 3
+GetDateWeekday = 6
+GetTimeHours = 4
+GetTimeMinutes = 5
+GetTimeSeconds = 6
+-- strings, written into the variable named by arg 0
+GetDevice returns 0
+GetDevice wrote handyplay-flash
+GetDeviceID returns 0
+GetDeviceID wrote 0
+GetPlatform returns 0
+GetPlatform wrote handyplay-flash
+GetLanguage returns 0
+GetLanguage wrote en
+GetNetworkName returns 0
+GetNetworkName wrote handyplay-flash
+GetNetworkConnectionName returns 0
+GetNetworkConnectionName wrote handyplay-flash
+GetNetworkGeneration returns 0
+GetNetworkGeneration wrote none
+GetLocaleLongDate returns 0
+GetLocaleLongDate wrote Saturday, February 3, 2001
+GetLocaleShortDate returns 0
+GetLocaleShortDate wrote 2/3/2001
+GetLocaleTime returns 0
+GetLocaleTime wrote 4:05 AM
+GetDevice with no variable = 0
+-- actions
+SetQuality = 0
+SetSoftKeys = 0
+ResetSoftKeys = 0
+StartVibrate = 0
+StopVibrate = 0
+FullScreen = 0
+Escape = 0
+SetInputTextType = 0
+SetFocusRectColor = 0
+ExtendBacklightDuration = 0
+-- the name is matched case-insensitively
+setsoftkeys = 0
+GETBATTERYLEVEL = 80
+-- and what nothing recognises
+NoSuchCommand = -1
+NoSuchCommand with args = -1
+empty call = -1
+Quit = 0
+still running after Quit

@@ -249,17 +249,29 @@ pub const Objects = struct {
     /// quietly reporting "not found" (corpus watch_proto_recursion stops
     /// mid-handler). Cleared by the interpreter when it acts on it.
     chain_overflow: bool = false,
+    /// Slots the collector handed back, newest first. `create` takes from
+    /// here before growing, which is what stops the table climbing
+    /// forever in a movie that makes objects every frame (gc.zig).
+    free_list: std.ArrayList(ObjectHandle) = .empty,
 
     pub fn init(arena: std.mem.Allocator) Objects {
         return .{ .arena = arena };
     }
 
     pub fn create(self: *Objects) !ObjectHandle {
+        if (self.free_list.pop()) |h| {
+            self.slots.items[h - 1] = .{};
+            return h;
+        }
         try self.slots.append(self.arena, .{});
         return @intCast(self.slots.items.len); // 1-based
     }
 
     pub fn createWith(self: *Objects, obj: ScriptObject) !ObjectHandle {
+        if (self.free_list.pop()) |h| {
+            self.slots.items[h - 1] = obj;
+            return h;
+        }
         try self.slots.append(self.arena, obj);
         return @intCast(self.slots.items.len);
     }

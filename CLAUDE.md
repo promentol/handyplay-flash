@@ -1,4 +1,4 @@
-# handyflash — agent notes
+# handyplay-flash — agent notes
 
 Flash Player in Zig 0.16, AVM1 only. Standalone repo; shaped like the
 handyplay-oss cores. Plan of record: milestone table in README; per-file

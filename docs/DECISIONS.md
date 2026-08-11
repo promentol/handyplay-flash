@@ -28,6 +28,16 @@ threshold. Refcounting rejected (prototype/closure cycles). Follows the
 exen-core precedent; handles give stable ids ⇒ save-state serialization is a
 table walk and nothing is pointer-invalidated.
 
+**Implemented (2026-08-11), `core/avm1/gc.zig`.** The table went unswept for
+a long time and the cost only became visible through a save-state:
+`AntiMosquito` reached 448,996 slots in sixty frames and serialized 36 MB.
+The collector runs at a FRAME BOUNDARY only — no activation live, the
+operand stack cleared — which is what makes "roots" a closed set. Roots are
+found by REFLECTION over `Vm`'s handle fields plus the display tree the
+Player walks; sweeping empties dead slots onto a free list and truncates the
+top of the table. The risk is a missed root aliasing a live object, so the
+corpus is the gate: 679 trace dirs and 195 save/restore dirs stay green.
+
 ## D3 — JPEG: via simdra's stb_image (amended 2026-08-06, was: pure-Zig)
 
 Superseded by D7: simdra vendors stb_image (single-file C, forced RGBA
@@ -47,15 +57,27 @@ is cheap (note: SWF-LZMA layout differs from raw .lzma — u32 compressed length
 after the header, then 5-byte props; uncompressed size comes from the SWF
 header, not the stream).
 
-## D5 — Save-states: own HFS0 TLV container
+## D5 — Save-states: handyplay-oss `statefmt`, not our own container
 
-Magic `HFS0`, u32 version, `[tag:u32][len:u32][bytes]` sections (SWFH movie
-hash, DISP display list, AVM1 object table + stack + registers, TIMR, RAND,
-INPT). Deterministic serialization; libretro layer latches `serialize_size`
-once (+headroom) and zeroes the tail. **SharedObject/LSO excluded** — rewind
-must not un-write persistence. Future: optional migration to handyplay-oss
-`common/statefmt.zig` framing (`flash_core = 7` is reserved there) — a
-mechanical change.
+**Superseded 2026-08-11** (was: a bespoke `HFS0` TLV container). The
+sibling's `common/statefmt.zig` already implements the framing this needed
+— self-describing recursive sections, per-section version and layout
+fingerprints so a changed struct rejects stale blobs by itself, and the
+four rewind rules (fixed-size sections first, 16-byte alignment, no
+indeterminate bytes, constant `serialize_size`) as an enforced discipline
+rather than a convention. It also reserves `7..15` for future cores, which
+is where `flash_core = 7` was always meant to go. Vendored verbatim under
+`vendor/statefmt/` so it can be re-synced without a merge; the enum member
+is claimed by value in `core/savestate.zig` rather than by editing the
+copy.
+
+The rest stands: deterministic serialization, `serialize_size` latched
+once with headroom and the tail zeroed, and **SharedObject/LSO excluded**
+— rewind must not un-write persistence. One rule the format's D3 forces
+that is easy to miss: anything serialized by iterating a hash map must be
+written in sorted key order, or a restored map re-serializes differently.
+
+Progress and what remains: `docs/SAVESTATE.md`.
 
 ## D6 — License: AGPL-3.0 (+ commercial dual, like handyplay-oss) — **flagged**
 
@@ -88,7 +110,7 @@ Consequences:
   cxform application. M2 gets AA from day one; M7 drops the AA + stroke-quality
   items.
 - Vendor a copy of `zig/simdra/` (+ `stb_image.{h,c}`) into
-  `handyflash/vendor/simdra/` — standalone repo stays standalone. This amends
+  `handyplay-flash/vendor/simdra/` — standalone repo stays standalone. This amends
   the "no C deps" rule: stb_image is the one sanctioned C file (pre-existing,
   battle-tested, already in the handyplay ecosystem).
 - Pixel format: simdra outputs rgba_unorm8 (byte order R,G,B,A). libretro

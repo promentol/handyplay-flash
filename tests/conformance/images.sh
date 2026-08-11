@@ -26,7 +26,7 @@
 # An `input.json` beside the SWF is replayed, one batch per tick.
 set -u
 CORPUS="${CORPUS:-reference/ruffle/tests/tests/swfs/avm1}"
-BIN=./zig-out/bin/handyflash-sdl
+BIN=./zig-out/bin/handyplay-flash-sdl
 OUT="${1:?usage: images.sh <results-file>}"
 
 [ -x "$BIN" ] || { echo "build $BIN first (zig build sdl -Doptimize=ReleaseFast)" >&2; exit 1; }

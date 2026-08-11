@@ -41,6 +41,12 @@ pub const Context = struct {
     root_movie: *const swf.movie.Movie,
     /// Set by SetBackgroundColor during execution.
     background_color: ?swf.reader.Color = null,
+    /// M6: a StartSound or SoundStreamBlock reached the playhead. The
+    /// Player owns the mixer, and `core/` does no I/O — the timeline just
+    /// says WHAT happened and when.
+    start_sound: ?*const fn (user: *anyopaque, tag: swf.sound_tags.StartSound) void = null,
+    stream_block: ?*const fn (user: *anyopaque, clip: *MovieClip, block: []const u8) void = null,
+    audio_user: ?*anyopaque = null,
     /// Actions queued this tick, drained by the Player AFTER every clip has
     /// run (Ruffle's ActionQueue). THREE FIFO buckets, not one sorted list:
     /// each pop takes the front of the highest non-empty bucket, so an
@@ -298,6 +304,9 @@ pub const MovieClip = struct {
     /// yields the button's, so `_parent` from inside a button is the
     /// button (avm1/stage_object.zig clipObject).
     owner_button: ?*DisplayObject = null,
+    /// The SoundStreamHead governing THIS timeline, if it has one. A clip
+    /// without one falls back to the root movie's.
+    stream_head: ?swf.sound_tags.StreamHead = null,
 
     pub fn init(frames: []const library.Frame) MovieClip {
         return .{ .frames = frames, .frames_loaded = @intCast(frames.len) };
@@ -648,7 +657,16 @@ pub const MovieClip = struct {
             // …and neither does an IMPORT, for the same reason: it is
             // part of the preload pass.
             .init_action, .import => {},
-            .start_sound, .sound_stream_block => {}, // M6
+            .start_sound => |tag| {
+                if (ctx.start_sound) |f| {
+                    if (ctx.audio_user) |u| f(u, tag);
+                }
+            },
+            .sound_stream_block => |block| {
+                if (ctx.stream_block) |f| {
+                    if (ctx.audio_user) |u| f(u, self, block);
+                }
+            },
         };
     }
 
@@ -1026,6 +1044,10 @@ pub const MovieClip = struct {
                     const mc = try ctx.gpa.create(MovieClip);
                     mc.* = MovieClip.initTimeline(sprite.frames, sprite.frames_loaded, sprite.has_end);
                     mc.tag_stream_len = sprite.tag_stream_len;
+                    // A sprite that declared its own SoundStreamHead owns
+                    // its music; without this it would be fed into the
+                    // root's stream and play at the root's format.
+                    mc.stream_head = sprite.stream_head;
                     break :c mc;
                 } },
                 .video => .{ .video = id },

@@ -1,0 +1,172 @@
+name: release
+
+# Builds the libretro core for every platform we ship and attaches the
+# zips to a GitHub release.
+#
+#   git tag v0.2.0 && git push origin v0.2.0     # builds and publishes
+#   Actions -> release -> Run workflow            # same, for a tag you name
+#
+# Everything cross-compiles from one Linux runner except Darwin, which
+# uses a macOS runner so `lipo` can fuse the two arches into the universal
+# binary RetroArch expects, and Android, which needs the NDK's Bionic —
+# the one libc zig does not ship.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (created from this ref if it does not exist)"
+        required: true
+      draft:
+        description: "Publish as a draft"
+        type: boolean
+        default: true
+
+env:
+  ZIG_VERSION: "0.16.0"
+
+jobs:
+  # A broken core is worse than a late one: the unit tests gate every
+  # upload. The trace and save-state corpora need ruffle's test suite,
+  # which is not in this repository, so they stay a local gate.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zig
+        run: |
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | tar -xJ
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+      - run: zig build test --summary all
+
+  desktop:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64,   target: x86_64-linux-gnu,    lib: flash_libretro.so }
+          - { name: linux-i686,     target: x86-linux-gnu,       lib: flash_libretro.so }
+          - { name: linux-aarch64,  target: aarch64-linux-gnu,   lib: flash_libretro.so }
+          - { name: linux-armhf,    target: arm-linux-gnueabihf, lib: flash_libretro.so }
+          - { name: windows-x86_64, target: x86_64-windows-gnu,  lib: flash_libretro.dll }
+          - { name: windows-i686,   target: x86-windows-gnu,     lib: flash_libretro.dll }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zig
+        run: |
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | tar -xJ
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+      - name: Build
+        run: zig build libretro -Doptimize=ReleaseFast -Dstrip=true -Dtarget=${{ matrix.target }}
+      - name: Package
+        run: ./tools/package-core.sh "${{ matrix.name }}" "zig-out/libretro/${{ matrix.lib }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-${{ matrix.name }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  macos:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zig
+        run: |
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-aarch64-macos-${ZIG_VERSION}.tar.xz" | tar -xJ
+          echo "$PWD/zig-aarch64-macos-${ZIG_VERSION}" >> "$GITHUB_PATH"
+      - name: Build both arches
+        run: |
+          zig build libretro -Doptimize=ReleaseFast -Dstrip=true -Dtarget=aarch64-macos -p out-arm64
+          zig build libretro -Doptimize=ReleaseFast -Dstrip=true -Dtarget=x86_64-macos  -p out-x86_64
+      # RetroArch on this Mac is an x86_64 build even on Apple silicon, so
+      # the shipped core is universal rather than either single arch.
+      - name: Fuse and package
+        run: |
+          mkdir -p universal
+          lipo -create out-arm64/libretro/flash_libretro.dylib \
+                       out-x86_64/libretro/flash_libretro.dylib \
+               -output universal/flash_libretro.dylib
+          lipo -archs universal/flash_libretro.dylib
+          ./tools/package-core.sh macos-universal universal/flash_libretro.dylib
+          ./tools/package-core.sh macos-arm64     out-arm64/libretro/flash_libretro.dylib
+          ./tools/package-core.sh macos-x86_64    out-x86_64/libretro/flash_libretro.dylib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-macos
+          path: dist/*.zip
+          if-no-files-found: error
+
+  android:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `abi` is the name Android uses for the directory a core is
+          # installed into; `target` is what zig calls the same thing.
+          - { abi: arm64-v8a,   target: aarch64-linux-android,  cpu: "" }
+          - { abi: armeabi-v7a, target: arm-linux-androideabi,  cpu: "-Dcpu=cortex_a8" }
+          - { abi: x86_64,      target: x86_64-linux-android,   cpu: "" }
+          - { abi: x86,         target: x86-linux-android,      cpu: "" }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zig
+        run: |
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | tar -xJ
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+      - name: Build
+        # Zig ships a libc for everything except Bionic, so this is the
+        # one target that needs an SDK. API 29 is zig's own default for
+        # the android ABI and matches a directory in the NDK sysroot.
+        run: |
+          SYSROOT="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          test -d "$SYSROOT" || { echo "no NDK sysroot at $SYSROOT"; exit 1; }
+          zig build libretro -Doptimize=ReleaseFast -Dstrip=true \
+            -Dtarget=${{ matrix.target }} ${{ matrix.cpu }} \
+            -Dandroid-api=29 --sysroot "$SYSROOT"
+      - name: Package
+        # RetroArch's Android build looks for the `_android` suffix.
+        run: |
+          mv zig-out/libretro/flash_libretro.so zig-out/libretro/flash_libretro_android.so
+          ./tools/package-core.sh "android-${{ matrix.abi }}" zig-out/libretro/flash_libretro_android.so
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-android-${{ matrix.abi }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [desktop, macos, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: core-*
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum *.zip | tee SHA256SUMS
+          ls -la
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          DRAFT: ${{ github.event.inputs.draft }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            args=""
+            [ "$DRAFT" = "true" ] && args="--draft"
+            gh release create "$TAG" --title "$TAG" --generate-notes $args
+          fi
+          gh release upload "$TAG" dist/*.zip dist/SHA256SUMS --clobber

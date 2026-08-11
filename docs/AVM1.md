@@ -65,7 +65,7 @@ prototype ends the chain (`super_edge_cases`).
 | GetURL / GetURL2 (0x83/0x9A) | network/loadMovie | M5 (the loader; `core/` does no I/O) |
 | ToggleQuality (0x08) | quality is a no-op for us | never |
 | StopSounds (0x09) | audio | M6 |
-| StrictMode (0x89), FsCommand2 (0x2D) | no-ops in Ruffle too | done-as-is |
+| StrictMode (0x89) | a no-op in Ruffle too | done-as-is |
 | WaitForFrame(2) (0x8A/0x8D) | everything is always loaded — same observable behavior as Ruffle for local files | done-as-is |
 
 ## SWF 3 — timeline control (M3, hand-dispatched from M2)
@@ -115,7 +115,7 @@ prototype ends the chain (`super_edge_cases`).
 | 0x27 | StartDrag | done | operands pop in a fixed order whether or not the target resolves; a bare `startDrag()` drags the current target clip |
 | 0x28 | EndDrag | done | ends whatever drag is running — there is only ever one |
 | 0x29 | StringLess | exec | |
-| 0x2D | FsCommand2 | exec | Flash Lite; undocumented |
+| 0x2D | FsCommand2 | done | Flash Lite; undocumented, and NOT in ruffle's opcode table. Pops an argument COUNT that INCLUDES the command name, then the name, then `count-1` arguments — so `Push ["SOFT2","SOFT1","SetSoftKeys",3]` is `SetSoftKeys("SOFT1","SOFT2")`. Pushes the answer: a number for the getters, 0 for an action, -1 for anything unrecognised. A STRING getter is the odd one: its argument NAMES A VARIABLE, the answer is written there, and it returns 0. The table is `core/avm1/fscommand.zig`; the same table answers plain `fscommand`, which arrives as `getURL("FSCommand:cmd", "arg")`. Nothing in `core/` ACTS on a command — see docs/FLASH-LITE.md |
 | 0x30 | RandomNumber | exec | deterministic rng for states |
 | 0x31 | MbStringLength | exec | |
 | 0x32 | CharToAscii | exec | |

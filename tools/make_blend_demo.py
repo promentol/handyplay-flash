@@ -2,7 +2,7 @@
 """Write a SWF exercising every PlaceObject3 blend mode, one per cell.
 
     python3 tools/make_blend_demo.py            # -> /tmp/blend_demo.swf
-    ./zig-out/bin/handyflash-sdl /tmp/blend_demo.swf --headless-frames 1 \
+    ./zig-out/bin/handyplay-flash-sdl /tmp/blend_demo.swf --headless-frames 1 \
         --out /tmp/blend_demo.png
 
 Nothing in ruffle's corpus places an object with a blend mode and none of
