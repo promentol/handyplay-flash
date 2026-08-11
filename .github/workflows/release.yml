@@ -3,8 +3,14 @@ name: release
 # Builds the libretro core for every platform we ship and attaches the
 # zips to a GitHub release.
 #
-#   git tag v0.2.0 && git push origin v0.2.0     # builds and publishes
+#   git push origin main                          # builds, refreshes `nightly`
+#   git tag v0.2.0 && git push origin v0.2.0      # builds, publishes v0.2.0
 #   Actions -> release -> Run workflow            # same, for a tag you name
+#
+# A push to the default branch republishes ONE rolling prerelease called
+# `nightly`, so its download links never change. Put `[skip ci]` in a
+# commit message to skip a run, and a new push cancels the one still
+# running for the same ref.
 #
 # Everything cross-compiles from one Linux runner except Darwin, which
 # uses a macOS runner so `lipo` can fuse the two arches into the universal
@@ -13,6 +19,7 @@ name: release
 
 on:
   push:
+    branches: [main, master]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -24,8 +31,17 @@ on:
         type: boolean
         default: true
 
+# A run on the same branch supersedes the one before it; a tag build is
+# never cancelled, because its artifacts are the release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 env:
   ZIG_VERSION: "0.16.0"
+  # What the zips are named after, and which release they land on: the
+  # dispatch input, else the tag, else the rolling `nightly`.
+  TAG: ${{ github.event.inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || 'nightly' }}
 
 jobs:
   # A broken core is worse than a late one: the unit tests gate every
@@ -63,7 +79,7 @@ jobs:
       - name: Build
         run: zig build libretro -Doptimize=ReleaseFast -Dstrip=true -Dtarget=${{ matrix.target }}
       - name: Package
-        run: ./tools/package-core.sh "${{ matrix.name }}" "zig-out/libretro/${{ matrix.lib }}"
+        run: sh tools/package-core.sh "${{ matrix.name }}" "zig-out/libretro/${{ matrix.lib }}"
       - uses: actions/upload-artifact@v4
         with:
           name: core-${{ matrix.name }}
@@ -92,9 +108,9 @@ jobs:
                        out-x86_64/libretro/flash_libretro.dylib \
                -output universal/flash_libretro.dylib
           lipo -archs universal/flash_libretro.dylib
-          ./tools/package-core.sh macos-universal universal/flash_libretro.dylib
-          ./tools/package-core.sh macos-arm64     out-arm64/libretro/flash_libretro.dylib
-          ./tools/package-core.sh macos-x86_64    out-x86_64/libretro/flash_libretro.dylib
+          sh tools/package-core.sh macos-universal universal/flash_libretro.dylib
+          sh tools/package-core.sh macos-arm64     out-arm64/libretro/flash_libretro.dylib
+          sh tools/package-core.sh macos-x86_64    out-x86_64/libretro/flash_libretro.dylib
       - uses: actions/upload-artifact@v4
         with:
           name: core-macos
@@ -108,33 +124,54 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `abi` is the name Android uses for the directory a core is
-          # installed into; `target` is what zig calls the same thing.
-          - { abi: arm64-v8a,   target: aarch64-linux-android,  cpu: "" }
-          - { abi: armeabi-v7a, target: arm-linux-androideabi,  cpu: "-Dcpu=cortex_a8" }
-          - { abi: x86_64,      target: x86_64-linux-android,   cpu: "" }
-          - { abi: x86,         target: x86-linux-android,      cpu: "" }
+          # `abi` is what Android calls the directory a core installs
+          # into, `target` is zig's name for it, and `triple` is what the
+          # NDK names its own sysroot directories — all three differ for
+          # 32-bit, which is exactly where this is easy to get wrong.
+          - { abi: arm64-v8a,   target: aarch64-linux-android, triple: aarch64-linux-android, cpu: "" }
+          - { abi: armeabi-v7a, target: arm-linux-androideabi, triple: arm-linux-androideabi, cpu: "-Dcpu=cortex_a8" }
+          - { abi: x86_64,      target: x86_64-linux-android,  triple: x86_64-linux-android,  cpu: "" }
+          - { abi: x86,         target: x86-linux-android,     triple: i686-linux-android,    cpu: "" }
     steps:
       - uses: actions/checkout@v4
       - name: Install zig
         run: |
           curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | tar -xJ
           echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
-      - name: Build
-        # Zig ships a libc for everything except Bionic, so this is the
-        # one target that needs an SDK. API 29 is zig's own default for
-        # the android ABI and matches a directory in the NDK sysroot.
+      - name: Locate the NDK
+        # Zig ships a libc for every target except Bionic, so this is the
+        # one build that needs an SDK — and the only interesting thing
+        # about it is whether these paths are right. They are printed so a
+        # failure names itself instead of arriving as a compiler error.
         run: |
-          SYSROOT="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-          test -d "$SYSROOT" || { echo "no NDK sysroot at $SYSROOT"; exit 1; }
+          NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
+          if [ -z "$NDK" ] && [ -n "${ANDROID_HOME:-}" ]; then
+            NDK=$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1)
+          fi
+          [ -n "$NDK" ] || { echo "::error::no Android NDK on this runner"; exit 1; }
+          SYSROOT="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          [ -d "$SYSROOT" ] || { echo "::error::no sysroot at $SYSROOT"; ls "$NDK/toolchains/llvm/prebuilt" || true; exit 1; }
+          LIBDIR="$SYSROOT/usr/lib/${{ matrix.triple }}"
+          [ -d "$LIBDIR" ] || { echo "::error::no lib dir $LIBDIR"; ls "$SYSROOT/usr/lib"; exit 1; }
+          # Prefer 29 (zig's own default for the android ABI); otherwise
+          # take the newest API this NDK still ships.
+          API=29
+          [ -d "$LIBDIR/$API" ] || API=$(ls "$LIBDIR" | grep -E '^[0-9]+$' | sort -n | tail -1)
+          echo "ndk=$NDK"
+          echo "api levels: $(ls "$LIBDIR" | grep -E '^[0-9]+$' | tr '\n' ' ')"
+          echo "using api $API, headers $(test -d "$SYSROOT/usr/include/${{ matrix.triple }}" && echo ok || echo MISSING)"
+          echo "SYSROOT=$SYSROOT" >> "$GITHUB_ENV"
+          echo "API=$API" >> "$GITHUB_ENV"
+      - name: Build
+        run: |
           zig build libretro -Doptimize=ReleaseFast -Dstrip=true \
             -Dtarget=${{ matrix.target }} ${{ matrix.cpu }} \
-            -Dandroid-api=29 --sysroot "$SYSROOT"
+            -Dandroid-api="$API" --sysroot "$SYSROOT"
       - name: Package
         # RetroArch's Android build looks for the `_android` suffix.
         run: |
           mv zig-out/libretro/flash_libretro.so zig-out/libretro/flash_libretro_android.so
-          ./tools/package-core.sh "android-${{ matrix.abi }}" zig-out/libretro/flash_libretro_android.so
+          sh tools/package-core.sh "android-${{ matrix.abi }}" zig-out/libretro/flash_libretro_android.so
       - uses: actions/upload-artifact@v4
         with:
           name: core-android-${{ matrix.abi }}
@@ -161,10 +198,24 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
           DRAFT: ${{ github.event.inputs.draft }}
         run: |
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
+          if [ "$TAG" = "nightly" ]; then
+            # Rolling: delete the release AND its tag, then recreate both
+            # at this commit. The asset names carry no sha, so the links
+            # on the Releases page stay the same from build to build.
+            gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+            # ...and the tag itself, in case a previous run left one
+            # behind: `gh release create` would then reuse that old tag
+            # and quietly ignore --target.
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" >/dev/null 2>&1 || true
+            SHORT=$(git rev-parse --short HEAD)
+            gh release create nightly \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "nightly ($SHORT)" \
+              --notes "Rolling build of \`$GITHUB_REF_NAME\` at $SHORT — $(git log -1 --pretty=%s)"
+          elif ! gh release view "$TAG" >/dev/null 2>&1; then
             args=""
             [ "$DRAFT" = "true" ] && args="--draft"
             gh release create "$TAG" --title "$TAG" --generate-notes $args

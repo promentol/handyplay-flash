@@ -225,10 +225,18 @@ zig build libretro -Dtarget=aarch64-linux-android -Dandroid-api=29 --sysroot "$N
 ### Releases
 
 `.github/workflows/release.yml` builds every platform and attaches the
-zips to a GitHub release; push a tag (`git tag v0.2.0 && git push origin
-v0.2.0`) or run it by hand from the Actions tab. It gates on `zig build
-test` first — the trace and save-state corpora need ruffle's test suite,
-which is not in this repository, so those stay a local gate.
+zips to a GitHub release. Three ways in:
+
+| trigger | what it publishes |
+|---|---|
+| `git push origin main` | rebuilds the rolling **`nightly`** prerelease, same download links every time |
+| `git tag v0.2.0 && git push origin v0.2.0` | a real release named after the tag |
+| Actions → release → Run workflow | a release named after the tag you type (draft by default) |
+
+It gates on `zig build test` first — the trace and save-state corpora
+need ruffle's test suite, which is not in this repository, so those stay
+a local gate. `[skip ci]` in a commit message skips a run, and a new push
+cancels the run still going for the same branch.
 
 ```
 linux    x86_64 · i686 · aarch64 · armhf

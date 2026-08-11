@@ -33,12 +33,26 @@ android-x86           x86-linux-android     -                  flash_libretro.so
 
 ndk_sysroot() {
     ndk=${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}
+    if [ -z "$ndk" ] && [ -n "${ANDROID_HOME:-}" ]; then
+        ndk=$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort | tail -1)
+    fi
     [ -n "$ndk" ] || return 1
     for host in darwin-x86_64 linux-x86_64; do
         s="$ndk/toolchains/llvm/prebuilt/$host/sysroot"
         [ -d "$s" ] && { echo "$s"; return 0; }
     done
     return 1
+}
+
+# The NDK names its directories with a triple of its own: 32-bit x86 is
+# `i686-linux-android` there, not zig's `x86`.
+ndk_triple() {
+    case "$1" in
+        aarch64-linux-android) echo aarch64-linux-android ;;
+        x86_64-linux-android)  echo x86_64-linux-android ;;
+        arm-linux-androideabi) echo arm-linux-androideabi ;;
+        x86-linux-android)     echo i686-linux-android ;;
+    esac
 }
 
 echo "$MATRIX" | while read -r plat target extra lib; do
@@ -49,7 +63,11 @@ echo "$MATRIX" | while read -r plat target extra lib; do
     case "$plat" in
         android-*)
             if s=$(ndk_sysroot); then
-                sysroot_arg="--sysroot $s -Dandroid-api=29"
+                libdir="$s/usr/lib/$(ndk_triple "$target")"
+                api=29
+                [ -d "$libdir/$api" ] || api=$(ls "$libdir" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1)
+                [ -n "$api" ] || { echo "skip $plat (no API dirs under $libdir)"; continue; }
+                sysroot_arg="--sysroot $s -Dandroid-api=$api"
             else
                 echo "skip $plat (no NDK: set ANDROID_NDK_HOME)"
                 continue

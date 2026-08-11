@@ -174,6 +174,11 @@ pub fn build(b: *std.Build) void {
             .root_module = lr_mod,
             .linkage = .dynamic,
         });
+        // Include paths alone are not enough for Bionic: `link_libc` makes
+        // zig want to PROVIDE a libc, and for android it cannot ("unable
+        // to provide libc for target ...-android"). Declaring an external
+        // libc installation is the documented way out.
+        if (androidLibcFile(b, target, android_api)) |f| lrlib.setLibCFile(f);
         const ext = switch (target.result.os.tag) {
             .windows => "dll",
             .macos, .ios, .tvos, .watchos => "dylib",
@@ -208,16 +213,49 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(core_tests).step);
 }
 
+/// The NDK's libc, as the paths file `zig libc` describes. Without one,
+/// a `link_libc` build for android fails before it compiles anything:
+/// zig has no Bionic source to build and no installation to point at.
+fn androidLibcFile(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    api: u32,
+) ?std.Build.LazyPath {
+    const t = target.result;
+    if (t.abi != .android and t.abi != .androideabi) return null;
+    const sysroot = b.sysroot orelse return null; // androidSysroot already complained
+    const triple = androidTriple(t);
+    const txt = b.fmt(
+        \\include_dir={s}/usr/include
+        \\sys_include_dir={s}/usr/include
+        \\crt_dir={s}/usr/lib/{s}/{d}
+        \\msvc_lib_dir=
+        \\kernel32_lib_dir=
+        \\gcc_dir=
+        \\
+    , .{ sysroot, sysroot, sysroot, triple, api });
+    return b.addWriteFiles().add("android-libc.txt", txt);
+}
+
+/// The triple the NDK's own directories are named with. It is NOT always
+/// what zig calls the target: 32-bit x86 is `i686-linux-android` there,
+/// and 32-bit ARM is `arm-linux-androideabi` for both headers and
+/// libraries even though the ABI everyone says is `armeabi-v7a`.
+fn androidTriple(t: std.Target) []const u8 {
+    return switch (t.cpu.arch) {
+        .aarch64 => "aarch64-linux-android",
+        .x86_64 => "x86_64-linux-android",
+        .arm, .thumb => "arm-linux-androideabi",
+        .x86 => "i686-linux-android",
+        else => std.debug.panic("android: unsupported arch {s}", .{@tagName(t.cpu.arch)}),
+    };
+}
+
 /// Point a module at the Android NDK's sysroot. Zig ships a libc for
 /// every target it supports EXCEPT Bionic, so an Android build is the one
 /// that needs an external SDK: `--sysroot
 /// $NDK/toolchains/llvm/prebuilt/<host>/sysroot`, whose layout is
 /// `usr/include`, `usr/include/<triple>` and `usr/lib/<triple>/<api>`.
-///
-/// The triple in those paths is NOT always the one zig names the target
-/// with: 32-bit x86 is `i686-linux-android` there, and 32-bit ARM is
-/// `arm-linux-androideabi` for both the headers and the libraries even
-/// though the ABI everyone calls it by is `armeabi-v7a`.
 fn androidSysroot(
     b: *std.Build,
     mod: *std.Build.Module,
@@ -233,13 +271,7 @@ fn androidSysroot(
         );
         std.process.exit(1);
     };
-    const triple = switch (t.cpu.arch) {
-        .aarch64 => "aarch64-linux-android",
-        .x86_64 => "x86_64-linux-android",
-        .arm, .thumb => "arm-linux-androideabi",
-        .x86 => "i686-linux-android",
-        else => std.debug.panic("android: unsupported arch {s}", .{@tagName(t.cpu.arch)}),
-    };
+    const triple = androidTriple(t);
     mod.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include", .{sysroot}) });
     mod.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include/{s}", .{ sysroot, triple }) });
     mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/usr/lib/{s}/{d}", .{ sysroot, triple, api }) });
